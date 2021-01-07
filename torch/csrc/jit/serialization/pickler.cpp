@@ -49,6 +49,8 @@ void Pickler::pushIValueImpl(const IValue& ivalue) {
     pushTuple(ivalue);
   } else if (ivalue.isDouble()) {
     pushDouble(ivalue.toDouble());
+  } else if (ivalue.isComplexDouble()) {
+    pushComplexDouble(ivalue);
   } else if (ivalue.isInt()) {
     pushInt(ivalue.toInt());
   } else if (ivalue.isBool()) {
@@ -77,7 +79,8 @@ void Pickler::pushIValueImpl(const IValue& ivalue) {
         pushDouble(item);
       }
     });
-  } else if (ivalue.isBoolList()) {
+  }
+  else if (ivalue.isBoolList()) {
     pushSpecializedList(ivalue, "build_boollist", [=](const IValue& ivalue) {
       for (bool item : ivalue.toBoolList()) {
         pushBool(item);
@@ -463,6 +466,14 @@ void Pickler::pushDouble(double value) {
   push<PickleOpCode>(PickleOpCode::BINFLOAT);
   // Python pickle format is big endian, swap.
   push<double>(swapDouble(value));
+}
+void Pickler::pushComplexDouble(const IValue& value) {
+  c10::complex<double> d = (*(value.toComplexDouble())).val;
+  pushGlobal("builtins", "complex");
+  pushIValue(d.real());
+  pushIValue(d.imag());
+  push<PickleOpCode>(PickleOpCode::TUPLE2);
+  push<PickleOpCode>(PickleOpCode::REDUCE);
 }
 
 void Pickler::pushLong(const std::string& data) {
