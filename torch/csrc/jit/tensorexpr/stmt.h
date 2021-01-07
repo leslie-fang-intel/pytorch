@@ -318,36 +318,27 @@ class TORCH_API Allocate : public StmtNode<Allocate> {
   static Allocate* make(
       const VarHandle& buffer_var,
       Dtype dtype,
-      const std::vector<ExprHandle>& dims) {
-    std::vector<const Expr*> dims_nodes(dims.size());
-    for (size_t i = 0; i < dims.size(); i++) {
-      dims_nodes[i] = dims[i].node();
-    }
-    return new Allocate(buffer_var.node(), dtype, dims_nodes);
-  }
+      const std::vector<ExprHandle>& dims);
 
   const Var* buffer_var() const {
-    return buffer_var_;
+    return buf_->base_handle();
   }
 
   Dtype dtype() const {
-    return dtype_;
+    return buf_->dtype();
   }
 
-  const std::vector<const Expr*>& dims() const {
-    return dims_;
+  const std::vector<const Expr*> dims() const {
+    return buf_->dims();
   }
 
-  Allocate(
-      const Var* buffer_var,
-      Dtype dtype,
-      const std::vector<const Expr*>& dims)
-      : buffer_var_(buffer_var), dtype_(dtype), dims_(dims) {}
+  const Buf* buf() const {
+    return buf_;
+  }
 
+  Allocate(const Buf* buf) : buf_(buf) {}
  private:
-  const Var* buffer_var_;
-  Dtype dtype_;
-  std::vector<const Expr*> dims_;
+  const Buf* buf_;
   // TODO: add memory types.
 };
 
