@@ -16,8 +16,16 @@ bool is_enabled() {
   return c10::impl::tls_is_dispatch_key_included(DispatchKey::Autocast);
 }
 
+bool is_cpu_enabled() {
+  return c10::impl::tls_is_dispatch_key_included(DispatchKey::AutocastCPU);
+}
+
 void set_enabled(bool new_enabled) {
   c10::impl::tls_set_dispatch_key_included(DispatchKey::Autocast, new_enabled);
+}
+
+void set_cpu_enabled(bool new_enabled) {
+  c10::impl::tls_set_dispatch_key_included(DispatchKey::AutocastCPU, new_enabled);
 }
 
 namespace {
@@ -253,6 +261,10 @@ Explicit registration for out-of-place ops
 *****************************************/
 TORCH_LIBRARY_IMPL(_, Autocast, m) {
   m.fallback(torch::CppFunction::makeFallthrough());
+}
+
+TORCH_LIBRARY_IMPL(aten, AutocastCPU, m){
+
 }
 
 TORCH_LIBRARY_IMPL(aten, Autocast, m) {

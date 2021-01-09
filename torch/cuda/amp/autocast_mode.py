@@ -110,22 +110,35 @@ class autocast(object):
         enabled(bool, optional, default=True):  Whether autocasting should be enabled in the region.
     """
     def __init__(self, enabled=True):
-        if enabled and not torch.cuda.is_available():
-            warnings.warn("torch.cuda.amp.autocast only affects CUDA ops, but CUDA is not available.  Disabling.")
-            self._enabled = False
-        else:
-            self._enabled = enabled
+        if not torch.cuda.is_available():
+            #warnings.warn("torch.cuda.amp.autocast only affects CUDA ops, but CUDA is not available.  Disabling.")
+            warnings.warn("CUDA is not available, go into the autocast CPU path")
+            self._autocast_cpu = True
+            #self._enabled = False
+        self._enabled = enabled
+        #else:
+        #    self._enabled = enabled
 
     def __enter__(self):
-        self.prev = torch.is_autocast_enabled()
-        torch.set_autocast_enabled(self._enabled)
-        torch.autocast_increment_nesting()
+        if self._autocast_cpu:
+            self.prev = torch.is_autocast_cpu_enabled()
+            print("LeslieDebug: torch.is_autocast_cpu_enabled() is ", self.prev)
+            torch.set_autocast_cpu_enabled(self._enabled)
+        else:
+            self.prev = torch.is_autocast_enabled()
+            torch.set_autocast_enabled(self._enabled)
+            torch.autocast_increment_nesting()
 
     def __exit__(self, *args):
-        # Drop the cache when we exit to a nesting level that's outside any instance of autocast.
-        if torch.autocast_decrement_nesting() == 0:
-            torch.clear_autocast_cache()
-        torch.set_autocast_enabled(self.prev)
+        if self._autocast_cpu:
+            # Leslie: cpu not support autocast cache in current phase
+            torch.set_autocast_cpu_enabled(self.prev)
+        else:
+            # Drop the cache when we exit to a nesting level that's outside any instance of autocast.
+            if torch.autocast_decrement_nesting() == 0:
+                torch.clear_autocast_cache()
+            torch.set_autocast_enabled(self.prev)
+        
         return False
 
     def __call__(self, func):
