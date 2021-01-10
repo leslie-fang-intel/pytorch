@@ -94,6 +94,19 @@ Tensor cached_cast(at::ScalarType to_type, const Tensor& arg) {
   }
 }
 
+Tensor cached_cpu_cast(at::ScalarType to_type, const Tensor& arg) {
+  //return arg;
+  if(is_cpu_eligible(arg) && (arg.scalar_type() != to_type)){
+    TORCH_WARN("Leslie Debug in bf16 cast");
+	//arg.to_mkldnn();
+	//arg.to(to_type);
+    //return arg.to_mkldnn().to(to_type);
+    return arg.to(to_type);
+  }else{
+    return arg;
+  }
+}
+
 // Policies correspond to op categories that need code-divergent handling.
 // Wrapper templates below are specialized based on a policy template parameter.
 enum class CastPolicy : uint8_t {
@@ -111,6 +124,7 @@ enum class CastPolicy : uint8_t {
                      // The wrapper policy is:  append at::kFloat to the args, and redispatch to the
                      // type-aware overload.
   promote, // Run in the widest dtype among several args.
+  bf16, // Cast all inputs to at::bf16 before running the op.
 };
 
 /********************************************************************************************************
@@ -177,6 +191,15 @@ struct WrapFunction_<CastPolicy::promote, Redispatch, F, Ret, guts::typelist::ty
     c10::impl::ExcludeDispatchKeyGuard no_autocast(DispatchKey::Autocast);
     auto to_type = promote_type(at::kHalf, args...);
     return (*F)(cached_cast(to_type, args)...);
+  }
+};
+
+// CastPolicy::bf16
+template<class Redispatch, Redispatch* F, class Ret, class... Args>
+struct WrapFunction_<CastPolicy::bf16, Redispatch, F, Ret, guts::typelist::typelist<Args...>> {
+  static Ret call(Args... args) {
+    c10::impl::ExcludeDispatchKeyGuard no_autocastCPU(DispatchKey::AutocastCPU);
+    return (*F)(cached_cpu_cast(at::kBFloat16, args)...);
   }
 };
 
@@ -263,9 +286,19 @@ TORCH_LIBRARY_IMPL(_, Autocast, m) {
   m.fallback(torch::CppFunction::makeFallthrough());
 }
 
-TORCH_LIBRARY_IMPL(aten, AutocastCPU, m){
-
+TORCH_LIBRARY_IMPL(_, AutocastCPU, m){
+  m.fallback(torch::CppFunction::makeFallthrough());
 }
+
+TORCH_LIBRARY_IMPL(aten, AutocastCPU, m){
+  //m.fallback(torch::CppFunction::makeFallthrough());
+  KERNEL(ADD_NS(relu), "relu", Tensor (const Tensor &), bf16)
+  KERNEL(ADD_NS(matmul), "matmul", Tensor (const Tensor &, const Tensor &), bf16)
+  KERNEL(ADD_NS(conv2d), "conv2d", Tensor (const Tensor &, const Tensor &, const c10::optional<Tensor>&, IntArrayRef, IntArrayRef, IntArrayRef, int64_t), bf16)
+  //KERNEL(ADD_NS(relu_), "relu_", Tensor & (Tensor &), bf16)
+  //m.impl("mymatmul", autocastCPU);
+}
+
 
 TORCH_LIBRARY_IMPL(aten, Autocast, m) {
   // fp16

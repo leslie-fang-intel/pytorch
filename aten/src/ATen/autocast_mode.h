@@ -75,13 +75,28 @@ inline bool is_eligible(const Tensor& arg) {
   return (arg.defined() && arg.is_cuda() && arg.is_floating_point() && (arg.scalar_type() != at::kDouble));
 }
 
+inline bool is_cpu_eligible(const Tensor& arg) {
+  return (arg.defined() && arg.is_floating_point() && (arg.scalar_type() != at::kDouble));
+}
+
 // Overload to catch Tensor args
 TORCH_API Tensor cached_cast(at::ScalarType to_type, const Tensor& arg);
+
+TORCH_API Tensor cached_cpu_cast(at::ScalarType to_type, const Tensor& arg);
+
 
 // Overload to process optional<Tensor>
 inline c10::optional<Tensor> cached_cast(at::ScalarType to_type, const c10::optional<Tensor>& arg) {
   if (arg.has_value()) {
     return cached_cast(to_type, *arg);
+  } else {
+    return c10::nullopt;
+  }
+}
+
+inline c10::optional<Tensor> cached_cpu_cast(at::ScalarType to_type, const c10::optional<Tensor>& arg) {
+  if (arg.has_value()) {
+    return cached_cpu_cast(to_type, *arg);
   } else {
     return c10::nullopt;
   }
@@ -97,9 +112,23 @@ inline std::vector<Tensor> cached_cast(at::ScalarType to_type, const TensorList&
   return vec;
 }
 
+inline std::vector<Tensor> cached_cpu_cast(at::ScalarType to_type, const TensorList& arg) {
+  std::vector<Tensor> vec;
+  vec.reserve(arg.size());
+  for (const auto& t : arg) {
+    vec.push_back(cached_cpu_cast(to_type, t));
+  }
+  return vec;
+}
+
 // Template to catch non-Tensor args.
 template<typename T>
 inline T cached_cast(at::ScalarType to_type, T arg) {
+  return arg;
+}
+
+template<typename T>
+inline T cached_cpu_cast(at::ScalarType to_type, T arg) {
   return arg;
 }
 
