@@ -16,7 +16,15 @@ Tensor mkldnn_to_dense(const Tensor& mkldnn_tensor) {
     std::vector<int64_t>(dims.begin(), dims.end()),
     mkldnn_tensor.options().layout(c10::kStrided));
   if (stensor.is_empty()) return cpu_tensor;
-  auto pub_tensor = stensor.to_public(cpu_tensor.template data_ptr<float>());
+
+  TORCH_CHECK(mkldnn_tensor.scalar_type() == ScalarType::Float ||
+              mkldnn_tensor.scalar_type() == ScalarType::BFloat16,
+              "mkldnn_to_dense expects float or bfloat16 tensor input");
+	
+  auto pub_tensor = 
+  	mkldnn_tensor.scalar_type() == ScalarType::Float
+  	?stensor.to_public(cpu_tensor.template data_ptr<float>(), ideep::data_type::f32)
+  	:stensor.to_public(cpu_tensor.template data_ptr<BFloat16>(), ideep::data_type::bf16);
   cpu_tensor.as_strided_(dims, pub_tensor.get_strides());
   return cpu_tensor;
 }
@@ -26,17 +34,27 @@ Tensor dense_to_mkldnn(const Tensor& cpu_tensor) {
              "dense_to_mkldnn expects CPU tensor input");
   TORCH_CHECK(cpu_tensor.layout() == Layout::Strided,
              "dense_to_mkldnn expects strided tensor input");
-  TORCH_CHECK(cpu_tensor.scalar_type() == ScalarType::Float,
-             "dense_to_mkldnn expects float tensor input");
+  //TORCH_CHECK(cpu_tensor.scalar_type() == ScalarType::Float,
+  //           "dense_to_mkldnn expects float tensor input");
   TORCH_CHECK(cpu_tensor.dim() <= 5,
              "Can't convert cpu tensor with the number of dimensions > 5");
   // TODO: consider to convert non-contiguous tensor to `ideep::tensor` directly.
   auto cpu_tensor_cont = cpu_tensor.contiguous();
   Tensor mkldnn_tensor = empty_mkldnn(cpu_tensor_cont.sizes(), cpu_tensor_cont.options());
   ideep::tensor& dtensor = itensor_from_mkldnn(mkldnn_tensor);
-  dtensor.feed_from(dtensor.get_dims(),
-                    ideep::tensor::data_type::f32,
-                    (cpu_tensor_cont.template data_ptr<float>()));
+  if(cpu_tensor.scalar_type() == at::kFloat){
+    dtensor.feed_from(dtensor.get_dims(),
+                      ideep::tensor::data_type::f32,
+                      (cpu_tensor_cont.template data_ptr<float>()));
+  }else if(cpu_tensor.scalar_type() == at::kBFloat16){
+    dtensor.feed_from(dtensor.get_dims(),
+                      ideep::tensor::data_type::bf16,
+                      (cpu_tensor_cont.template data_ptr<BFloat16>()));
+  }else{
+	TORCH_CHECK(false, "dense_to_mkldnn expects float or bfloat16 tensor input");
+  }
+
+  
   return mkldnn_tensor;
 }
 

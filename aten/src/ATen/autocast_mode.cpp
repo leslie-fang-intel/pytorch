@@ -9,6 +9,8 @@
 #include <iostream>
 #include <exception>
 
+#include <ATen/native/mkldnn/MKLDNNCommon.h>
+
 namespace at {
 namespace autocast {
 
@@ -97,12 +99,31 @@ Tensor cached_cast(at::ScalarType to_type, const Tensor& arg) {
 Tensor cached_cpu_cast(at::ScalarType to_type, const Tensor& arg) {
   //return arg;
   if(is_cpu_eligible(arg) && (arg.scalar_type() != to_type)){
-    TORCH_WARN("Leslie Debug in bf16 cast");
-	//arg.to_mkldnn();
+    TORCH_WARN("**************Leslie Debug in cached_cpu_cast: ", to_type, " cast****************");
+	//Tensor output = arg.to_mkldnn().to(to_type);
+	//Tensor output = arg.to(to_type).to_mkldnn();
+    //Tensor output = arg.to(to_type);
+    TORCH_CHECK(to_type == at::kFloat ||
+      to_type == at::kBFloat16,
+      "cached_cpu_cast expects float or bfloat16 tensor input");
+
+    Tensor output =
+      to_type == at::kFloat
+      ?arg.to_dense().to(to_type)
+      :arg.to(to_type).to_mkldnn();
+
+    /*if(to_type == at::kFloat){
+      output = arg.to_dense().to(to_type);
+	}else if(to_type == at::kBFloat16){
+      output = arg.to(to_type).to_mkldnn();
+	}else{
+      TORCH_CHECK(false, "cached_cpu_cast expects float or bfloat16 tensor input");
+	}*/
 	//arg.to(to_type);
     //return arg.to_mkldnn().to(to_type);
-    return arg.to(to_type);
+    return output;
   }else{
+    TORCH_WARN("**************Leslie Debug in cached_cpu_cast: ", to_type, " bypass****************");
     return arg;
   }
 }
@@ -155,6 +176,10 @@ template<class Redispatch, Redispatch* F, class Ret, class... Args>
 struct WrapFunction_<CastPolicy::fp32, Redispatch, F, Ret, guts::typelist::typelist<Args...>> {
   static Ret call(Args... args) {
     c10::impl::ExcludeDispatchKeyGuard no_autocast(DispatchKey::Autocast);
+
+    //TORCH_WARN("=======================for test========================");
+	//c10::impl::ExcludeDispatchKeyGuard no_autocastCPU(DispatchKey::AutocastCPU);
+
     return (*F)(cached_cast(at::kFloat, args)...);
   }
 };
@@ -194,10 +219,13 @@ struct WrapFunction_<CastPolicy::promote, Redispatch, F, Ret, guts::typelist::ty
   }
 };
 
+static int count = 0;
 // CastPolicy::bf16
 template<class Redispatch, Redispatch* F, class Ret, class... Args>
 struct WrapFunction_<CastPolicy::bf16, Redispatch, F, Ret, guts::typelist::typelist<Args...>> {
   static Ret call(Args... args) {
+    TORCH_WARN("-----------------------LeslieDebug in WrapFunction_ CastPolicy::bf16-----------------", count);
+	count += 1;
     c10::impl::ExcludeDispatchKeyGuard no_autocastCPU(DispatchKey::AutocastCPU);
     return (*F)(cached_cpu_cast(at::kBFloat16, args)...);
   }
@@ -286,19 +314,59 @@ TORCH_LIBRARY_IMPL(_, Autocast, m) {
   m.fallback(torch::CppFunction::makeFallthrough());
 }
 
+void generic_wrapper_fallback(const c10::OperatorHandle& op, torch::jit::Stack* stack) {
+  TORCH_WARN("-----------------------LeslieDebug in wrapper_makeFromBoxedFunction-----------------");
+  auto num_arguments = op.schema().arguments().size();
+  auto args = torch::jit::pop(*stack, num_arguments);
+
+  c10::impl::ExcludeDispatchKeyGuard no_autocastCPU(DispatchKey::AutocastCPU);
+
+  //c10::optional<Tensor> a = args[0].toTensor();
+  //c10::optional<Tensor> a = c10::nullopt;
+  //IValue ia(a);
+  //TORCH_WARN("..............................", ia);
+  //TORCH_WARN(".............................. ia.isTensor()", ia.isTensor());
+  //TORCH_WARN(".............................. ia.isNone()", ia.isNone());
+  //TORCH_WARN("-----------------------LeslieDebug in wrapper_makeFromBoxedFunction num_arguments: ", num_arguments, " -----------------");
+  
+  for (size_t i = 0; i < num_arguments; i++) {
+  	//TORCH_WARN("-----------------------LeslieDebug in wrapper_makeFromBoxedFunction arg: ", i, " -----------------");
+	//TORCH_WARN(args[i]);
+    if(args[i].isTensor()){
+	  TORCH_WARN("LeslieDebug in generic_wrapper_fallback isTensor");
+	  Tensor impl = args[i].toTensor();
+	  //torch::jit::push(*stack, std::move(cached_cpu_cast(at::kBFloat16, impl)));
+	  torch::jit::push(*stack, std::move(cached_cpu_cast(at::kFloat, impl)));
+	}else if(args[i].isTensorList()){
+	  TORCH_WARN("LeslieDebug in generic_wrapper_fallback isTensorList");
+	  c10::List<at::Tensor> impl = args[i].toTensorList();
+	  torch::jit::push(*stack, std::move(cached_cpu_cast(at::kFloat, impl)));
+	}else{
+	  TORCH_WARN("LeslieDebug in generic_wrapper_fallback the default path");
+      torch::jit::push(*stack, std::move(args[i]));
+    }
+  }
+  op.callBoxed(stack);
+  return;
+}
+
 TORCH_LIBRARY_IMPL(_, AutocastCPU, m){
-  m.fallback(torch::CppFunction::makeFallthrough());
+  m.fallback(torch::CppFunction::makeFromBoxedFunction<&generic_wrapper_fallback>());
+  //m.fallback(torch::CppFunction::makeFallthrough());
 }
 
 TORCH_LIBRARY_IMPL(aten, AutocastCPU, m){
-  //m.fallback(torch::CppFunction::makeFallthrough());
-  KERNEL(ADD_NS(relu), "relu", Tensor (const Tensor &), bf16)
-  KERNEL(ADD_NS(matmul), "matmul", Tensor (const Tensor &, const Tensor &), bf16)
+  //test
+  //KERNEL(ADD_NS(conv2d), "conv2d", Tensor (const Tensor &, const Tensor &, const c10::optional<Tensor>&, IntArrayRef, IntArrayRef, IntArrayRef, int64_t), fp32)
+  
+  //KERNEL(ADD_NS(relu), "relu", Tensor (const Tensor &), bf16)
+  //KERNEL(ADD_NS(matmul), "matmul", Tensor (const Tensor &, const Tensor &), bf16)
   KERNEL(ADD_NS(conv2d), "conv2d", Tensor (const Tensor &, const Tensor &, const c10::optional<Tensor>&, IntArrayRef, IntArrayRef, IntArrayRef, int64_t), bf16)
   //KERNEL(ADD_NS(relu_), "relu_", Tensor & (Tensor &), bf16)
-  //m.impl("mymatmul", autocastCPU);
-}
 
+  //test
+
+}
 
 TORCH_LIBRARY_IMPL(aten, Autocast, m) {
   // fp16

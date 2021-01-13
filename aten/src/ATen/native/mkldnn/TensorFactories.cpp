@@ -14,7 +14,16 @@ Tensor empty_mkldnn(IntArrayRef sizes, const TensorOptions& options, c10::option
   // NOTE: int32_t dims from ideep::tensor but sizes needs int64_t
   // TODO: support int64_t dims in ideep::tensor to avoid extra conversion
   ideep::tensor::dims dst_dims (sizes.begin(), sizes.end());
-  ideep::tensor it {dst_dims, ideep::tensor::data_type::f32};
+  //ideep::tensor it {dst_dims, ideep::tensor::data_type::f32};
+  ideep::tensor::data_type ideep_tensor_data_type;
+  if(options.dtype() == at::kFloat){
+    ideep_tensor_data_type = ideep::tensor::data_type::f32;
+  }else if(options.dtype() == at::kBFloat16){
+    ideep_tensor_data_type = ideep::tensor::data_type::bf16;
+  }else{
+    TORCH_CHECK(false, "empty_mkldnn expects float or bfloat16 tensor input");
+  }
+  ideep::tensor it {dst_dims, ideep_tensor_data_type};
   return new_with_itensor_mkldnn(std::move(it), options);
 }
 
