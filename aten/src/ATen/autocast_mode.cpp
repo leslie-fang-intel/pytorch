@@ -96,7 +96,7 @@ Tensor cached_cast(at::ScalarType to_type, const Tensor& arg) {
   }
 }
 
-Tensor cached_cpu_cast(at::ScalarType to_type, const Tensor& arg) {
+Tensor cached_cpu_cast(at::ScalarType to_type, LayoutCastPolicy layout_policy, const Tensor& arg) {
   //return arg;
   if(is_cpu_eligible(arg) && (arg.scalar_type() != to_type)){
     TORCH_WARN("**************Leslie Debug in cached_cpu_cast: ", to_type, " cast****************");
@@ -107,10 +107,23 @@ Tensor cached_cpu_cast(at::ScalarType to_type, const Tensor& arg) {
       to_type == at::kBFloat16,
       "cached_cpu_cast expects float or bfloat16 tensor input");
 
-    Tensor output =
+    TORCH_CHECK(layout_policy == LayoutCastPolicy::dense ||
+      layout_policy == LayoutCastPolicy::mkldnn,
+      "LayoutCastPolicy expects dense or mkldnn tensor input");
+
+	if(to_type == at::kBFloat16 && layout_policy == LayoutCastPolicy::mkldnn){
+      return arg.to(to_type).to_mkldnn();
+	}else if(to_type == at::kFloat && layout_policy == LayoutCastPolicy::dense){
+      return arg.to_dense().to(to_type);
+	}else{
+      TORCH_CHECK(false, "Unsupported target scalarType and LayoutType in cached_cpu_cast");
+	}
+
+    /*Tensor output =
       to_type == at::kFloat
+      //?arg.to(to_type).to_dense() // ERROR, mkldnn layout can't to FP32
       ?arg.to_dense().to(to_type)
-      :arg.to(to_type).to_mkldnn();
+      :arg.to(to_type).to_mkldnn();*/
 
     /*if(to_type == at::kFloat){
       output = arg.to_dense().to(to_type);
@@ -121,7 +134,7 @@ Tensor cached_cpu_cast(at::ScalarType to_type, const Tensor& arg) {
 	}*/
 	//arg.to(to_type);
     //return arg.to_mkldnn().to(to_type);
-    return output;
+    //return output;
   }else{
     TORCH_WARN("**************Leslie Debug in cached_cpu_cast: ", to_type, " bypass****************");
     return arg;
@@ -161,6 +174,8 @@ Interior WrapFunction_ specializations are defined for each CastPolicy.
 
 // Base template for WrapFunction_, which is specialized to contain a "call" method each CastPolicy
 template<CastPolicy policy, class Redispatch, Redispatch* F, class Ret, class ArgList> struct WrapFunction_ {};
+
+template<CastPolicy policy, LayoutCastPolicy LayoutPolicy, class Redispatch, Redispatch* F, class Ret, class ArgList> struct CPU_WrapFunction_ {};
 
 // CastPolicy::fp16
 template<class Redispatch, Redispatch* F, class Ret, class... Args>
@@ -222,12 +237,12 @@ struct WrapFunction_<CastPolicy::promote, Redispatch, F, Ret, guts::typelist::ty
 static int count = 0;
 // CastPolicy::bf16
 template<class Redispatch, Redispatch* F, class Ret, class... Args>
-struct WrapFunction_<CastPolicy::bf16, Redispatch, F, Ret, guts::typelist::typelist<Args...>> {
+struct CPU_WrapFunction_<CastPolicy::bf16, LayoutCastPolicy::mkldnn, Redispatch, F, Ret, guts::typelist::typelist<Args...>> {
   static Ret call(Args... args) {
     TORCH_WARN("-----------------------LeslieDebug in WrapFunction_ CastPolicy::bf16-----------------", count);
 	count += 1;
     c10::impl::ExcludeDispatchKeyGuard no_autocastCPU(DispatchKey::AutocastCPU);
-    return (*F)(cached_cpu_cast(at::kBFloat16, args)...);
+    return (*F)(cached_cpu_cast(at::kBFloat16, LayoutCastPolicy::mkldnn, args)...);
   }
 };
 
@@ -248,6 +263,26 @@ struct WrapFunction final {
                              F,
                              typename guts::function_traits<Registered>::return_type,
                              typename guts::function_traits<Registered>::parameter_types>;
+};
+
+template<CastPolicy policy,
+	     LayoutCastPolicy layout_policy,
+         class Registered, // The signature for which we're registering.  The dispatcher's calling code invokes our
+                           // registered functions with arguments matching Registered, so we register
+                           // WrapFunction_::call methods with a matching signature to properly field those arguments.
+                           // guts::function_traits below extracts return_type and parameter_types from Registered,
+                           // which WrapFunction_ templates above use to declare their call methods.
+         class Redispatch, // The signature for the function we're redispatching to.  In most cases this is the same
+                           // as Registered, but for some ops (for example, ops where we append a dtype) it's useful
+                           // to redispatch to a function with a different signature.
+         Redispatch* F>    // The actual function we're redispatching to.
+struct WrapFunction_CPU final {
+  using type = CPU_WrapFunction_<policy,
+  	                             layout_policy,
+                                 Redispatch,
+                                 F,
+                                 typename guts::function_traits<Registered>::return_type,
+                                 typename guts::function_traits<Registered>::parameter_types>;
 };
 
 /*******************************
@@ -298,6 +333,10 @@ Therefore, for the moment, this is all copy pasted in from VariableTypeEverythin
   m.impl(TORCH_SELECTIVE_NAME("aten::" REGISTER_NAME), \
     &WrapFunction<CastPolicy::POLICY, SIGNATURE, SIGNATURE, &FUNC>::type::call);
 
+#define KERNEL_CPU(FUNC, REGISTER_NAME, SIGNATURE, POLICY, LAYOUT_POLICY) \
+	m.impl(TORCH_SELECTIVE_NAME("aten::" REGISTER_NAME), \
+	  &WrapFunction_CPU<CastPolicy::POLICY, LayoutCastPolicy::LAYOUT_POLICY, SIGNATURE, SIGNATURE, &FUNC>::type::call);
+
 #define KERNEL_UNBOXED_ONLY(FUNC, REGISTER_NAME, SIGNATURE, POLICY) \
   m.impl_UNBOXED(TORCH_SELECTIVE_NAME("aten::" REGISTER_NAME), \
     &WrapFunction<CastPolicy::POLICY, SIGNATURE, SIGNATURE, &FUNC>::type::call);
@@ -315,6 +354,8 @@ TORCH_LIBRARY_IMPL(_, Autocast, m) {
 }
 
 void generic_wrapper_fallback(const c10::OperatorHandle& op, torch::jit::Stack* stack) {
+  //All Cast back to datatype::fp32 and Layout::dense
+  
   TORCH_WARN("-----------------------LeslieDebug in wrapper_makeFromBoxedFunction-----------------");
   auto num_arguments = op.schema().arguments().size();
   auto args = torch::jit::pop(*stack, num_arguments);
@@ -336,11 +377,11 @@ void generic_wrapper_fallback(const c10::OperatorHandle& op, torch::jit::Stack* 
 	  TORCH_WARN("LeslieDebug in generic_wrapper_fallback isTensor");
 	  Tensor impl = args[i].toTensor();
 	  //torch::jit::push(*stack, std::move(cached_cpu_cast(at::kBFloat16, impl)));
-	  torch::jit::push(*stack, std::move(cached_cpu_cast(at::kFloat, impl)));
+	  torch::jit::push(*stack, std::move(cached_cpu_cast(at::kFloat, LayoutCastPolicy::dense, impl)));
 	}else if(args[i].isTensorList()){
 	  TORCH_WARN("LeslieDebug in generic_wrapper_fallback isTensorList");
 	  c10::List<at::Tensor> impl = args[i].toTensorList();
-	  torch::jit::push(*stack, std::move(cached_cpu_cast(at::kFloat, impl)));
+	  torch::jit::push(*stack, std::move(cached_cpu_cast(at::kFloat, LayoutCastPolicy::dense, impl)));
 	}else{
 	  TORCH_WARN("LeslieDebug in generic_wrapper_fallback the default path");
       torch::jit::push(*stack, std::move(args[i]));
@@ -358,13 +399,13 @@ TORCH_LIBRARY_IMPL(_, AutocastCPU, m){
 TORCH_LIBRARY_IMPL(aten, AutocastCPU, m){
   //test
   //KERNEL(ADD_NS(conv2d), "conv2d", Tensor (const Tensor &, const Tensor &, const c10::optional<Tensor>&, IntArrayRef, IntArrayRef, IntArrayRef, int64_t), fp32)
-  
+
+  //RN50: conv2d, BN, relu 3 ops run into autocast/(BF16+MKLDNN),  comparing performance benefits, mkldnn overhead,
+
   //KERNEL(ADD_NS(relu), "relu", Tensor (const Tensor &), bf16)
   //KERNEL(ADD_NS(matmul), "matmul", Tensor (const Tensor &, const Tensor &), bf16)
-  KERNEL(ADD_NS(conv2d), "conv2d", Tensor (const Tensor &, const Tensor &, const c10::optional<Tensor>&, IntArrayRef, IntArrayRef, IntArrayRef, int64_t), bf16)
+  KERNEL_CPU(ADD_NS(conv2d), "conv2d", Tensor (const Tensor &, const Tensor &, const c10::optional<Tensor>&, IntArrayRef, IntArrayRef, IntArrayRef, int64_t), bf16, mkldnn)
   //KERNEL(ADD_NS(relu_), "relu_", Tensor & (Tensor &), bf16)
-
-  //test
 
 }
 

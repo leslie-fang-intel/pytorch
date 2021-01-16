@@ -5,9 +5,9 @@ namespace at { namespace native {
 #if AT_MKLDNN_ENABLED()
 
 Tensor empty_mkldnn(IntArrayRef sizes, const TensorOptions& options, c10::optional<c10::MemoryFormat> optional_memory_format) {
-  TORCH_CHECK(
-     !options.has_memory_format(),
-     "'memory_format' argument is incompatible with mkldnn tensor");
+  //TORCH_CHECK(
+  //   !options.has_memory_format(),
+  //   "'memory_format' argument is incompatible with mkldnn tensor");
   TORCH_CHECK(
      !optional_memory_format.has_value(),
      "'memory_format' argument is incompatible with mkldnn tensor");

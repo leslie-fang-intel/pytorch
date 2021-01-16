@@ -197,7 +197,12 @@ std::tuple<Tensor, Tensor, Tensor> mkldnn_convolution_backward(
     const Tensor& input, const Tensor& grad_output_t, const Tensor& weight,
     IntArrayRef padding, IntArrayRef stride, IntArrayRef dilation, int64_t groups, std::array<bool,3> output_mask)
 {
+  TORCH_WARN("-----------------------LeslieDebug in mkldnn_convolution_backward-----------------grad_output_t.scalar_type: ", grad_output_t.scalar_type());
+  TORCH_WARN("-----------------------LeslieDebug in mkldnn_convolution_backward-----------------grad_output_t.layout: ", grad_output_t.layout());
+
   Tensor grad_output = grad_output_t.contiguous();
+
+  //Tensor grad_output = grad_output_t;
 
   Tensor grad_input, grad_weight, grad_bias;
   if (output_mask[0]) {
@@ -210,6 +215,7 @@ std::tuple<Tensor, Tensor, Tensor> mkldnn_convolution_backward(
   }
 
   return std::make_tuple(grad_input, grad_weight, grad_bias);
+  //return std::make_tuple(dense_to_mkldnn(grad_input), dense_to_mkldnn(grad_weight), dense_to_mkldnn(grad_bias));
 }
 
 }}  // namespace at::native

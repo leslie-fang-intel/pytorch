@@ -12,6 +12,9 @@ Tensor mkldnn_to_dense(const Tensor& mkldnn_tensor) {
   ideep::tensor& stensor = itensor_from_mkldnn(mkldnn_tensor);
   auto dims = stensor.get_dims();
   // NOTE: int32_t dims from ideep::tensor but sizes needs int64_t
+
+  //auto data_type = dtype.has_value() ? dtype.value() : mkldnn_tensor.scalar_type();
+  
   Tensor cpu_tensor = at::empty(
     std::vector<int64_t>(dims.begin(), dims.end()),
     mkldnn_tensor.options().layout(c10::kStrided));
