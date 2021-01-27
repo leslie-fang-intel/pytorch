@@ -20,6 +20,8 @@ Tensor empty_mkldnn(IntArrayRef sizes, const TensorOptions& options, c10::option
     ideep_tensor_data_type = ideep::tensor::data_type::f32;
   }else if(options.dtype() == at::kBFloat16){
     ideep_tensor_data_type = ideep::tensor::data_type::bf16;
+  }else if(options.dtype() == ScalarType::Byte){
+    ideep_tensor_data_type = ideep::tensor::data_type::u8;
   }else{
     TORCH_CHECK(false, "empty_mkldnn expects float or bfloat16 tensor input");
   }

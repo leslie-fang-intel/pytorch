@@ -405,6 +405,9 @@ TORCH_LIBRARY_IMPL(aten, AutocastCPU, m){
   //KERNEL(ADD_NS(relu), "relu", Tensor (const Tensor &), bf16)
   //KERNEL(ADD_NS(matmul), "matmul", Tensor (const Tensor &, const Tensor &), bf16)
   KERNEL_CPU(ADD_NS(conv2d), "conv2d", Tensor (const Tensor &, const Tensor &, const c10::optional<Tensor>&, IntArrayRef, IntArrayRef, IntArrayRef, int64_t), bf16, mkldnn)
+  KERNEL_CPU(ADD_NS(batch_norm), "batch_norm", Tensor (const Tensor &, const c10::optional<Tensor>&, const c10::optional<Tensor>&, 
+             const c10::optional<Tensor>&, const c10::optional<Tensor>&, bool, double, double, bool), bf16, mkldnn)
+  KERNEL_CPU(ADD_NS(relu), "relu", Tensor (const Tensor &), bf16, mkldnn)
   //KERNEL(ADD_NS(relu_), "relu_", Tensor & (Tensor &), bf16)
 
 }
