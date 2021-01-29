@@ -23,6 +23,7 @@ Tensor empty_mkldnn(IntArrayRef sizes, const TensorOptions& options, c10::option
   }else if(options.dtype() == ScalarType::Byte){
     ideep_tensor_data_type = ideep::tensor::data_type::u8;
   }else{
+  	TORCH_WARN("LeslieDebug options.dtype() is: ", options.dtype());
     TORCH_CHECK(false, "empty_mkldnn expects float or bfloat16 tensor input");
   }
   ideep::tensor it {dst_dims, ideep_tensor_data_type};

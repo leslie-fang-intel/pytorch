@@ -62,10 +62,17 @@ std::tuple<Tensor, Tensor, Tensor> mkldnn_batch_norm(
   } else {
     TORCH_CHECK(input.dim() == 4 || input.dim() == 5,
                "mkldnn_batch_norm: currently mkldnn only support 2d and 3d batchnorm");
+	/*TORCH_WARN("LeslieDebug: x is: ", input.to_dense());
+	TORCH_WARN("LeslieDebug: w is: ", weight.to_dense());
+	TORCH_WARN("LeslieDebug: b is: ", bias.to_dense());
+	TORCH_WARN("LeslieDebug: m is: ", running_mean.to_dense());
+	TORCH_WARN("LeslieDebug: v is: ", running_var.to_dense());*/
     ideep::batch_normalization_forward_inference::compute(
         x, m, v, w, b, y, eps);
+	//TORCH_WARN("LeslieDebug: y is: ", new_with_itensor_mkldnn(std::move(y), input.options()).to_dense());
     return std::make_tuple(
         new_with_itensor_mkldnn(std::move(y), input.options()),
+        //new_with_itensor_mkldnn(ideep::tensor{}, input.options()),
         new_with_itensor_mkldnn(ideep::tensor{}, input.options()),
         new_with_itensor_mkldnn(ideep::tensor{}, input.options()));
   }

@@ -6,6 +6,28 @@ namespace autocast {
 enum class LayoutCastPolicy : uint8_t {
   dense = 0,
   mkldnn,
+  bypass, // Don't do cast in layout
+};
+
+// Policies correspond to op categories that need code-divergent handling.
+// Wrapper templates below are specialized based on a policy template parameter.
+enum class CastPolicy : uint8_t {
+  fp16 = 0, // Cast all inputs to at::kHalf before running the op.
+  fp32, // Cast all inputs to at::kFloat before running the op.
+  fp32_set_opt_dtype, // Treats functions (like softmax) that
+                      //   1. we'd like to run in fp32 and
+                      //   2. have a c10::optional<ScalarType> arg that controls the output type.
+                      // fp32_set_opt_dtype wrappers' policy is:  if the output type is already set,
+                      // don't touch it, otherwise, set it to at::kFloat.
+  fp32_append_dtype, // Treats functions (like norm) that
+                     //   1. we'd like to run in fp32 and
+                     //   2. have some overloads that accept an output type and other overloads that don't.
+                     // fp32_append_dtype wrappers wrap the overloads that don't have an output dtype.
+                     // The wrapper policy is:  append at::kFloat to the args, and redispatch to the
+                     // type-aware overload.
+  promote, // Run in the widest dtype among several args.
+  bf16, // Cast all inputs to at::bf16 before running the op.
+  bypass, // Don't do cast in dtype
 };
 
 TORCH_API bool is_enabled();
@@ -87,7 +109,7 @@ inline bool is_cpu_eligible(const Tensor& arg) {
 // Overload to catch Tensor args
 TORCH_API Tensor cached_cast(at::ScalarType to_type, const Tensor& arg);
 
-TORCH_API Tensor cached_cpu_cast(at::ScalarType to_type, LayoutCastPolicy layout_policy, const Tensor& arg);
+TORCH_API Tensor cached_cpu_cast(CastPolicy cast_policy, LayoutCastPolicy layout_policy, const Tensor& arg);
 
 
 // Overload to process optional<Tensor>
@@ -99,9 +121,9 @@ inline c10::optional<Tensor> cached_cast(at::ScalarType to_type, const c10::opti
   }
 }
 
-inline c10::optional<Tensor> cached_cpu_cast(at::ScalarType to_type, LayoutCastPolicy layout_policy, const c10::optional<Tensor>& arg) {
+inline c10::optional<Tensor> cached_cpu_cast(CastPolicy cast_policy, LayoutCastPolicy layout_policy, const c10::optional<Tensor>& arg) {
   if (arg.has_value()) {
-    return cached_cpu_cast(to_type, layout_policy, *arg);
+    return cached_cpu_cast(cast_policy, layout_policy, *arg);
   } else {
     return c10::nullopt;
   }
@@ -117,11 +139,11 @@ inline std::vector<Tensor> cached_cast(at::ScalarType to_type, const TensorList&
   return vec;
 }
 
-inline std::vector<Tensor> cached_cpu_cast(at::ScalarType to_type, LayoutCastPolicy layout_policy, const TensorList& arg) {
+inline std::vector<Tensor> cached_cpu_cast(CastPolicy cast_policy, LayoutCastPolicy layout_policy, const TensorList& arg) {
   std::vector<Tensor> vec;
   vec.reserve(arg.size());
   for (const auto& t : arg) {
-    vec.push_back(cached_cpu_cast(to_type, layout_policy, t));
+    vec.push_back(cached_cpu_cast(cast_policy, layout_policy, t));
   }
   return vec;
 }
@@ -133,7 +155,7 @@ inline T cached_cast(at::ScalarType to_type, T arg) {
 }
 
 template<typename T>
-inline T cached_cpu_cast(at::ScalarType to_type, LayoutCastPolicy layout_policy, T arg) {
+inline T cached_cpu_cast(CastPolicy cast_policy, LayoutCastPolicy layout_policy, T arg) {
   return arg;
 }
 

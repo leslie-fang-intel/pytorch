@@ -122,7 +122,7 @@ class autocast(object):
     def __enter__(self):
         if self._autocast_cpu:
             self.prev = torch.is_autocast_cpu_enabled()
-            print("LeslieDebug: torch.is_autocast_cpu_enabled() is ", self.prev)
+            #print("LeslieDebug: torch.is_autocast_cpu_enabled() is ", self.prev)
             torch.set_autocast_cpu_enabled(self._enabled)
         else:
             self.prev = torch.is_autocast_enabled()

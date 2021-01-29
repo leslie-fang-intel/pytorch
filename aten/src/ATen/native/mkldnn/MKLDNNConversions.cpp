@@ -37,10 +37,10 @@ Tensor dense_to_mkldnn(const Tensor& cpu_tensor) {
              "dense_to_mkldnn expects CPU tensor input");
   TORCH_CHECK(cpu_tensor.layout() == Layout::Strided,
              "dense_to_mkldnn expects strided tensor input");
-  //TORCH_CHECK(cpu_tensor.scalar_type() == ScalarType::Float,
-  //           "dense_to_mkldnn expects float tensor input");
+  TORCH_CHECK(cpu_tensor.scalar_type() == ScalarType::Float || cpu_tensor.scalar_type() == ScalarType::BFloat16,
+             "dense_to_mkldnn expects float or BFloat16 tensor input");
   TORCH_CHECK(cpu_tensor.dim() <= 5,
-             "Can't convert cpu tensor with the number of dimensions > 5");
+             "Can't convert cpu tensor with the number of dimensions > 5"); 
   // TODO: consider to convert non-contiguous tensor to `ideep::tensor` directly.
   auto cpu_tensor_cont = cpu_tensor.contiguous();
   Tensor mkldnn_tensor = empty_mkldnn(cpu_tensor_cont.sizes(), cpu_tensor_cont.options());
