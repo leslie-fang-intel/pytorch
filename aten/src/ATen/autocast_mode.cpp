@@ -135,11 +135,11 @@ Tensor cached_cpu_cast(CastPolicy cast_policy, LayoutCastPolicy layout_policy, c
       layout_policy == LayoutCastPolicy::mkldnn,
       "LayoutCastPolicy expects dense or mkldnn tensor input");
 
-	auto it = cached_casts_cpu.find(arg.unsafeGetTensorImpl());
+	/*auto it = cached_casts_cpu.find(arg.unsafeGetTensorImpl());
 	if (it != cached_casts_cpu.end()) {
 	  //TORCH_WARN("LeslieDebug: Hit caching");
 	  return std::get<1>(it->second);
-	}
+	}*/
 
     auto casted_arg = arg;
 	if(to_type == at::kBFloat16 && layout_policy == LayoutCastPolicy::mkldnn){
@@ -157,7 +157,7 @@ Tensor cached_cpu_cast(CastPolicy cast_policy, LayoutCastPolicy layout_policy, c
 	}else{
       TORCH_CHECK(false, "Unsupported target scalarType and LayoutType in cached_cpu_cast");
 	}
-	cached_casts_cpu.emplace(arg.unsafeGetTensorImpl(), val_type{weakref_type(arg.getIntrusivePtr()), casted_arg});
+	//cached_casts_cpu.emplace(arg.unsafeGetTensorImpl(), val_type{weakref_type(arg.getIntrusivePtr()), casted_arg});
 	return casted_arg;
   }else{
     //TORCH_WARN("**************Leslie Debug arg scalar type is: ", arg.scalar_type(), " in arg.is_mkldnn() is: ", arg.is_mkldnn(), " bypass****************");
@@ -264,6 +264,17 @@ struct CPU_WrapFunction_<CastPolicy::bypass, LayoutCastPolicy::mkldnn, Redispatc
     return (*F)(cached_cpu_cast(CastPolicy::bypass, LayoutCastPolicy::mkldnn, args)...);
   }
 };
+
+// CastPolicy::bypass LayoutCastPolicy::mkldnn
+template<class Redispatch, Redispatch* F, class Ret, class... Args>
+struct CPU_WrapFunction_<CastPolicy::bypass, LayoutCastPolicy::dense, Redispatch, F, Ret, guts::typelist::typelist<Args...>> {
+  static Ret call(Args... args) {
+    //TORCH_WARN("-----------------------LeslieDebug in WrapFunction_ CastPolicy::bypass+mkldnn-----------------");
+    c10::impl::ExcludeDispatchKeyGuard no_autocastCPU(DispatchKey::AutocastCPU);
+    return (*F)(cached_cpu_cast(CastPolicy::bypass, LayoutCastPolicy::dense, args)...);
+  }
+};
+
 
 template<class Redispatch, Redispatch* F, class Ret, class... Args>
 struct CPU_WrapFunction_<CastPolicy::bf16, LayoutCastPolicy::dense, Redispatch, F, Ret, guts::typelist::typelist<Args...>> {
@@ -441,6 +452,8 @@ TORCH_LIBRARY_IMPL(aten, AutocastCPU, m){
              const c10::optional<Tensor>&, const c10::optional<Tensor>&, bool, double, double, bool), bypass, mkldnn)
   //KERNEL_CPU(ADD_NS(relu), "relu", Tensor (const Tensor &), bf16, mkldnn)
   KERNEL_CPU(ADD_NS(addmm), "addmm", Tensor (const Tensor &, const Tensor &, const Tensor &, Scalar, Scalar), fp32, dense)
+  KERNEL_CPU(ADD_NS(linear), "linear", Tensor (const Tensor &, const Tensor &, const c10::optional<Tensor>&), bf16, mkldnn)
+  KERNEL_CPU(ADD_NS(_log_softmax), "_log_softmax", Tensor (const Tensor &, int64_t, bool), fp32, dense)
   //KERNEL_CPU(ADD_NS(linear), "linear", Tensor (const Tensor &, const Tensor &, const c10::optional<Tensor>&), fp32, dense)
   //KERNEL(ADD_NS(relu_), "relu_", Tensor & (Tensor &), bf16)
 }
