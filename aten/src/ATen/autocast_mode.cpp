@@ -12,12 +12,15 @@
 namespace at {
 namespace autocast {
 
+std::string cpu_dtype_LESLIE = "FLOAT32";
+std::string cpu_layout = "DENSE";
+
 bool is_enabled() {
   return c10::impl::tls_is_dispatch_key_included(DispatchKey::Autocast);
 }
 
 bool is_cpu_enabled() {
-  return false;
+  return c10::impl::tls_is_dispatch_key_included(DispatchKey::AutocastCPU);
 }
 
 void set_enabled(bool new_enabled) {
@@ -25,7 +28,23 @@ void set_enabled(bool new_enabled) {
 }
 
 void set_cpu_enabled(bool new_enabled) {
-  return;
+  c10::impl::tls_set_dispatch_key_included(DispatchKey::AutocastCPU, new_enabled);
+}
+
+std::string get_cpu_dtype(){
+  return cpu_dtype_LESLIE;
+}
+
+std::string get_cpu_layout(){
+  return cpu_layout; 
+}
+
+void set_cpu_dtype(std::string dtype){
+  cpu_dtype_LESLIE = dtype;
+}
+
+void set_cpu_layout(std::string layout){
+  cpu_layout = layout;
 }
 
 namespace {
@@ -223,8 +242,6 @@ The stuff below could be codegenned.  Ed said
 > you are going to have to write the function definition at some point, I wouldn't try to get clever about it
 Therefore, for the moment, this is all copy pasted in from VariableTypeEverything.cpp with appropriate substitutions.
 ********************************************************************************************************************/
-
-#define ADD_NS(RAW_OP) at::RAW_OP
 
 // Common cases where registration signature matches redispatch signature
 // (that's why SIGNATURE is repeated in the WrapFunction instantiation)

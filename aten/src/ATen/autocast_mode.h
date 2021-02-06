@@ -3,10 +3,16 @@
 namespace at {
 namespace autocast {
 
+#define ADD_NS(RAW_OP) at::RAW_OP
+
 TORCH_API bool is_enabled();
 TORCH_API bool is_cpu_enabled();
 TORCH_API void set_enabled(bool enabled);
 TORCH_API void set_cpu_enabled(bool enabled);
+TORCH_API std::string get_cpu_dtype();
+TORCH_API std::string get_cpu_layout();
+TORCH_API void set_cpu_dtype(std::string);
+TORCH_API void set_cpu_layout(std::string);
 TORCH_API void clear_cache();
 TORCH_API void clear_cpu_cache();
 TORCH_API int increment_nesting();
@@ -29,6 +35,7 @@ enum class CastPolicy : uint8_t {
                      // The wrapper policy is:  append at::kFloat to the args, and redispatch to the
                      // type-aware overload.
   promote, // Run in the widest dtype among several args.
+  bf16, // Cast all inputs to at::bfloat16 before running the op. 
 };
 
 /********************************************************************

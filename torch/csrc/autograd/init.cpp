@@ -227,14 +227,22 @@ static PyObject * set_autocast_cpu_enabled(PyObject* _unused, PyObject *arg) {
   END_HANDLE_TH_ERRORS
 }
 
-static PyObject * set_autocast_cpu_layout(PyObject* _unused, PyObject *arg) {
+static PyObject * set_autocast_cpu_dtype(PyObject* _unused, PyObject *arg) {
   HANDLE_TH_ERRORS
-  Py_RETURN_NONE;
+  if (!THPUtils_checkString(arg)) {
+    throw TypeError("dtype must be a str (got %s)", Py_TYPE(arg)->tp_name);
+  }
+  at::autocast::set_cpu_dtype(THPUtils_unpackString(arg));
+  Py_RETURN_NONE;;
   END_HANDLE_TH_ERRORS
 }
 
-static PyObject * set_autocast_cpu_dtype(PyObject* _unused, PyObject *arg) {
+static PyObject * set_autocast_cpu_layout(PyObject* _unused, PyObject *arg) {
   HANDLE_TH_ERRORS
+  if (!THPUtils_checkString(arg)) {
+    throw TypeError("layout must be a str (got %s)", Py_TYPE(arg)->tp_name);
+  }
+  at::autocast::set_cpu_layout(THPUtils_unpackString(arg));
   Py_RETURN_NONE;
   END_HANDLE_TH_ERRORS
 }
@@ -259,16 +267,15 @@ static PyObject * is_autocast_cpu_enabled(PyObject* _unused, PyObject *arg) {
   END_HANDLE_TH_ERRORS
 }
 
-static PyObject * get_autocast_cpu_layout(PyObject* _unused, PyObject *arg){
+static PyObject * get_autocast_cpu_dtype(PyObject* _unused, PyObject *arg){
 	HANDLE_TH_ERRORS
-	return THPUtils_packString("DENSE");
+	return THPUtils_packString(at::autocast::get_cpu_dtype());
 	END_HANDLE_TH_ERRORS
-
 }
 
-static PyObject *get_autocast_cpu_dtype(PyObject* _unused, PyObject *arg){
+static PyObject * get_autocast_cpu_layout(PyObject* _unused, PyObject *arg){
 	HANDLE_TH_ERRORS
-	return THPUtils_packString("FLOAT32");
+	return THPUtils_packString(at::autocast::get_cpu_layout());
 	END_HANDLE_TH_ERRORS
 }
 
@@ -398,10 +405,10 @@ static PyMethodDef methods[] = { // NOLINT
   {"is_anomaly_enabled", is_anomaly_mode_enabled, METH_NOARGS, nullptr},
   {"_enter_dual_level", python_enter_dual_level, METH_NOARGS, nullptr},
   {"_exit_dual_level", castPyCFunctionWithKeywords(python_exit_dual_level), METH_VARARGS | METH_KEYWORDS, nullptr},
-  {"get_autocast_cpu_layout", get_autocast_cpu_layout, METH_NOARGS, nullptr},
   {"get_autocast_cpu_dtype", get_autocast_cpu_dtype, METH_NOARGS, nullptr},
-  {"set_autocast_cpu_layout", set_autocast_cpu_layout, METH_O, nullptr},
+  {"get_autocast_cpu_layout", get_autocast_cpu_layout, METH_NOARGS, nullptr},
   {"set_autocast_cpu_dtype", set_autocast_cpu_dtype, METH_O, nullptr},
+  {"set_autocast_cpu_layout", set_autocast_cpu_layout, METH_O, nullptr},
   {nullptr, nullptr, 0, nullptr}
 };
 
