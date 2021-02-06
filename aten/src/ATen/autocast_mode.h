@@ -4,10 +4,32 @@ namespace at {
 namespace autocast {
 
 TORCH_API bool is_enabled();
+TORCH_API bool is_cpu_enabled();
 TORCH_API void set_enabled(bool enabled);
+TORCH_API void set_cpu_enabled(bool enabled);
 TORCH_API void clear_cache();
+TORCH_API void clear_cpu_cache();
 TORCH_API int increment_nesting();
 TORCH_API int decrement_nesting();
+
+// Policies correspond to op categories that need code-divergent handling.
+// Wrapper templates below are specialized based on a policy template parameter.
+enum class CastPolicy : uint8_t {
+  fp16 = 0, // Cast all inputs to at::kHalf before running the op.
+  fp32, // Cast all inputs to at::kFloat before running the op.
+  fp32_set_opt_dtype, // Treats functions (like softmax) that
+                      //   1. we'd like to run in fp32 and
+                      //   2. have a c10::optional<ScalarType> arg that controls the output type.
+                      // fp32_set_opt_dtype wrappers' policy is:  if the output type is already set,
+                      // don't touch it, otherwise, set it to at::kFloat.
+  fp32_append_dtype, // Treats functions (like norm) that
+                     //   1. we'd like to run in fp32 and
+                     //   2. have some overloads that accept an output type and other overloads that don't.
+                     // fp32_append_dtype wrappers wrap the overloads that don't have an output dtype.
+                     // The wrapper policy is:  append at::kFloat to the args, and redispatch to the
+                     // type-aware overload.
+  promote, // Run in the widest dtype among several args.
+};
 
 /********************************************************************
 Logic to extract the promote type from any Tensor or TensorList args.

@@ -112,23 +112,61 @@ class autocast(object):
     Args:
         enabled(bool, optional, default=True):  Whether autocasting should be enabled in the region.
     """
-    def __init__(self, enabled=True):
+    def __init__(self, enabled=True, dtype="float32", layout="dense"):
         if enabled and not torch.cuda.is_available():
-            warnings.warn("torch.cuda.amp.autocast only affects CUDA ops, but CUDA is not available.  Disabling.")
-            self._enabled = False
-        else:
-            self._enabled = enabled
+            supported_dtype = ["FLOAT32", "BFLOAT16"]
+            supported_layout = ["DENSE", "MKLDNN"]
+            dtype = dtype.upper()
+            layout = layout.upper()
+            self._autocast_cpu = True
+            print("Leslie Debug input dtype is:", dtype)
+            print("Leslie Debug input layout is:", layout)
+            if (dtype not in supported_dtype) or (layout not in supported_layout):
+                warnings.warn("In CPU autocast, but the target dtype or layout is not supported. Disable the autocast.")
+                enabled = False
+                self._dtype = "FLOAT32"
+                self._layout = "DENSE"
+            else:
+                warnings.warn("CUDA is not available, go into the autocast CPU path")
+                self._dtype = dtype
+                self._layout = layout
+        self._enabled = enabled
 
     def __enter__(self):
-        self.prev = torch.is_autocast_enabled()
-        torch.set_autocast_enabled(self._enabled)
+        if self._autocast_cpu:
+            self.prev = torch.is_autocast_cpu_enabled()
+            self.prev_dtype = torch.get_autocast_cpu_dtype()
+            self.prev_layout = torch.get_autocast_cpu_layout()
+
+            print("Leslie Debug input _enabled is:", self._enabled)
+            print("Leslie Debug input _dtype is:", self._dtype)
+            print("Leslie Debug input _layout is:", self._layout)
+            
+            torch.set_autocast_cpu_enabled(self._enabled)
+            torch.set_autocast_cpu_dtype(self._dtype)
+            torch.set_autocast_cpu_layout(self._layout)
+        else:
+            self.prev = torch.is_autocast_enabled()
+            torch.set_autocast_enabled(self._enabled)
         torch.autocast_increment_nesting()
 
     def __exit__(self, *args):
         # Drop the cache when we exit to a nesting level that's outside any instance of autocast.
-        if torch.autocast_decrement_nesting() == 0:
-            torch.clear_autocast_cache()
-        torch.set_autocast_enabled(self.prev)
+        if self._autocast_cpu:
+            if torch.autocast_decrement_nesting() == 0:
+                torch.clear_autocast_cpu_cache()
+
+            print("Leslie Debug input prev is:", self.prev)
+            print("Leslie Debug input prev_dtype is:", self.prev_dtype)
+            print("Leslie Debug input prev_layout is:", self.prev_layout)
+            
+            torch.set_autocast_cpu_enabled(self.prev)
+            torch.set_autocast_cpu_dtype(self.prev_dtype)
+            torch.set_autocast_cpu_layout(self.prev_layout)
+        else:
+            if torch.autocast_decrement_nesting() == 0:
+                torch.clear_autocast_cache()
+            torch.set_autocast_enabled(self.prev)
         return False
 
     def __call__(self, func):

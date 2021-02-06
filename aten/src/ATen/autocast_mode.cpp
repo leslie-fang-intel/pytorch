@@ -16,8 +16,16 @@ bool is_enabled() {
   return c10::impl::tls_is_dispatch_key_included(DispatchKey::Autocast);
 }
 
+bool is_cpu_enabled() {
+  return false;
+}
+
 void set_enabled(bool new_enabled) {
   c10::impl::tls_set_dispatch_key_included(DispatchKey::Autocast, new_enabled);
+}
+
+void set_cpu_enabled(bool new_enabled) {
+  return;
 }
 
 namespace {
@@ -50,6 +58,10 @@ thread_local int nesting = 0;
 
 void clear_cache() {
   cached_casts.clear();
+}
+
+void clear_cpu_cache() {
+  return;
 }
 
 int increment_nesting() {
@@ -85,25 +97,6 @@ Tensor cached_cast(at::ScalarType to_type, const Tensor& arg) {
     return arg;
   }
 }
-
-// Policies correspond to op categories that need code-divergent handling.
-// Wrapper templates below are specialized based on a policy template parameter.
-enum class CastPolicy : uint8_t {
-  fp16 = 0, // Cast all inputs to at::kHalf before running the op.
-  fp32, // Cast all inputs to at::kFloat before running the op.
-  fp32_set_opt_dtype, // Treats functions (like softmax) that
-                      //   1. we'd like to run in fp32 and
-                      //   2. have a c10::optional<ScalarType> arg that controls the output type.
-                      // fp32_set_opt_dtype wrappers' policy is:  if the output type is already set,
-                      // don't touch it, otherwise, set it to at::kFloat.
-  fp32_append_dtype, // Treats functions (like norm) that
-                     //   1. we'd like to run in fp32 and
-                     //   2. have some overloads that accept an output type and other overloads that don't.
-                     // fp32_append_dtype wrappers wrap the overloads that don't have an output dtype.
-                     // The wrapper policy is:  append at::kFloat to the args, and redispatch to the
-                     // type-aware overload.
-  promote, // Run in the widest dtype among several args.
-};
 
 /********************************************************************************************************
 Templates to provide wrapper functions
@@ -247,6 +240,10 @@ Therefore, for the moment, this is all copy pasted in from VariableTypeEverythin
 /*****************************************
 Explicit registration for out-of-place ops
 *****************************************/
+TORCH_LIBRARY_IMPL(_, AutocastCPU, m) {
+  m.fallback(torch::CppFunction::makeFallthrough());
+}
+
 TORCH_LIBRARY_IMPL(_, Autocast, m) {
   m.fallback(torch::CppFunction::makeFallthrough());
 }
