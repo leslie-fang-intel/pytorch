@@ -126,7 +126,7 @@ Tensor mkldnn_convolution_backward_input(
     IntArrayRef padding, IntArrayRef stride, IntArrayRef dilation, int64_t groups, bool bias_defined)
 {
   auto mkldnn_grad_output = itensor_from_tensor(grad_output);
-  auto mkldnn_weight = itensor_from_tensor(weight);
+  auto mkldnn_weight = itensor_view_from_dense(weight);
 
   ideep::tensor mkldnn_grad_input;
   ideep::convolution_backward_data::compute(
@@ -139,10 +139,17 @@ Tensor mkldnn_convolution_backward_input(
       padding.vec(),
       padding.vec(),
       groups);
+  if (grad_output.is_mkldnn()) {
+    return new_with_itensor_mkldnn(std::move(mkldnn_grad_input),
+                                   optTypeMetaToScalarType(grad_output.options().dtype_opt()),
+                                   grad_output.options().device_opt());
 
-  return mkldnn_to_dense(new_with_itensor_mkldnn(std::move(mkldnn_grad_input),
-                                                 optTypeMetaToScalarType(grad_output.options().dtype_opt()),
-                                                 grad_output.options().device_opt()));
+  } else {
+    return mkldnn_to_dense(new_with_itensor_mkldnn(std::move(mkldnn_grad_input),
+                                                   optTypeMetaToScalarType(grad_output.options().dtype_opt()),
+                                                   grad_output.options().device_opt()));
+  }
+
 }
 
 std::tuple<Tensor, Tensor> mkldnn_convolution_backward_weights(
@@ -191,7 +198,7 @@ std::tuple<Tensor, Tensor, Tensor> mkldnn_convolution_backward(
     const Tensor& input, const Tensor& grad_output_t, const Tensor& weight,
     IntArrayRef padding, IntArrayRef stride, IntArrayRef dilation, int64_t groups, std::array<bool,3> output_mask)
 {
-  Tensor grad_output = grad_output_t.contiguous();
+  Tensor grad_output = grad_output_t.is_mkldnn() ? grad_output_t : grad_output_t.contiguous();
 
   Tensor grad_input, grad_weight, grad_bias;
   if (output_mask[0]) {
