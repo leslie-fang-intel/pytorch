@@ -126,7 +126,7 @@ Tensor mkldnn_convolution_backward_input(
     IntArrayRef padding, IntArrayRef stride, IntArrayRef dilation, int64_t groups, bool bias_defined)
 {
   auto mkldnn_grad_output = itensor_from_tensor(grad_output);
-  auto mkldnn_weight = itensor_view_from_dense(weight);
+  auto mkldnn_weight = itensor_from_tensor(weight);
 
   ideep::tensor mkldnn_grad_input;
   ideep::convolution_backward_data::compute(
@@ -184,14 +184,24 @@ std::tuple<Tensor, Tensor> mkldnn_convolution_backward_weights(
         padding.vec(),
         groups);
   }
+  if(grad_output.is_mkldnn()){
+    return std::make_tuple(
+	  new_with_itensor_mkldnn(std::move(mkldnn_grad_weight),
+											  optTypeMetaToScalarType(grad_output.options().dtype_opt()),
+											  grad_output.options().device_opt()),
+	  new_with_itensor_mkldnn(std::move(mkldnn_grad_bias),
+											  optTypeMetaToScalarType(grad_output.options().dtype_opt()),
+											  grad_output.options().device_opt()));
 
-  return std::make_tuple(
-      mkldnn_to_dense(new_with_itensor_mkldnn(std::move(mkldnn_grad_weight),
-                                              optTypeMetaToScalarType(grad_output.options().dtype_opt()),
-                                              grad_output.options().device_opt())),
-      mkldnn_to_dense(new_with_itensor_mkldnn(std::move(mkldnn_grad_bias),
-                                              optTypeMetaToScalarType(grad_output.options().dtype_opt()),
-                                              grad_output.options().device_opt())));
+  }else{
+    return std::make_tuple(
+        mkldnn_to_dense(new_with_itensor_mkldnn(std::move(mkldnn_grad_weight),
+                                                optTypeMetaToScalarType(grad_output.options().dtype_opt()),
+                                                grad_output.options().device_opt())),
+        mkldnn_to_dense(new_with_itensor_mkldnn(std::move(mkldnn_grad_bias),
+                                                optTypeMetaToScalarType(grad_output.options().dtype_opt()),
+                                                grad_output.options().device_opt())));
+  }
 }
 
 std::tuple<Tensor, Tensor, Tensor> mkldnn_convolution_backward(
