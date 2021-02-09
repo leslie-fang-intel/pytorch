@@ -12,8 +12,30 @@
 namespace at {
 namespace autocast {
 
-std::string cpu_dtype_LESLIE = "FLOAT32";
-std::string cpu_layout = "DENSE";
+int cpu_dtype = 0;
+int cpu_layout = 0;
+
+std::map<std::string, int> dtype_priority = {
+  {"INT8", 2},
+  {"BFLOAT16", 1},
+  {"FLOAT32", 0},
+};
+
+std::map<std::string, int> layout_priority = {
+  {"MKLDNN", 1},
+  {"DENSE", 0},
+};
+
+std::map<int, std::string> inv_dtype_priority = {
+  {2, "INT8"},
+  {1, "BFLOAT16"},
+  {0, "FLOAT32"},
+};
+
+std::map<int, std::string> inv_layout_priority = {
+  {1, "MKLDNN"},
+  {0, "DENSE"},
+};
 
 bool is_enabled() {
   return c10::impl::tls_is_dispatch_key_included(DispatchKey::Autocast);
@@ -32,19 +54,27 @@ void set_cpu_enabled(bool new_enabled) {
 }
 
 std::string get_cpu_dtype(){
-  return cpu_dtype_LESLIE;
+  return inv_dtype_priority[cpu_dtype];
 }
 
 std::string get_cpu_layout(){
-  return cpu_layout; 
+  return inv_layout_priority[cpu_layout]; 
 }
 
 void set_cpu_dtype(std::string dtype){
-  cpu_dtype_LESLIE = dtype;
+  cpu_dtype = dtype_priority[dtype];
 }
 
 void set_cpu_layout(std::string layout){
-  cpu_layout = layout;
+  cpu_layout = layout_priority[layout];
+}
+
+int get_input_dtype_priority(){
+  return cpu_dtype;
+}
+
+int get_input_layout_priority(){
+  return cpu_layout; 
 }
 
 namespace {

@@ -18,6 +18,12 @@ TORCH_API void clear_cpu_cache();
 TORCH_API int increment_nesting();
 TORCH_API int decrement_nesting();
 
+TORCH_API extern int cpu_dtype;
+TORCH_API extern int cpu_layout;
+
+TORCH_API int get_input_dtype_priority();
+TORCH_API int get_input_layout_priority();
+
 // Policies correspond to op categories that need code-divergent handling.
 // Wrapper templates below are specialized based on a policy template parameter.
 enum class CastPolicy : uint8_t {
@@ -36,6 +42,7 @@ enum class CastPolicy : uint8_t {
                      // type-aware overload.
   promote, // Run in the widest dtype among several args.
   bf16, // Cast all inputs to at::bfloat16 before running the op. 
+  int8,
 };
 
 /********************************************************************
