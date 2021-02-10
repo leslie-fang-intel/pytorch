@@ -15,10 +15,10 @@ namespace autocast {
 int cpu_dtype = 0;
 int cpu_layout = 0;
 
-std::map<std::string, int> dtype_priority = {
-  {"INT8", 2},
-  {"BFLOAT16", 1},
-  {"FLOAT32", 0},
+std::map<at::ScalarType, int> dtype_priority = {
+  {at::kChar, 2},
+  {at::kBFloat16, 1},
+  {at::kFloat, 0},
 };
 
 std::map<std::string, int> layout_priority = {
@@ -26,10 +26,10 @@ std::map<std::string, int> layout_priority = {
   {"DENSE", 0},
 };
 
-std::map<int, std::string> inv_dtype_priority = {
-  {2, "INT8"},
-  {1, "BFLOAT16"},
-  {0, "FLOAT32"},
+std::map<int, at::ScalarType> inv_dtype_priority = {
+  {2, at::kChar},
+  {1, at::kBFloat16},
+  {0, at::kFloat},
 };
 
 std::map<int, std::string> inv_layout_priority = {
@@ -53,7 +53,7 @@ void set_cpu_enabled(bool new_enabled) {
   c10::impl::tls_set_dispatch_key_included(DispatchKey::AutocastCPU, new_enabled);
 }
 
-std::string get_cpu_dtype(){
+at::ScalarType get_cpu_dtype(){
   return inv_dtype_priority[cpu_dtype];
 }
 
@@ -61,7 +61,7 @@ std::string get_cpu_layout(){
   return inv_layout_priority[cpu_layout]; 
 }
 
-void set_cpu_dtype(std::string dtype){
+void set_cpu_dtype(at::ScalarType dtype){
   cpu_dtype = dtype_priority[dtype];
 }
 

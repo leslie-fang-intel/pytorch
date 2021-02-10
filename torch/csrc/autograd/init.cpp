@@ -229,10 +229,12 @@ static PyObject * set_autocast_cpu_enabled(PyObject* _unused, PyObject *arg) {
 
 static PyObject * set_autocast_cpu_dtype(PyObject* _unused, PyObject *arg) {
   HANDLE_TH_ERRORS
-  if (!THPUtils_checkString(arg)) {
-    throw TypeError("dtype must be a str (got %s)", Py_TYPE(arg)->tp_name);
+  if (!THPDtype_Check(arg)) {
+    throw TypeError("dtype must be a torch.dtype (got %s)", Py_TYPE(arg)->tp_name);
   }
-  at::autocast::set_cpu_dtype(THPUtils_unpackString(arg));
+  at::ScalarType targetType = reinterpret_cast<THPDtype*>(arg)->scalar_type;
+
+  at::autocast::set_cpu_dtype(targetType);
   Py_RETURN_NONE;;
   END_HANDLE_TH_ERRORS
 }
@@ -269,7 +271,8 @@ static PyObject * is_autocast_cpu_enabled(PyObject* _unused, PyObject *arg) {
 
 static PyObject * get_autocast_cpu_dtype(PyObject* _unused, PyObject *arg){
 	HANDLE_TH_ERRORS
-	return THPUtils_packString(at::autocast::get_cpu_dtype());
+	//return THPUtils_packString(at::autocast::get_cpu_dtype());
+	return THPDtype_New(at::autocast::get_cpu_dtype(), "torch.dtype");
 	END_HANDLE_TH_ERRORS
 }
 
