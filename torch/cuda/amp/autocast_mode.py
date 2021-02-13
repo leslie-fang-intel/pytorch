@@ -112,22 +112,22 @@ class autocast(object):
     Args:
         enabled(bool, optional, default=True):  Whether autocasting should be enabled in the region.
     """
-    def __init__(self, enabled=True, dtype=torch.float32, layout="dense"):
+    def __init__(self, enabled=True, dtype=torch.float32, layout=torch.device('cpu')):
         if enabled and not torch.cuda.is_available():
             supported_dtype = [torch.float32, torch.bfloat16]
-            supported_layout = ["DENSE", "MKLDNN"]
+            supported_layout = [torch.device('cpu'), torch.device('mkldnn')]
             #dtype = dtype.upper()
-            layout = layout.upper()
+            #layout = layout.upper()
             self._autocast_cpu = True
             #print("Leslie Debug input dtype is:", dtype)
             #print("Leslie Debug input layout is:", layout)
             if (dtype not in supported_dtype) or (layout not in supported_layout):
                 warnings.warn("In CPU autocast, but the target dtype or layout is not supported. Disable the autocast.")
                 warnings.warn("Supported dtype input is: torch.float32, torch.bfloat16.")
-                warnings.warn("Supported layout input is: DENSE, MKLDNN.")
+                warnings.warn("Supported device input is: torch.device('cpu'), torch.device('mkldnn').")
                 enabled = False
                 self._dtype = torch.float32
-                self._layout = "DENSE"
+                self._layout = torch.device('cpu')
             else:
                 warnings.warn("CUDA is not available, go into the autocast CPU path")
                 self._dtype = dtype

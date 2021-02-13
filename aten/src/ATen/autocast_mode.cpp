@@ -22,8 +22,8 @@ std::map<at::ScalarType, int> dtype_priority = {
 };
 
 std::map<std::string, int> layout_priority = {
-  {"MKLDNN", 1},
-  {"DENSE", 0},
+  {"mkldnn", 1},
+  {"cpu", 0},
 };
 
 std::map<int, at::ScalarType> inv_dtype_priority = {
@@ -33,8 +33,8 @@ std::map<int, at::ScalarType> inv_dtype_priority = {
 };
 
 std::map<int, std::string> inv_layout_priority = {
-  {1, "MKLDNN"},
-  {0, "DENSE"},
+  {1, "mkldnn"},
+  {0, "cpu"},
 };
 
 bool is_enabled() {

@@ -241,10 +241,14 @@ static PyObject * set_autocast_cpu_dtype(PyObject* _unused, PyObject *arg) {
 
 static PyObject * set_autocast_cpu_layout(PyObject* _unused, PyObject *arg) {
   HANDLE_TH_ERRORS
-  if (!THPUtils_checkString(arg)) {
-    throw TypeError("layout must be a str (got %s)", Py_TYPE(arg)->tp_name);
+  if (!THPDevice_Check(arg)) {
+    throw TypeError("layout must be a torch.device (got %s)", Py_TYPE(arg)->tp_name);
   }
-  at::autocast::set_cpu_layout(THPUtils_unpackString(arg));
+
+  at::Device targetType = reinterpret_cast<THPDevice*>(arg)->device;
+
+  //std::cout<<"LeslieDebug: ------------: "<<DeviceTypeName(targetType.type(), /* lower case */ false)<<std::endl;
+  at::autocast::set_cpu_layout(DeviceTypeName(targetType.type(), /* lower case */ true));
   Py_RETURN_NONE;
   END_HANDLE_TH_ERRORS
 }
@@ -270,16 +274,18 @@ static PyObject * is_autocast_cpu_enabled(PyObject* _unused, PyObject *arg) {
 }
 
 static PyObject * get_autocast_cpu_dtype(PyObject* _unused, PyObject *arg){
-	HANDLE_TH_ERRORS
-	//return THPUtils_packString(at::autocast::get_cpu_dtype());
-	return THPDtype_New(at::autocast::get_cpu_dtype(), "torch.dtype");
-	END_HANDLE_TH_ERRORS
+  HANDLE_TH_ERRORS
+  //return THPUtils_packString(at::autocast::get_cpu_dtype());
+  return THPDtype_New(at::autocast::get_cpu_dtype(), "torch.dtype");
+  END_HANDLE_TH_ERRORS
 }
 
 static PyObject * get_autocast_cpu_layout(PyObject* _unused, PyObject *arg){
-	HANDLE_TH_ERRORS
-	return THPUtils_packString(at::autocast::get_cpu_layout());
-	END_HANDLE_TH_ERRORS
+  HANDLE_TH_ERRORS
+  //return THPUtils_packString(at::autocast::get_cpu_layout());
+  at::Device current_device = at::Device(at::autocast::get_cpu_layout());
+  return THPDevice_New(current_device);
+  END_HANDLE_TH_ERRORS
 }
 
 static PyObject * clear_autocast_cache(PyObject* _unused, PyObject *arg) {
