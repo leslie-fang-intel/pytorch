@@ -13,7 +13,7 @@ namespace at {
 namespace autocast {
 
 int cpu_dtype = 0;
-int cpu_layout = 0;
+int cpu_device = 0;
 
 std::map<at::ScalarType, int> dtype_priority = {
   {at::kChar, 2},
@@ -21,7 +21,7 @@ std::map<at::ScalarType, int> dtype_priority = {
   {at::kFloat, 0},
 };
 
-std::map<std::string, int> layout_priority = {
+std::map<std::string, int> device_priority = {
   {"mkldnn", 1},
   {"cpu", 0},
 };
@@ -32,7 +32,7 @@ std::map<int, at::ScalarType> inv_dtype_priority = {
   {0, at::kFloat},
 };
 
-std::map<int, std::string> inv_layout_priority = {
+std::map<int, std::string> inv_device_priority = {
   {1, "mkldnn"},
   {0, "cpu"},
 };
@@ -57,24 +57,24 @@ at::ScalarType get_cpu_dtype(){
   return inv_dtype_priority[cpu_dtype];
 }
 
-std::string get_cpu_layout(){
-  return inv_layout_priority[cpu_layout]; 
+std::string get_cpu_device(){
+  return inv_device_priority[cpu_device];
 }
 
 void set_cpu_dtype(at::ScalarType dtype){
   cpu_dtype = dtype_priority[dtype];
 }
 
-void set_cpu_layout(std::string layout){
-  cpu_layout = layout_priority[layout];
+void set_cpu_device(std::string layout){
+  cpu_device = device_priority[layout];
 }
 
 int get_input_dtype_priority(){
   return cpu_dtype;
 }
 
-int get_input_layout_priority(){
-  return cpu_layout; 
+int get_input_device_priority(){
+  return cpu_device;
 }
 
 namespace {

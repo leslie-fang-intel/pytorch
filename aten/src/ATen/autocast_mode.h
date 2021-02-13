@@ -10,19 +10,19 @@ TORCH_API bool is_cpu_enabled();
 TORCH_API void set_enabled(bool enabled);
 TORCH_API void set_cpu_enabled(bool enabled);
 TORCH_API at::ScalarType get_cpu_dtype();
-TORCH_API std::string get_cpu_layout();
+TORCH_API std::string get_cpu_device();
 TORCH_API void set_cpu_dtype(at::ScalarType);
-TORCH_API void set_cpu_layout(std::string);
+TORCH_API void set_cpu_device(std::string);
 TORCH_API void clear_cache();
 TORCH_API void clear_cpu_cache();
 TORCH_API int increment_nesting();
 TORCH_API int decrement_nesting();
 
 TORCH_API extern int cpu_dtype;
-TORCH_API extern int cpu_layout;
+TORCH_API extern int cpu_device;
 
 TORCH_API int get_input_dtype_priority();
-TORCH_API int get_input_layout_priority();
+TORCH_API int get_input_device_priority();
 
 // Policies correspond to op categories that need code-divergent handling.
 // Wrapper templates below are specialized based on a policy template parameter.
