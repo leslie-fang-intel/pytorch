@@ -21,8 +21,14 @@ TORCH_API int decrement_nesting();
 TORCH_API extern int cpu_dtype;
 TORCH_API extern int cpu_device;
 
-TORCH_API int get_input_dtype_priority();
-TORCH_API int get_input_device_priority();
+
+using weakref_type = c10::weak_intrusive_ptr<TensorImpl, UndefinedTensorImpl>;
+using val_type = std::tuple<weakref_type, Tensor>;
+
+TORCH_API extern thread_local std::unordered_map<TensorImpl*, val_type> cached_casts_cpu;
+
+//TORCH_API int get_input_dtype_priority();
+//TORCH_API int get_input_device_priority();
 
 // Policies correspond to op categories that need code-divergent handling.
 // Wrapper templates below are specialized based on a policy template parameter.

@@ -152,7 +152,7 @@ class autocast(object):
         # Drop the cache when we exit to a nesting level that's outside any instance of autocast.
         if self._autocast_cpu:
             if torch.autocast_decrement_nesting() == 0:
-                torch.clear_autocast_cpu_cache()            
+                torch.clear_autocast_cpu_cache()
             torch.set_autocast_cpu_enabled(self.prev)
             torch.set_autocast_cpu_dtype(self.prev_dtype)
             torch.set_autocast_cpu_device(self.prev_device)

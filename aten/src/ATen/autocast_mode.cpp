@@ -69,15 +69,15 @@ void set_cpu_device(std::string layout){
   cpu_device = device_priority[layout];
 }
 
-int get_input_dtype_priority(){
+/*int get_input_dtype_priority(){
   return cpu_dtype;
 }
 
 int get_input_device_priority(){
   return cpu_device;
-}
+}*/
 
-namespace {
+//namespace {
 // Imitate Apex and cache some of the casts to streamline parameter reuse.
 // Our heuristic is to cache fp16 casts of fp32 model weights (see cached_cast below).
 //
@@ -94,23 +94,23 @@ namespace {
 //
 // I'm not using the weak_intrusive_ptr as the key because it's more difficult to compare
 // directly against incoming TensorImpl*s.
-using weakref_type = c10::weak_intrusive_ptr<TensorImpl, UndefinedTensorImpl>;
-using val_type = std::tuple<weakref_type, Tensor>;
 thread_local std::unordered_map<TensorImpl*, val_type> cached_casts;
+thread_local std::unordered_map<TensorImpl*, val_type> cached_casts_cpu;
 
 // nesting tracks the nesting depth of the Python-side context manager.
 // When the autocast context manager exits to a nesting level that's outside
 // any instance of autocast (which should occur at the end of each forward pass)
 // it calls clear_cache() to ensure cached Tensors don't leak outside the autocasting region.
 thread_local int nesting = 0;
-}
+//}
 
 void clear_cache() {
   cached_casts.clear();
 }
 
 void clear_cpu_cache() {
-  return;
+  cached_casts_cpu.clear();
+  //return;
 }
 
 int increment_nesting() {
