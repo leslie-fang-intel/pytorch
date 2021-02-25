@@ -49,6 +49,7 @@ enum class CastPolicy : uint8_t {
   promote, // Run in the widest dtype among several args.
   bf16, // Cast all inputs to at::bfloat16 before running the op. 
   int8,
+  cpu_cuda,
 };
 
 /********************************************************************
