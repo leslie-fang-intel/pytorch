@@ -50,6 +50,7 @@ enum class CastPolicy : uint8_t {
   bf16, // Cast all inputs to at::bfloat16 before running the op. 
   int8,
   cpu_cuda,
+  runtime,
 };
 
 /********************************************************************
@@ -113,6 +114,10 @@ inline at::ScalarType promote_type(at::ScalarType current, Arg0 arg0, Args... ar
 Logic to apply cached casting to any Tensor argument.
 ****************************************************/
 inline bool is_eligible(const Tensor& arg) {
+  return (arg.defined() && arg.is_cuda() && arg.is_floating_point() && (arg.scalar_type() != at::kDouble));
+}
+
+inline bool is_eligible_cpu(const Tensor& arg) {
   return (arg.defined() && arg.is_cuda() && arg.is_floating_point() && (arg.scalar_type() != at::kDouble));
 }
 

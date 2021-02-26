@@ -628,6 +628,7 @@ import torch.utils.data
 import torch.__config__
 import torch.__future__
 import torch.profiler
+import torch.amp
 
 _C._init_names(list(torch._storage_classes))
 
