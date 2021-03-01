@@ -239,16 +239,16 @@ static PyObject * set_autocast_cpu_dtype(PyObject* _unused, PyObject *arg) {
   END_HANDLE_TH_ERRORS
 }
 
-static PyObject * set_autocast_cpu_device(PyObject* _unused, PyObject *arg) {
+static PyObject * set_autocast_cpu_layout(PyObject* _unused, PyObject *arg) {
   HANDLE_TH_ERRORS
-  if (!THPDevice_Check(arg)) {
-    throw TypeError("device must be a torch.device (got %s)", Py_TYPE(arg)->tp_name);
+  if (!THPLayout_Check(arg)) {
+    throw TypeError("Layout must be a torch.layout (got %s)", Py_TYPE(arg)->tp_name);
   }
 
-  at::Device targetDevice = reinterpret_cast<THPDevice*>(arg)->device;
+  at::Layout targetLayout = reinterpret_cast<THPLayout*>(arg)->layout;
 
   //std::cout<<"LeslieDebug: ------------: "<<DeviceTypeName(targetType.type(), /* lower case */ false)<<std::endl;
-  at::autocast::set_cpu_device(DeviceTypeName(targetDevice.type(), /* lower case */ true));
+  at::autocast::set_cpu_layout(targetLayout);
   Py_RETURN_NONE;
   END_HANDLE_TH_ERRORS
 }
@@ -280,11 +280,11 @@ static PyObject * get_autocast_cpu_dtype(PyObject* _unused, PyObject *arg){
   END_HANDLE_TH_ERRORS
 }
 
-static PyObject * get_autocast_cpu_device(PyObject* _unused, PyObject *arg){
+static PyObject * get_autocast_cpu_layout(PyObject* _unused, PyObject *arg){
   HANDLE_TH_ERRORS
   //return THPUtils_packString(at::autocast::get_cpu_layout());
-  at::Device current_device = at::Device(at::autocast::get_cpu_device());
-  return THPDevice_New(current_device);
+  at::Layout current_layout = at::autocast::get_cpu_layout();
+  return THPLayout_New(current_layout, "torch.layout");
   END_HANDLE_TH_ERRORS
 }
 
@@ -415,9 +415,9 @@ static PyMethodDef methods[] = { // NOLINT
   {"_enter_dual_level", python_enter_dual_level, METH_NOARGS, nullptr},
   {"_exit_dual_level", castPyCFunctionWithKeywords(python_exit_dual_level), METH_VARARGS | METH_KEYWORDS, nullptr},
   {"get_autocast_cpu_dtype", get_autocast_cpu_dtype, METH_NOARGS, nullptr},
-  {"get_autocast_cpu_device", get_autocast_cpu_device, METH_NOARGS, nullptr},
+  {"get_autocast_cpu_layout", get_autocast_cpu_layout, METH_NOARGS, nullptr},
   {"set_autocast_cpu_dtype", set_autocast_cpu_dtype, METH_O, nullptr},
-  {"set_autocast_cpu_device", set_autocast_cpu_device, METH_O, nullptr},
+  {"set_autocast_cpu_layout", set_autocast_cpu_layout, METH_O, nullptr},
   {nullptr, nullptr, 0, nullptr}
 };
 
