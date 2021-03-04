@@ -16,26 +16,30 @@ int cpu_dtype = 0;
 int cpu_layout = 0;
 
 std::map<at::ScalarType, int> dtype_priority = {
-  {at::kChar, 2},
-  {at::kBFloat16, 1},
-  {at::kFloat, 0},
+  {at::kChar, INT8_DTYPE_PRIORITY},
+  {at::kBFloat16, BF16_DTYPE_PRIORITY},
+  {at::kFloat, FP32_DTYPE_PRIORITY},
 };
 
 std::map<at::Layout, int> layout_priority = {
-  {at::kMkldnn, 1},
-  {at::kStrided, 0},
+  {at::kMkldnn, MKLDNN_LAYOUT_PRIORITY},
+  {at::kStrided, STRIDED_LAYOUT_PRIORITY},
 };
 
-std::map<int, at::ScalarType> inv_dtype_priority = {
-  {2, at::kChar},
-  {1, at::kBFloat16},
-  {0, at::kFloat},
-};
+std::map<int, at::ScalarType> inv_dtype_priority = flip_map(dtype_priority);
 
-std::map<int, at::Layout> inv_layout_priority = {
-  {1, at::kMkldnn},
-  {0, at::kStrided},
-};
+/*{
+  {INT8_DTYPE_PRIORITY, at::kChar},
+  {BF16_DTYPE_PRIORITY, at::kBFloat16},
+  {FP32_DTYPE_PRIORITY, at::kFloat},
+};*/
+
+std::map<int, at::Layout> inv_layout_priority = flip_map(layout_priority);
+
+/*{
+  {MKLDNN_LAYOUT_PRIORITY, at::kMkldnn},
+  {STRIDED_LAYOUT_PRIORITY, at::kStrided},
+};*/
 
 bool is_enabled() {
   return c10::impl::tls_is_dispatch_key_included(DispatchKey::Autocast);

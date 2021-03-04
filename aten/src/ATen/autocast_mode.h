@@ -3,6 +3,14 @@
 namespace at {
 namespace autocast {
 
+#define INT8_DTYPE_PRIORITY 2 //INT8
+#define BF16_DTYPE_PRIORITY 1 //BF16
+#define FP32_DTYPE_PRIORITY 0 //FP32
+
+#define MKLDNN_LAYOUT_PRIORITY 1 //MKLDNN
+#define STRIDED_LAYOUT_PRIORITY 0 //STRIDED
+
+
 #define ADD_NS(RAW_OP) at::RAW_OP
 
 TORCH_API bool is_enabled();
@@ -173,6 +181,15 @@ template<typename... Args>
 inline at::ScalarType type_from_firstarg(at::ScalarType to_type, const Tensor& arg, Args... args) {
   return (is_eligible(arg) ? to_type : arg.scalar_type());
 }
+
+template<typename T>
+std::map<int, T> flip_map(std::map<T, int> input) {
+  std::map<int, T> reversed;
+  for (typename std::map<T, int>::iterator i = input.begin(); i != input.end(); ++i)
+    reversed[i->second] = i->first;
+  return reversed;
+}
+
 
 } // namespace autocast
 } // namespace at
