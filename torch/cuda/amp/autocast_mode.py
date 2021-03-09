@@ -113,6 +113,7 @@ class autocast(object):
         enabled(bool, optional, default=True):  Whether autocasting should be enabled in the region.
     """
     def __init__(self, enabled=True, dtype=torch.float32, layout=torch.strided):
+        self._autocast_cpu = False
         if enabled and not torch.cuda.is_available():
             supported_dtype = [torch.float32, torch.bfloat16]
             supported_layout = [torch.strided, torch._mkldnn]
@@ -142,7 +143,6 @@ class autocast(object):
             torch.set_autocast_cpu_enabled(self._enabled)
             torch.set_autocast_cpu_dtype(self._dtype)
             torch.set_autocast_cpu_layout(self._layout)
-            
         else:
             self.prev = torch.is_autocast_enabled()
             torch.set_autocast_enabled(self._enabled)
