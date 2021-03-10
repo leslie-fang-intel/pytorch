@@ -55,8 +55,7 @@ enum class CastPolicy : uint8_t {
                      // The wrapper policy is:  append at::kFloat to the args, and redispatch to the
                      // type-aware overload.
   promote, // Run in the widest dtype among several args.
-  bf16, // Cast all inputs to at::bfloat16 before running the op. 
-  int8,
+  runtime, // Whitelist, runtime to decide which dtype (int8, bf16, fp32) to use
 };
 
 /********************************************************************
