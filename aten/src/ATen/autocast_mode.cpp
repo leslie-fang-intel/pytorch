@@ -16,66 +16,38 @@ int cpu_dtype = 0;
 int cpu_device = 0;
 
 std::map<at::ScalarType, int> dtype_priority = {
+  {at::kHalf, 3},
   {at::kChar, 2},
   {at::kBFloat16, 1},
   {at::kFloat, 0},
 };
 
-std::map<std::string, int> device_priority = {
-  {"mkldnn", 1},
-  {"cpu", 0},
-};
-
 std::map<int, at::ScalarType> inv_dtype_priority = {
+  {3, at::kHalf},
   {2, at::kChar},
   {1, at::kBFloat16},
   {0, at::kFloat},
-};
-
-std::map<int, std::string> inv_device_priority = {
-  {1, "mkldnn"},
-  {0, "cpu"},
 };
 
 bool is_enabled() {
   return c10::impl::tls_is_dispatch_key_included(DispatchKey::Autocast);
 }
 
-bool is_cpu_enabled() {
-  return c10::impl::tls_is_dispatch_key_included(DispatchKey::AutocastCPU);
-}
-
 void set_enabled(bool new_enabled) {
   c10::impl::tls_set_dispatch_key_included(DispatchKey::Autocast, new_enabled);
 }
 
-void set_cpu_enabled(bool new_enabled) {
-  c10::impl::tls_set_dispatch_key_included(DispatchKey::AutocastCPU, new_enabled);
-}
-
-at::ScalarType get_cpu_dtype(){
+at::ScalarType get_dtype(){
   return inv_dtype_priority[cpu_dtype];
 }
 
-std::string get_cpu_device(){
-  return inv_device_priority[cpu_device];
+void set_dtype(at::ScalarType dtype){
+  /*if(dtype == at::kHalf){
+  
+  }else{
+    cpu_dtype = dtype_priority[dtype];
+  }*/
 }
-
-void set_cpu_dtype(at::ScalarType dtype){
-  cpu_dtype = dtype_priority[dtype];
-}
-
-void set_cpu_device(std::string layout){
-  cpu_device = device_priority[layout];
-}
-
-/*int get_input_dtype_priority(){
-  return cpu_dtype;
-}
-
-int get_input_device_priority(){
-  return cpu_device;
-}*/
 
 //namespace {
 // Imitate Apex and cache some of the casts to streamline parameter reuse.
@@ -95,7 +67,6 @@ int get_input_device_priority(){
 // I'm not using the weak_intrusive_ptr as the key because it's more difficult to compare
 // directly against incoming TensorImpl*s.
 thread_local std::unordered_map<TensorImpl*, val_type> cached_casts;
-thread_local std::unordered_map<TensorImpl*, val_type> cached_casts_cpu;
 
 // nesting tracks the nesting depth of the Python-side context manager.
 // When the autocast context manager exits to a nesting level that's outside
@@ -106,11 +77,6 @@ thread_local int nesting = 0;
 
 void clear_cache() {
   cached_casts.clear();
-}
-
-void clear_cpu_cache() {
-  cached_casts_cpu.clear();
-  //return;
 }
 
 int increment_nesting() {
@@ -165,6 +131,7 @@ template<CastPolicy policy, class Redispatch, Redispatch* F, class Ret, class Ar
 template<class Redispatch, Redispatch* F, class Ret, class... Args>
 struct WrapFunction_<CastPolicy::fp16, Redispatch, F, Ret, guts::typelist::typelist<Args...>> {
   static Ret call(Args... args) {
+    TORCH_WARN("-------------LeslieDebug: hit fp16 wrap function-------------");
     c10::impl::ExcludeDispatchKeyGuard no_autocast(DispatchKey::Autocast);
     return (*F)(cached_cast(at::kHalf, args)...);
   }

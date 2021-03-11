@@ -217,39 +217,15 @@ static PyObject * set_autocast_enabled(PyObject* _unused, PyObject *arg) {
   END_HANDLE_TH_ERRORS
 }
 
-static PyObject * set_autocast_cpu_enabled(PyObject* _unused, PyObject *arg) {
-  HANDLE_TH_ERRORS
-  if (!PyBool_Check(arg)) {
-    throw TypeError("enabled must be a bool (got %s)", Py_TYPE(arg)->tp_name);
-  }
-  at::autocast::set_cpu_enabled(arg == Py_True);
-  Py_RETURN_NONE;
-  END_HANDLE_TH_ERRORS
-}
-
-static PyObject * set_autocast_cpu_dtype(PyObject* _unused, PyObject *arg) {
+static PyObject * set_autocast_dtype(PyObject* _unused, PyObject *arg) {
   HANDLE_TH_ERRORS
   if (!THPDtype_Check(arg)) {
     throw TypeError("dtype must be a torch.dtype (got %s)", Py_TYPE(arg)->tp_name);
   }
   at::ScalarType targetType = reinterpret_cast<THPDtype*>(arg)->scalar_type;
 
-  at::autocast::set_cpu_dtype(targetType);
+  at::autocast::set_dtype(targetType);
   Py_RETURN_NONE;;
-  END_HANDLE_TH_ERRORS
-}
-
-static PyObject * set_autocast_cpu_device(PyObject* _unused, PyObject *arg) {
-  HANDLE_TH_ERRORS
-  if (!THPDevice_Check(arg)) {
-    throw TypeError("device must be a torch.device (got %s)", Py_TYPE(arg)->tp_name);
-  }
-
-  at::Device targetDevice = reinterpret_cast<THPDevice*>(arg)->device;
-
-  //std::cout<<"LeslieDebug: ------------: "<<DeviceTypeName(targetType.type(), /* lower case */ false)<<std::endl;
-  at::autocast::set_cpu_device(DeviceTypeName(targetDevice.type(), /* lower case */ true));
-  Py_RETURN_NONE;
   END_HANDLE_TH_ERRORS
 }
 
@@ -263,41 +239,15 @@ static PyObject * is_autocast_enabled(PyObject* _unused, PyObject *arg) {
   END_HANDLE_TH_ERRORS
 }
 
-static PyObject * is_autocast_cpu_enabled(PyObject* _unused, PyObject *arg) {
+static PyObject * get_autocast_dtype(PyObject* _unused, PyObject *arg){
   HANDLE_TH_ERRORS
-  if (at::autocast::is_cpu_enabled()) {
-    Py_RETURN_TRUE;
-  } else {
-    Py_RETURN_FALSE;
-  }
-  END_HANDLE_TH_ERRORS
-}
-
-static PyObject * get_autocast_cpu_dtype(PyObject* _unused, PyObject *arg){
-  HANDLE_TH_ERRORS
-  //return THPUtils_packString(at::autocast::get_cpu_dtype());
-  return THPDtype_New(at::autocast::get_cpu_dtype(), "torch.dtype");
-  END_HANDLE_TH_ERRORS
-}
-
-static PyObject * get_autocast_cpu_device(PyObject* _unused, PyObject *arg){
-  HANDLE_TH_ERRORS
-  //return THPUtils_packString(at::autocast::get_cpu_layout());
-  at::Device current_device = at::Device(at::autocast::get_cpu_device());
-  return THPDevice_New(current_device);
+  return THPDtype_New(at::autocast::get_dtype(), "torch.dtype");
   END_HANDLE_TH_ERRORS
 }
 
 static PyObject * clear_autocast_cache(PyObject* _unused, PyObject *arg) {
   HANDLE_TH_ERRORS
   at::autocast::clear_cache();
-  Py_RETURN_NONE;
-  END_HANDLE_TH_ERRORS
-}
-
-static PyObject * clear_autocast_cpu_cache(PyObject* _unused, PyObject *arg) {
-  HANDLE_TH_ERRORS
-  at::autocast::clear_cpu_cache();
   Py_RETURN_NONE;
   END_HANDLE_TH_ERRORS
 }
@@ -403,21 +353,16 @@ static PyMethodDef methods[] = { // NOLINT
   {"_set_forward_AD_enabled", set_forward_AD_enabled, METH_O, nullptr},
   {"_is_forward_AD_enabled", is_forward_AD_enabled, METH_NOARGS, nullptr},
   {"set_autocast_enabled", set_autocast_enabled, METH_O, nullptr},
-  {"set_autocast_cpu_enabled", set_autocast_cpu_enabled, METH_O, nullptr},
   {"is_autocast_enabled", is_autocast_enabled, METH_NOARGS, nullptr},
-  {"is_autocast_cpu_enabled", is_autocast_cpu_enabled, METH_NOARGS, nullptr},
   {"clear_autocast_cache", clear_autocast_cache, METH_NOARGS, nullptr},
-  {"clear_autocast_cpu_cache", clear_autocast_cpu_cache, METH_NOARGS, nullptr},
   {"autocast_increment_nesting", autocast_increment_nesting, METH_NOARGS, nullptr},
   {"autocast_decrement_nesting", autocast_decrement_nesting, METH_NOARGS, nullptr},
   {"set_anomaly_enabled", set_anomaly_mode_enabled, METH_O, nullptr},
   {"is_anomaly_enabled", is_anomaly_mode_enabled, METH_NOARGS, nullptr},
   {"_enter_dual_level", python_enter_dual_level, METH_NOARGS, nullptr},
   {"_exit_dual_level", castPyCFunctionWithKeywords(python_exit_dual_level), METH_VARARGS | METH_KEYWORDS, nullptr},
-  {"get_autocast_cpu_dtype", get_autocast_cpu_dtype, METH_NOARGS, nullptr},
-  {"get_autocast_cpu_device", get_autocast_cpu_device, METH_NOARGS, nullptr},
-  {"set_autocast_cpu_dtype", set_autocast_cpu_dtype, METH_O, nullptr},
-  {"set_autocast_cpu_device", set_autocast_cpu_device, METH_O, nullptr},
+  {"get_autocast_dtype", get_autocast_dtype, METH_NOARGS, nullptr},
+  {"set_autocast_dtype", set_autocast_dtype, METH_O, nullptr},
   {nullptr, nullptr, 0, nullptr}
 };
 
