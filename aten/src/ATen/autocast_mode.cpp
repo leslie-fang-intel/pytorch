@@ -13,7 +13,6 @@ namespace at {
 namespace autocast {
 
 int cpu_dtype = 0;
-int cpu_device = 0;
 
 std::map<at::ScalarType, int> dtype_priority = {
   {at::kHalf, 3},
@@ -47,6 +46,7 @@ void set_dtype(at::ScalarType dtype){
   }else{
     cpu_dtype = dtype_priority[dtype];
   }*/
+  cpu_dtype = dtype_priority[dtype];
 }
 
 //namespace {
@@ -95,17 +95,33 @@ Tensor cached_cast(at::ScalarType to_type, const Tensor& arg) {
   if (is_eligible(arg) && (arg.scalar_type() != to_type)) {
     // Heuristic:  Do what Apex does, and cache fp16 casts of fp32 model weights (leaves).
     // See cached_casts declaration above for detailed strategy.
-    bool can_try_cache = (to_type == at::kHalf && arg.scalar_type() == at::kFloat && arg.requires_grad() && arg.is_leaf() && !arg.is_view());
+    bool can_try_cache = ((to_type == at::kHalf || to_type == at::kBFloat16) && arg.scalar_type() == at::kFloat && arg.requires_grad() && arg.is_leaf() && !arg.is_view());
     if (can_try_cache) {
       auto it = cached_casts.find(arg.unsafeGetTensorImpl());
       if (it != cached_casts.end()) {
         return std::get<1>(it->second);
       } else {
+        /*auto casted_arg = arg;
+        if(to_type == at::kBFloat16){
+            casted_arg = arg.to_mkldnn(to_type);
+        }else if(to_type == at::kHalf){
+            casted_arg = arg.to(to_type);
+        }*/
         auto casted_arg = arg.to(to_type);
         cached_casts.emplace(arg.unsafeGetTensorImpl(), val_type{weakref_type(arg.getIntrusivePtr()), casted_arg});
         return casted_arg;
       }
     } else {
+      /*if(arg.scalar_type() == at::kBFloat16){
+        //mkldnn_bf16 to dense_fp32
+        return arg.to_dense(to_type);
+      }else if(arg.scalar_type() == at::kFloat && to_type == at::kBFloat16){
+        //input
+        return arg.to_mkldnn(to_type);
+      }else{
+        //fp16 to fp32
+        return arg.to(to_type);
+      }*/
       return arg.to(to_type);
     }
   } else {
@@ -126,6 +142,16 @@ Interior WrapFunction_ specializations are defined for each CastPolicy.
 
 // Base template for WrapFunction_, which is specialized to contain a "call" method each CastPolicy
 template<CastPolicy policy, class Redispatch, Redispatch* F, class Ret, class ArgList> struct WrapFunction_ {};
+
+// CastPolicy::runtime
+template<class Redispatch, Redispatch* F, class Ret, class... Args>
+struct WrapFunction_<CastPolicy::runtime, Redispatch, F, Ret, guts::typelist::typelist<Args...>> {
+  static Ret call(Args... args) {
+    TORCH_WARN("-------------LeslieDebug: hit runtime wrap function-------------");
+    c10::impl::ExcludeDispatchKeyGuard no_autocast(DispatchKey::Autocast);
+    return (*F)(cached_cast(inv_dtype_priority[cpu_dtype], args)...);
+  }
+};
 
 // CastPolicy::fp16
 template<class Redispatch, Redispatch* F, class Ret, class... Args>
@@ -254,10 +280,6 @@ Therefore, for the moment, this is all copy pasted in from VariableTypeEverythin
 /*****************************************
 Explicit registration for out-of-place ops
 *****************************************/
-TORCH_LIBRARY_IMPL(_, AutocastCPU, m) {
-  m.fallback(torch::CppFunction::makeFallthrough());
-}
-
 TORCH_LIBRARY_IMPL(_, Autocast, m) {
   m.fallback(torch::CppFunction::makeFallthrough());
 }
@@ -267,9 +289,9 @@ TORCH_LIBRARY_IMPL(aten, Autocast, m) {
   KERNEL(ADD_NS(_convolution), "_convolution.deprecated", Tensor (const Tensor &, const Tensor &, const c10::optional<Tensor>&, IntArrayRef, IntArrayRef, IntArrayRef, bool, IntArrayRef, int64_t, bool, bool, bool), fp16)
   KERNEL(ADD_NS(_convolution), "_convolution", Tensor (const Tensor &, const Tensor &, const c10::optional<Tensor>&, IntArrayRef, IntArrayRef, IntArrayRef, bool, IntArrayRef, int64_t, bool, bool, bool, bool), fp16)
   KERNEL(ADD_NS(_convolution_nogroup), "_convolution_nogroup", Tensor (const Tensor &, const Tensor &, const c10::optional<Tensor>&, IntArrayRef, IntArrayRef, IntArrayRef, bool, IntArrayRef), fp16)
-  KERNEL(ADD_NS(conv1d), "conv1d", Tensor (const Tensor &, const Tensor &, const c10::optional<Tensor>&, IntArrayRef, IntArrayRef, IntArrayRef, int64_t), fp16)
-  KERNEL(ADD_NS(conv2d), "conv2d", Tensor (const Tensor &, const Tensor &, const c10::optional<Tensor>&, IntArrayRef, IntArrayRef, IntArrayRef, int64_t), fp16)
-  KERNEL(ADD_NS(conv3d), "conv3d", Tensor (const Tensor &, const Tensor &, const c10::optional<Tensor>&, IntArrayRef, IntArrayRef, IntArrayRef, int64_t), fp16)
+  KERNEL(ADD_NS(conv1d), "conv1d", Tensor (const Tensor &, const Tensor &, const c10::optional<Tensor>&, IntArrayRef, IntArrayRef, IntArrayRef, int64_t), runtime)
+  KERNEL(ADD_NS(conv2d), "conv2d", Tensor (const Tensor &, const Tensor &, const c10::optional<Tensor>&, IntArrayRef, IntArrayRef, IntArrayRef, int64_t), runtime)
+  KERNEL(ADD_NS(conv3d), "conv3d", Tensor (const Tensor &, const Tensor &, const c10::optional<Tensor>&, IntArrayRef, IntArrayRef, IntArrayRef, int64_t), runtime)
   KERNEL(ADD_NS(conv_tbc), "conv_tbc", Tensor (const Tensor &, const Tensor &, const Tensor &, int64_t), fp16)
   KERNEL(ADD_NS(conv_transpose1d), "conv_transpose1d", Tensor (const Tensor &, const Tensor &, const c10::optional<Tensor>&, IntArrayRef, IntArrayRef, IntArrayRef, int64_t, IntArrayRef), fp16)
   KERNEL(ADD_NS(conv_transpose2d), "conv_transpose2d.input", Tensor (const Tensor &, const Tensor &, const c10::optional<Tensor>&, IntArrayRef, IntArrayRef, IntArrayRef, int64_t, IntArrayRef), fp16)
@@ -288,7 +310,7 @@ TORCH_LIBRARY_IMPL(aten, Autocast, m) {
   KERNEL(ADD_NS(matmul), "matmul", Tensor (const Tensor &, const Tensor &), fp16)
   KERNEL(ADD_NS(mm), "mm", Tensor (const Tensor &, const Tensor &), fp16)
   KERNEL(ADD_NS(mv), "mv", Tensor (const Tensor &, const Tensor &), fp16)
-  KERNEL(ADD_NS(linear), "linear", Tensor (const Tensor &, const Tensor &, const c10::optional<Tensor>&), fp16)
+  KERNEL(ADD_NS(linear), "linear", Tensor (const Tensor &, const Tensor &, const c10::optional<Tensor>&), runtime)
   KERNEL(ADD_NS(addbmm), "addbmm", Tensor (const Tensor &, const Tensor &, const Tensor &, Scalar, Scalar), fp16)
   KERNEL(ADD_NS(baddbmm), "baddbmm", Tensor (const Tensor &, const Tensor &, const Tensor &, Scalar, Scalar), fp16)
   KERNEL(ADD_NS(bmm), "bmm", Tensor (const Tensor &, const Tensor &), fp16)
