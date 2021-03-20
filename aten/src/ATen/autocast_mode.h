@@ -168,5 +168,39 @@ inline at::ScalarType type_from_firstarg(at::ScalarType to_type, const Tensor& a
   return (is_eligible(arg) ? to_type : arg.scalar_type());
 }
 
+
+inline bool check_arg(bool current, const Tensor& nextArg) {
+
+  return current || nextArg.is_cuda();
+}
+
+// Overload to catch TensorList args (for e.g. cat, stack).
+// Reuses the overload above to process each Tensor in the list.
+inline bool check_arg(bool current, const TensorList& list) {
+  for (const auto& tensor : list) {
+    current = check_arg(current, tensor);
+  }
+  return current;
+}
+
+// Template to catch non-Tensor args (no-op that returns current best guess)
+template<typename T>
+inline bool check_arg(bool current, T nextArg) {
+  return current;
+}
+
+// check cuda
+// Overload for the tail case.
+inline bool run_on_cuda(bool current) {
+  return current;
+}
+
+// Non-Tensor arguments are ignored.
+template<typename Arg0, typename... Args>
+inline bool run_on_cuda(bool current, Arg0 arg0, Args... args) {
+  auto new_current = check_arg(current, arg0);
+  return run_on_cuda(new_current, args...);
+}
+
 } // namespace autocast
 } // namespace at

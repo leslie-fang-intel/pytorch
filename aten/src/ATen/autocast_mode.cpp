@@ -143,13 +143,74 @@ Interior WrapFunction_ specializations are defined for each CastPolicy.
 // Base template for WrapFunction_, which is specialized to contain a "call" method each CastPolicy
 template<CastPolicy policy, class Redispatch, Redispatch* F, class Ret, class ArgList> struct WrapFunction_ {};
 
+template <class Redispatch, Redispatch* F>
+at::ScalarType get_op_capability(string device) {
+  return at::kFloat; // fp32
+}
+
+#define MAKE_FUNC(SIG, NAME, CAP_CUDA, CAP_CPU) \
+template <> \
+at::ScalarType get_op_capability<SIG, NAME>(string device) \
+{\
+   if(device == "CUDA") {\
+     return CAP_CUDA;\
+   }\
+   else{\ 
+     return CAP_CPU; \
+   }\
+}
+
+template <>
+at::ScalarType get_op_capability<std::tuple<Tensor,Tensor> (const Tensor &, int64_t, int64_t, bool, bool), at::topk>(string device) {
+  if(device == "CUDA") {
+     return at::kHalf;
+   }
+   else{
+     return at::kFloat;
+   }
+}
+
+MAKE_FUNC(Tensor (const Tensor &, const Tensor &, const c10::optional<Tensor>&, IntArrayRef, IntArrayRef, IntArrayRef, int64_t), at::conv2d, at::kHalf, at::kBFloat16)
+MAKE_FUNC(Tensor (const Tensor &, const Tensor &, const c10::optional<Tensor>&, IntArrayRef, IntArrayRef, IntArrayRef, int64_t), at::conv1d, at::kHalf, at::kBFloat16)
+MAKE_FUNC(Tensor (const Tensor &, const Tensor &, const c10::optional<Tensor>&, IntArrayRef, IntArrayRef, IntArrayRef, int64_t), at::conv3d, at::kHalf, at::kBFloat16)
+MAKE_FUNC(Tensor (const Tensor &, const Tensor &, const c10::optional<Tensor>&), at::linear, at::kHalf, at::kBFloat16)
+MAKE_FUNC(Tensor (const Tensor &, const c10::optional<Tensor>&, const c10::optional<Tensor>&, const c10::optional<Tensor>&, const c10::optional<Tensor>&, bool, double, double, bool), at::batch_norm, at::kHalf, at::kFloat)
+//MAKE_FUNC(std::tuple<Tensor,Tensor> (const Tensor &, int64_t, int64_t, bool, bool), at::topk, at::kHalf, at::kFloat)
+
 // CastPolicy::runtime
 template<class Redispatch, Redispatch* F, class Ret, class... Args>
 struct WrapFunction_<CastPolicy::runtime, Redispatch, F, Ret, guts::typelist::typelist<Args...>> {
   static Ret call(Args... args) {
     TORCH_WARN("-------------LeslieDebug: hit runtime wrap function-------------");
     c10::impl::ExcludeDispatchKeyGuard no_autocast(DispatchKey::Autocast);
-    return (*F)(cached_cast(inv_dtype_priority[cpu_dtype], args)...);
+    at::ScalarType target_dtype = at::kFloat;
+    // cpu_dtype is user input
+    if(run_on_cuda(false, args...)){
+      //CUDA
+      if(cpu_dtype == 3){
+        // target dtype is fp16
+        if(get_op_capability<Redispatch, F>("CUDA") == at::kHalf){ // op support fp16
+          target_dtype = at::kHalf;
+        }else{
+          target_dtype = at::kFloat;
+        }
+      }else{
+        target_dtype = at::kFloat;
+      }
+    }else{
+      //CPU
+      if(cpu_dtype == 1){
+        // target dtype is bf16
+        if(get_op_capability<Redispatch, F>("CPU") == at::kBFloat16){ // op support bf16
+          target_dtype = at::kBFloat16;
+        }else{
+          target_dtype = at::kFloat;
+        }
+      }else{
+        target_dtype = at::kFloat;
+      }
+    }
+    return (*F)(cached_cast(target_dtype, args)...);
   }
 };
 
@@ -315,6 +376,15 @@ TORCH_LIBRARY_IMPL(aten, Autocast, m) {
   KERNEL(ADD_NS(baddbmm), "baddbmm", Tensor (const Tensor &, const Tensor &, const Tensor &, Scalar, Scalar), fp16)
   KERNEL(ADD_NS(bmm), "bmm", Tensor (const Tensor &, const Tensor &), fp16)
   KERNEL(ADD_NS(chain_matmul), "chain_matmul", Tensor (TensorList), fp16)
+
+  m.impl(TORCH_SELECTIVE_NAME("aten::topk"),
+         TORCH_FN((&WrapFunction<CastPolicy::runtime,
+                                 std::tuple<Tensor,Tensor> (const Tensor &, int64_t, int64_t, bool, bool),
+                                 std::tuple<Tensor,Tensor> (const Tensor &, int64_t, int64_t, bool, bool),
+                                 &ADD_NS(topk)>::type::call)));
+
+  KERNEL(ADD_NS(batch_norm), "batch_norm", Tensor (const Tensor &, const c10::optional<Tensor>&, const c10::optional<Tensor>&, 
+             const c10::optional<Tensor>&, const c10::optional<Tensor>&, bool, double, double, bool), runtime)
   // The macro doesn't like these (I think it chokes on commas inside <>) so write them manually
   m.impl(TORCH_SELECTIVE_NAME("aten::_thnn_fused_lstm_cell"),
          TORCH_FN((&WrapFunction<CastPolicy::fp16,
