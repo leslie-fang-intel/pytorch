@@ -13,16 +13,13 @@ namespace autocast {
 
 #define ADD_NS(RAW_OP) at::RAW_OP
 
-TORCH_API bool is_enabled();
-TORCH_API bool is_cpu_enabled();
-TORCH_API void set_enabled(bool enabled);
-TORCH_API void set_cpu_enabled(bool enabled);
-TORCH_API at::ScalarType get_cpu_dtype();
-TORCH_API at::Layout get_cpu_layout();
-TORCH_API void set_cpu_dtype(at::ScalarType);
-TORCH_API void set_cpu_layout(at::Layout);
+TORCH_API bool is_enabled(bool use_cuda);
+TORCH_API void set_enabled(bool enabled, bool use_cuda);
+TORCH_API at::ScalarType get_dtype();
+TORCH_API at::Layout get_layout();
+TORCH_API void set_dtype(at::ScalarType);
+TORCH_API void set_layout(at::Layout);
 TORCH_API void clear_cache();
-TORCH_API void clear_cpu_cache();
 TORCH_API int increment_nesting();
 TORCH_API int decrement_nesting();
 
@@ -33,7 +30,7 @@ TORCH_API extern int cpu_layout;
 using weakref_type = c10::weak_intrusive_ptr<TensorImpl, UndefinedTensorImpl>;
 using val_type = std::tuple<weakref_type, Tensor>;
 
-TORCH_API extern thread_local std::unordered_map<TensorImpl*, val_type> cached_casts_cpu;
+TORCH_API extern thread_local std::unordered_map<TensorImpl*, val_type> cached_casts;
 
 //TORCH_API int get_input_dtype_priority();
 //TORCH_API int get_input_device_priority();

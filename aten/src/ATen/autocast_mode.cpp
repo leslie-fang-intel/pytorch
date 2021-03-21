@@ -41,35 +41,36 @@ std::map<int, at::Layout> inv_layout_priority = flip_map(layout_priority);
   {STRIDED_LAYOUT_PRIORITY, at::kStrided},
 };*/
 
-bool is_enabled() {
-  return c10::impl::tls_is_dispatch_key_included(DispatchKey::Autocast);
+bool is_enabled(bool use_cuda) {
+  if(use_cuda){
+    return c10::impl::tls_is_dispatch_key_included(DispatchKey::Autocast);
+  }else{
+    return c10::impl::tls_is_dispatch_key_included(DispatchKey::AutocastCPU);
+  }
 }
 
-bool is_cpu_enabled() {
-  return c10::impl::tls_is_dispatch_key_included(DispatchKey::AutocastCPU);
+void set_enabled(bool new_enabled, bool use_cuda) {
+  if(use_cuda){
+    c10::impl::tls_set_dispatch_key_included(DispatchKey::Autocast, new_enabled);
+  }else{
+    c10::impl::tls_set_dispatch_key_included(DispatchKey::AutocastCPU, new_enabled);
+  }
+  //c10::impl::tls_set_dispatch_key_included(DispatchKey::Autocast, new_enabled);
 }
 
-void set_enabled(bool new_enabled) {
-  c10::impl::tls_set_dispatch_key_included(DispatchKey::Autocast, new_enabled);
-}
-
-void set_cpu_enabled(bool new_enabled) {
-  c10::impl::tls_set_dispatch_key_included(DispatchKey::AutocastCPU, new_enabled);
-}
-
-at::ScalarType get_cpu_dtype(){
+at::ScalarType get_dtype(){
   return inv_dtype_priority[cpu_dtype];
 }
 
-at::Layout get_cpu_layout(){
+at::Layout get_layout(){
   return inv_layout_priority[cpu_layout];
 }
 
-void set_cpu_dtype(at::ScalarType dtype){
+void set_dtype(at::ScalarType dtype){
   cpu_dtype = dtype_priority[dtype];
 }
 
-void set_cpu_layout(at::Layout layout){
+void set_layout(at::Layout layout){
   cpu_layout = layout_priority[layout];
 }
 
@@ -99,7 +100,6 @@ int get_input_device_priority(){
 // I'm not using the weak_intrusive_ptr as the key because it's more difficult to compare
 // directly against incoming TensorImpl*s.
 thread_local std::unordered_map<TensorImpl*, val_type> cached_casts;
-thread_local std::unordered_map<TensorImpl*, val_type> cached_casts_cpu;
 
 // nesting tracks the nesting depth of the Python-side context manager.
 // When the autocast context manager exits to a nesting level that's outside
@@ -110,11 +110,6 @@ thread_local int nesting = 0;
 
 void clear_cache() {
   cached_casts.clear();
-}
-
-void clear_cpu_cache() {
-  cached_casts_cpu.clear();
-  //return;
 }
 
 int increment_nesting() {
