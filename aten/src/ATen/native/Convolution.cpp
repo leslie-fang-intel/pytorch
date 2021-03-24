@@ -885,7 +885,7 @@ at::Tensor _convolution(
           input.contiguous(), weight, bias,
           params.padding, params.stride, params.dilation, params.groups, params.benchmark, params.deterministic);
     }
-  } else if (params.use_mkldnn(input, weight)) {
+  } else if (params.use_mkldnn(input, weight) || input.scalar_type() == kBFloat16) {
 #if AT_MKLDNN_ENABLED()
     TORCH_CHECK(input.options().type_equal(weight.options())
              || (input.is_mkldnn() && weight.device().is_cpu() && weight.scalar_type() == kFloat),
