@@ -118,10 +118,10 @@ class autocast(object):
         supported_device = [torch.device('cpu'), torch.device('cuda')]
 
         if (dtype not in supported_dtype) or (device not in supported_device):
-            warnings.warn("In CPU autocast, but the target dtype or layout is not supported. The default dtype: torch.float16 and default device: torch.device('cuda') will be used.")
+            warnings.warn("In CPU autocast, but the target dtype or layout is not supported. Disable Autocast then.")
             warnings.warn("Supported dtype input is: torch.float16, torch.bfloat16.")
             warnings.warn("Supported device input is: torch.device('cuda'), torch.device('cpu').")
-            #enabled = False
+            enabled = False
             self._dtype = torch.float16
             self._device = torch.device('cuda')
         else:
@@ -132,9 +132,10 @@ class autocast(object):
         #self._use_cuda = torch.cuda.is_available()
 
     def __enter__(self):
-        self.prev_dtype = torch.get_autocast_dtype()
+        self.prev = torch.is_autocast_enabled()
         self.prev_device = torch.get_autocast_device()
-        self.prev = torch.is_autocast_enabled(self.prev_device)
+        self.prev_dtype = torch.get_autocast_dtype()
+        
         torch.set_autocast_enabled(self._enabled, self._device)
         torch.set_autocast_dtype(self._dtype)
         torch.autocast_increment_nesting()

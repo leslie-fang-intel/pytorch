@@ -13,7 +13,7 @@ namespace autocast {
 
 #define ADD_NS(RAW_OP) at::RAW_OP
 
-TORCH_API bool is_enabled(at::Device TargetDeviceType);
+TORCH_API bool is_enabled();
 TORCH_API void set_enabled(bool enabled, at::Device TargetDeviceType);
 TORCH_API at::ScalarType get_dtype();
 TORCH_API at::Layout get_layout();

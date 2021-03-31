@@ -253,11 +253,7 @@ static PyObject * set_autocast_layout(PyObject* _unused, PyObject *arg) {
 
 static PyObject * is_autocast_enabled(PyObject* _unused, PyObject *arg) {
   HANDLE_TH_ERRORS
-  if (!THPDevice_Check(arg)) {
-    throw TypeError("device must be a torch.device (got %s)", Py_TYPE(arg)->tp_name);
-  }
-  at::Device targetDevice = reinterpret_cast<THPDevice*>(arg)->device;
-  if (at::autocast::is_enabled(targetDevice)) {
+  if (at::autocast::is_enabled()) {
     Py_RETURN_TRUE;
   } else {
     Py_RETURN_FALSE;
@@ -396,7 +392,7 @@ static PyMethodDef methods[] = { // NOLINT
   {"_set_forward_AD_enabled", set_forward_AD_enabled, METH_O, nullptr},
   {"_is_forward_AD_enabled", is_forward_AD_enabled, METH_NOARGS, nullptr},
   {"set_autocast_enabled", set_autocast_enabled, METH_VARARGS, nullptr},
-  {"is_autocast_enabled", is_autocast_enabled, METH_O, nullptr},
+  {"is_autocast_enabled", is_autocast_enabled, METH_NOARGS, nullptr},
   {"clear_autocast_cache", clear_autocast_cache, METH_NOARGS, nullptr},
   {"autocast_increment_nesting", autocast_increment_nesting, METH_NOARGS, nullptr},
   {"autocast_decrement_nesting", autocast_decrement_nesting, METH_NOARGS, nullptr},

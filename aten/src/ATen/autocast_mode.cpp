@@ -42,31 +42,26 @@ std::map<int, at::Layout> inv_layout_priority = flip_map(layout_priority);
   {STRIDED_LAYOUT_PRIORITY, at::kStrided},
 };*/
 
-bool is_enabled(at::Device TargetDevice) {
-  if(TargetDevice.type() == c10::DeviceType::CUDA){
-    return c10::impl::tls_is_dispatch_key_included(DispatchKey::Autocast);
-  }else{
-    return c10::impl::tls_is_dispatch_key_included(DispatchKey::AutocastCPU);
-  }
+bool is_enabled() {
+  // if any one device enable autocast, autocast is enabled.
+  return c10::impl::tls_is_dispatch_key_included(DispatchKey::Autocast) || c10::impl::tls_is_dispatch_key_included(DispatchKey::AutocastCPU);
 }
 
 void set_enabled(bool new_enabled, at::Device TargetDevice) {
   current_device = TargetDevice;
   if(new_enabled){
-    // Ensure only one dispatchkey is enabled at anytime
+    // Ensure only one dispatch key is enabled at anytime
     if(TargetDevice.type() == c10::DeviceType::CUDA){
       c10::impl::tls_set_dispatch_key_included(DispatchKey::Autocast, new_enabled);
       c10::impl::tls_set_dispatch_key_included(DispatchKey::AutocastCPU, false);
     }else{
-      c10::impl::tls_set_dispatch_key_included(DispatchKey::AutocastCPU, new_enabled);
       c10::impl::tls_set_dispatch_key_included(DispatchKey::Autocast, false);
+      c10::impl::tls_set_dispatch_key_included(DispatchKey::AutocastCPU, new_enabled);
     }
   }else{
-    if(TargetDevice.type() == c10::DeviceType::CUDA){
-      c10::impl::tls_set_dispatch_key_included(DispatchKey::Autocast, new_enabled);
-    }else{
-      c10::impl::tls_set_dispatch_key_included(DispatchKey::AutocastCPU, new_enabled);
-    }    
+    // if disable autocast, disable it for all devices
+    c10::impl::tls_set_dispatch_key_included(DispatchKey::Autocast, false);
+    c10::impl::tls_set_dispatch_key_included(DispatchKey::AutocastCPU, false);  
   }
 }
 
