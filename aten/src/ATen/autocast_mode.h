@@ -187,6 +187,24 @@ std::map<int, T> flip_map(std::map<T, int> input) {
   return reversed;
 }
 
+inline bool check_cuda(bool current, const Tensor& nextArg) {
+  return current || nextArg.is_cuda();
+}
+
+// Overload to catch TensorList args (for e.g. cat, stack).
+// Reuses the overload above to process each Tensor in the list.
+inline bool check_cuda(bool current, const TensorList& list) {
+  for (const auto& tensor : list) {
+    current = check_cuda(current, tensor);
+  }
+  return current;
+}
+
+// Template to catch non-Tensor args (no-op that returns current best guess)
+template<typename T>
+inline bool check_cuda(bool current, T nextArg) {
+  return current;
+}
 
 } // namespace autocast
 } // namespace at

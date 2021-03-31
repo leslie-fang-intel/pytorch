@@ -8,6 +8,7 @@
 
 #include <iostream>
 #include <exception>
+#include <torch/csrc/jit/frontend/tracer.h>
 
 namespace at {
 namespace autocast {
@@ -43,31 +44,17 @@ std::map<int, at::Layout> inv_layout_priority = flip_map(layout_priority);
 };*/
 
 bool is_enabled(at::Device TargetDevice) {
-  if(TargetDevice.type() == c10::DeviceType::CUDA){
+  /*if(TargetDevice.type() == c10::DeviceType::CUDA){
     return c10::impl::tls_is_dispatch_key_included(DispatchKey::Autocast);
   }else{
     return c10::impl::tls_is_dispatch_key_included(DispatchKey::AutocastCPU);
-  }
+  }*/
+  return c10::impl::tls_is_dispatch_key_included(DispatchKey::Autocast);
 }
 
 void set_enabled(bool new_enabled, at::Device TargetDevice) {
   current_device = TargetDevice;
-  if(new_enabled){
-    // Ensure only one dispatchkey is enabled at anytime
-    if(TargetDevice.type() == c10::DeviceType::CUDA){
-      c10::impl::tls_set_dispatch_key_included(DispatchKey::Autocast, new_enabled);
-      c10::impl::tls_set_dispatch_key_included(DispatchKey::AutocastCPU, false);
-    }else{
-      c10::impl::tls_set_dispatch_key_included(DispatchKey::AutocastCPU, new_enabled);
-      c10::impl::tls_set_dispatch_key_included(DispatchKey::Autocast, false);
-    }
-  }else{
-    if(TargetDevice.type() == c10::DeviceType::CUDA){
-      c10::impl::tls_set_dispatch_key_included(DispatchKey::Autocast, new_enabled);
-    }else{
-      c10::impl::tls_set_dispatch_key_included(DispatchKey::AutocastCPU, new_enabled);
-    }    
-  }
+  c10::impl::tls_set_dispatch_key_included(DispatchKey::Autocast, new_enabled);
 }
 
 at::Device get_device(){
@@ -180,7 +167,7 @@ template<CastPolicy policy, class Redispatch, Redispatch* F, class Ret, class Ar
 template<class Redispatch, Redispatch* F, class Ret, class... Args>
 struct WrapFunction_<CastPolicy::fp16, Redispatch, F, Ret, guts::typelist::typelist<Args...>> {
   static Ret call(Args... args) {
-    c10::impl::ExcludeDispatchKeyGuard no_autocast(DispatchKey::Autocast);
+    c10::impl::ExcludeDispatchKeyGuard no_autocast(DispatchKey::AutocastCUDA);
     return (*F)(cached_cast(at::kHalf, args)...);
   }
 };
@@ -189,7 +176,7 @@ struct WrapFunction_<CastPolicy::fp16, Redispatch, F, Ret, guts::typelist::typel
 template<class Redispatch, Redispatch* F, class Ret, class... Args>
 struct WrapFunction_<CastPolicy::fp32, Redispatch, F, Ret, guts::typelist::typelist<Args...>> {
   static Ret call(Args... args) {
-    c10::impl::ExcludeDispatchKeyGuard no_autocast(DispatchKey::Autocast);
+    c10::impl::ExcludeDispatchKeyGuard no_autocast(DispatchKey::AutocastCUDA);
     return (*F)(cached_cast(at::kFloat, args)...);
   }
 };
@@ -198,7 +185,7 @@ struct WrapFunction_<CastPolicy::fp32, Redispatch, F, Ret, guts::typelist::typel
 template<class Redispatch, Redispatch* F, class Ret, class... Args>
 struct WrapFunction_<CastPolicy::fp32_set_opt_dtype, Redispatch, F, Ret, guts::typelist::typelist<Args...>> {
   static Ret call(Args... args) {
-    c10::impl::ExcludeDispatchKeyGuard no_autocast(DispatchKey::Autocast);
+    c10::impl::ExcludeDispatchKeyGuard no_autocast(DispatchKey::AutocastCUDA);
     if (firstarg_is_eligible(args...)) {
       return (*F)(set_opt_dtype(at::kFloat, args)...);
     } else {
@@ -213,7 +200,7 @@ struct WrapFunction_<CastPolicy::fp32_set_opt_dtype, Redispatch, F, Ret, guts::t
 template<class Redispatch, Redispatch* F, class Ret, class... Args>
 struct WrapFunction_<CastPolicy::fp32_append_dtype, Redispatch, F, Ret, guts::typelist::typelist<Args...>> {
   static Ret call(Args... args) {
-    c10::impl::ExcludeDispatchKeyGuard no_autocast(DispatchKey::Autocast);
+    c10::impl::ExcludeDispatchKeyGuard no_autocast(DispatchKey::AutocastCUDA);
     at::ScalarType out_type = type_from_firstarg(at::kFloat, args...);
     return (*F)(args..., out_type);
   }
@@ -223,7 +210,7 @@ struct WrapFunction_<CastPolicy::fp32_append_dtype, Redispatch, F, Ret, guts::ty
 template<class Redispatch, Redispatch* F, class Ret, class... Args>
 struct WrapFunction_<CastPolicy::promote, Redispatch, F, Ret, guts::typelist::typelist<Args...>> {
   static Ret call(Args... args) {
-    c10::impl::ExcludeDispatchKeyGuard no_autocast(DispatchKey::Autocast);
+    c10::impl::ExcludeDispatchKeyGuard no_autocast(DispatchKey::AutocastCUDA);
     auto to_type = promote_type(at::kHalf, args...);
     return (*F)(cached_cast(to_type, args)...);
   }
@@ -299,6 +286,41 @@ Therefore, for the moment, this is all copy pasted in from VariableTypeEverythin
   m.impl(TORCH_SELECTIVE_NAME("aten::" REGISTER_NAME), \
     &WrapFunction<CastPolicy::POLICY, REGISTER_SIGNATURE, REDISPATCH_SIGNATURE, &REDISPATCH_FUNC>::type::call);
 
+
+void generic_wrapper_fallback(const OperatorHandle& op, torch::jit::Stack* stack) {
+  c10::impl::ExcludeDispatchKeyGuard no_autocast(DispatchKey::Autocast);
+
+  auto num_arguments = op.schema().arguments().size();
+  auto args = torch::jit::pop(*stack, num_arguments);
+  bool use_cuda = false;
+  for (size_t i = 0; i < num_arguments; i++) {
+    if(args[i].isTensor()){
+      Tensor impl = args[i].toTensor();
+      torch::jit::push(*stack, std::move(impl));
+      use_cuda = check_cuda(use_cuda, impl);
+    }else if(args[i].isTensorList()){
+      c10::List<at::Tensor> impl = args[i].toTensorList();
+      torch::jit::push(*stack, std::move(impl));
+      use_cuda = check_cuda(use_cuda, impl);
+    }else{
+      torch::jit::push(*stack, std::move(args[i]));
+      use_cuda = check_cuda(use_cuda, args[i]);
+    }
+  }
+
+  if(use_cuda){
+    c10::impl::tls_set_dispatch_key_included(DispatchKey::AutocastCUDA, true);
+  }else{
+    c10::impl::tls_set_dispatch_key_included(DispatchKey::AutocastCPU, true);
+  }
+  op.callBoxed(stack);
+  return;
+}
+
+TORCH_LIBRARY_IMPL(_, Autocast, m) {
+  m.fallback(torch::CppFunction::makeFromBoxedFunction<&generic_wrapper_fallback>());
+}
+
 /*****************************************
 Explicit registration for out-of-place ops
 *****************************************/
@@ -306,11 +328,11 @@ TORCH_LIBRARY_IMPL(_, AutocastCPU, m) {
   m.fallback(torch::CppFunction::makeFallthrough());
 }
 
-TORCH_LIBRARY_IMPL(_, Autocast, m) {
+TORCH_LIBRARY_IMPL(_, AutocastCUDA, m) {
   m.fallback(torch::CppFunction::makeFallthrough());
 }
 
-TORCH_LIBRARY_IMPL(aten, Autocast, m) {
+TORCH_LIBRARY_IMPL(aten, AutocastCUDA, m) {
   // fp16
   KERNEL(ADD_NS(_convolution), "_convolution.deprecated", Tensor (const Tensor &, const Tensor &, const c10::optional<Tensor>&, IntArrayRef, IntArrayRef, IntArrayRef, bool, IntArrayRef, int64_t, bool, bool, bool), fp16)
   KERNEL(ADD_NS(_convolution), "_convolution", Tensor (const Tensor &, const Tensor &, const c10::optional<Tensor>&, IntArrayRef, IntArrayRef, IntArrayRef, bool, IntArrayRef, int64_t, bool, bool, bool, bool), fp16)

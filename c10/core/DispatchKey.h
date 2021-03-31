@@ -239,6 +239,7 @@ enum class DispatchKey : uint8_t {
   // and inputs are saved for backward in the post-autocast type.
   Autocast,
   AutocastCPU,
+  AutocastCUDA,
 
   // ~~~~~~~~~~~~~~~~~~~~~~~~~~~ WRAPPERS ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ //
   // There are a number of alternative modes which may want to handle before
