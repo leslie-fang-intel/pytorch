@@ -12,8 +12,9 @@
 namespace at {
 namespace autocast {
 
-int cpu_dtype = 0;
-int cpu_layout = 0;
+thread_local int cpu_dtype = 0;
+thread_local int cpu_layout = 0;
+thread_local at::Device current_device = at::Device(c10::DeviceType::CUDA, 0);
 
 std::map<at::ScalarType, int> dtype_priority = {
   {at::kChar, INT8_DTYPE_PRIORITY},
@@ -41,21 +42,36 @@ std::map<int, at::Layout> inv_layout_priority = flip_map(layout_priority);
   {STRIDED_LAYOUT_PRIORITY, at::kStrided},
 };*/
 
-bool is_enabled(c10::DeviceType TargetDeviceType) {
-  if(TargetDeviceType == c10::DeviceType::CUDA){
+bool is_enabled(at::Device TargetDevice) {
+  if(TargetDevice.type() == c10::DeviceType::CUDA){
     return c10::impl::tls_is_dispatch_key_included(DispatchKey::Autocast);
   }else{
     return c10::impl::tls_is_dispatch_key_included(DispatchKey::AutocastCPU);
   }
 }
 
-void set_enabled(bool new_enabled, c10::DeviceType TargetDeviceType) {
-  if(TargetDeviceType == c10::DeviceType::CUDA){
-    c10::impl::tls_set_dispatch_key_included(DispatchKey::Autocast, new_enabled);
+void set_enabled(bool new_enabled, at::Device TargetDevice) {
+  current_device = TargetDevice;
+  if(new_enabled){
+    // Ensure only one dispatchkey is enabled at anytime
+    if(TargetDevice.type() == c10::DeviceType::CUDA){
+      c10::impl::tls_set_dispatch_key_included(DispatchKey::Autocast, new_enabled);
+      c10::impl::tls_set_dispatch_key_included(DispatchKey::AutocastCPU, false);
+    }else{
+      c10::impl::tls_set_dispatch_key_included(DispatchKey::AutocastCPU, new_enabled);
+      c10::impl::tls_set_dispatch_key_included(DispatchKey::Autocast, false);
+    }
   }else{
-    c10::impl::tls_set_dispatch_key_included(DispatchKey::AutocastCPU, new_enabled);
+    if(TargetDevice.type() == c10::DeviceType::CUDA){
+      c10::impl::tls_set_dispatch_key_included(DispatchKey::Autocast, new_enabled);
+    }else{
+      c10::impl::tls_set_dispatch_key_included(DispatchKey::AutocastCPU, new_enabled);
+    }    
   }
-  //c10::impl::tls_set_dispatch_key_included(DispatchKey::Autocast, new_enabled);
+}
+
+at::Device get_device(){
+  return current_device;
 }
 
 at::ScalarType get_dtype(){

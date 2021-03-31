@@ -216,8 +216,11 @@ static PyObject * set_autocast_enabled(PyObject* _unused, PyObject *args) {
   }
   //std::cout<<"enabled is: "<<enabled<<std::endl;
   //std::cout<<"use_cuda is: "<<use_cuda<<std::endl;
+  if (!THPDevice_Check(device)) {
+    throw TypeError("device must be a torch.device (got %s)", Py_TYPE(device)->tp_name);
+  }
   at::Device targetDevice = reinterpret_cast<THPDevice*>(device)->device;
-  at::autocast::set_enabled(enabled, targetDevice.type());
+  at::autocast::set_enabled(enabled, targetDevice);
   Py_RETURN_NONE;
   END_HANDLE_TH_ERRORS
 }
@@ -254,7 +257,7 @@ static PyObject * is_autocast_enabled(PyObject* _unused, PyObject *arg) {
     throw TypeError("device must be a torch.device (got %s)", Py_TYPE(arg)->tp_name);
   }
   at::Device targetDevice = reinterpret_cast<THPDevice*>(arg)->device;
-  if (at::autocast::is_enabled(targetDevice.type())) {
+  if (at::autocast::is_enabled(targetDevice)) {
     Py_RETURN_TRUE;
   } else {
     Py_RETURN_FALSE;
@@ -274,6 +277,14 @@ static PyObject * get_autocast_layout(PyObject* _unused, PyObject *arg){
   //return THPUtils_packString(at::autocast::get_cpu_layout());
   at::Layout current_layout = at::autocast::get_layout();
   return THPLayout_New(current_layout, "torch.layout");
+  END_HANDLE_TH_ERRORS
+}
+
+static PyObject * get_autocast_device(PyObject* _unused, PyObject *arg){
+  HANDLE_TH_ERRORS
+  //return THPUtils_packString(at::autocast::get_cpu_layout());
+  at::Device current_device = at::autocast::get_device();
+  return THPDevice_New(current_device);
   END_HANDLE_TH_ERRORS
 }
 
@@ -395,6 +406,7 @@ static PyMethodDef methods[] = { // NOLINT
   {"_exit_dual_level", castPyCFunctionWithKeywords(python_exit_dual_level), METH_VARARGS | METH_KEYWORDS, nullptr},
   {"get_autocast_dtype", get_autocast_dtype, METH_NOARGS, nullptr},
   {"get_autocast_layout", get_autocast_layout, METH_NOARGS, nullptr},
+  {"get_autocast_device", get_autocast_device, METH_NOARGS, nullptr},
   {"set_autocast_dtype", set_autocast_dtype, METH_O, nullptr},
   {"set_autocast_layout", set_autocast_layout, METH_O, nullptr},
   {nullptr, nullptr, 0, nullptr}

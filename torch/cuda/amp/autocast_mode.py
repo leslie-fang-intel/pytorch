@@ -114,16 +114,16 @@ class autocast(object):
     """
     def __init__(self, enabled=True, dtype=torch.float16, device=torch.device('cuda')):
         #torch.cuda.is_available():
-        supported_dtype = [torch.float32, torch.bfloat16, torch.float16]
+        supported_dtype = [torch.bfloat16, torch.float16]
         supported_device = [torch.device('cpu'), torch.device('cuda')]
 
         if (dtype not in supported_dtype) or (device not in supported_device):
-            warnings.warn("In CPU autocast, but the target dtype or layout is not supported. Disable the autocast.")
-            warnings.warn("Supported dtype input is: torch.float32, torch.bfloat16.")
-            warnings.warn("Supported device input is: torch.device('cpu'), torch.device('cuda').")
-            enabled = False
-            self._dtype = torch.float32
-            self._device = torch.device('cpu')
+            warnings.warn("In CPU autocast, but the target dtype or layout is not supported. The default dtype: torch.float16 and default device: torch.device('cuda') will be used.")
+            warnings.warn("Supported dtype input is: torch.float16, torch.bfloat16.")
+            warnings.warn("Supported device input is: torch.device('cuda'), torch.device('cpu').")
+            #enabled = False
+            self._dtype = torch.float16
+            self._device = torch.device('cuda')
         else:
             warnings.warn("Autocast: set dtype and layout")
             self._dtype = dtype
@@ -132,19 +132,18 @@ class autocast(object):
         #self._use_cuda = torch.cuda.is_available()
 
     def __enter__(self):
-        self.prev = torch.is_autocast_enabled(self._device)
         self.prev_dtype = torch.get_autocast_dtype()
+        self.prev_device = torch.get_autocast_device()
+        self.prev = torch.is_autocast_enabled(self.prev_device)
         torch.set_autocast_enabled(self._enabled, self._device)
         torch.set_autocast_dtype(self._dtype)
         torch.autocast_increment_nesting()
 
     def __exit__(self, *args):
         # Drop the cache when we exit to a nesting level that's outside any instance of autocast.
-        
-        #if self._autocast_cpu:
         if torch.autocast_decrement_nesting() == 0:
             torch.clear_autocast_cache()
-        torch.set_autocast_enabled(self.prev, self._device)
+        torch.set_autocast_enabled(self.prev, self.prev_device)
         torch.set_autocast_dtype(self.prev_dtype)
         return False
 

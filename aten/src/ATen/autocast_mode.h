@@ -13,18 +13,19 @@ namespace autocast {
 
 #define ADD_NS(RAW_OP) at::RAW_OP
 
-TORCH_API bool is_enabled(c10::DeviceType TargetDeviceType);
-TORCH_API void set_enabled(bool enabled, c10::DeviceType TargetDeviceType);
+TORCH_API bool is_enabled(at::Device TargetDeviceType);
+TORCH_API void set_enabled(bool enabled, at::Device TargetDeviceType);
 TORCH_API at::ScalarType get_dtype();
 TORCH_API at::Layout get_layout();
+TORCH_API at::Device get_device();
 TORCH_API void set_dtype(at::ScalarType);
 TORCH_API void set_layout(at::Layout);
 TORCH_API void clear_cache();
 TORCH_API int increment_nesting();
 TORCH_API int decrement_nesting();
 
-TORCH_API extern int cpu_dtype;
-TORCH_API extern int cpu_layout;
+TORCH_API extern thread_local int cpu_dtype;
+TORCH_API extern thread_local int cpu_layout;
 
 
 using weakref_type = c10::weak_intrusive_ptr<TensorImpl, UndefinedTensorImpl>;
