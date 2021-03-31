@@ -112,7 +112,7 @@ class autocast(object):
     Args:
         enabled(bool, optional, default=True):  Whether autocasting should be enabled in the region.
     """
-    def __init__(self, enabled=True, dtype=torch.float32, device=torch.device('cpu')):
+    def __init__(self, enabled=True, dtype=torch.float16, device=torch.device('cuda')):
         #torch.cuda.is_available():
         supported_dtype = [torch.float32, torch.bfloat16, torch.float16]
         supported_device = [torch.device('cpu'), torch.device('cuda')]
