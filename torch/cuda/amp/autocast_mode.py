@@ -112,32 +112,30 @@ class autocast(object):
     Args:
         enabled(bool, optional, default=True):  Whether autocasting should be enabled in the region.
     """
-    def __init__(self, enabled=True, dtype=torch.float32, layout=torch.strided):
+    def __init__(self, enabled=True, dtype=torch.float32, device=torch.device('cpu')):
         #torch.cuda.is_available():
         supported_dtype = [torch.float32, torch.bfloat16, torch.float16]
-        supported_layout = [torch.strided, torch._mkldnn]
+        supported_device = [torch.device('cpu'), torch.device('cuda')]
 
-        if (dtype not in supported_dtype) or (layout not in supported_layout):
+        if (dtype not in supported_dtype) or (device not in supported_device):
             warnings.warn("In CPU autocast, but the target dtype or layout is not supported. Disable the autocast.")
             warnings.warn("Supported dtype input is: torch.float32, torch.bfloat16.")
-            warnings.warn("Supported layout input is: torch.strided, torch._mkldnn.")
+            warnings.warn("Supported device input is: torch.device('cpu'), torch.device('cuda').")
             enabled = False
             self._dtype = torch.float32
-            self._layout = torch.strided
+            self._device = torch.device('cpu')
         else:
             warnings.warn("Autocast: set dtype and layout")
             self._dtype = dtype
-            self._layout = layout
+            self._device = device
         self._enabled = enabled
-        self._use_cuda = torch.cuda.is_available()
+        #self._use_cuda = torch.cuda.is_available()
 
     def __enter__(self):
-        self.prev = torch.is_autocast_enabled(self._use_cuda)
+        self.prev = torch.is_autocast_enabled(self._device)
         self.prev_dtype = torch.get_autocast_dtype()
-        self.prev_layout = torch.get_autocast_layout()
-        torch.set_autocast_enabled(self._enabled, self._use_cuda)
+        torch.set_autocast_enabled(self._enabled, self._device)
         torch.set_autocast_dtype(self._dtype)
-        torch.set_autocast_layout(self._layout)
         torch.autocast_increment_nesting()
 
     def __exit__(self, *args):
@@ -146,9 +144,8 @@ class autocast(object):
         #if self._autocast_cpu:
         if torch.autocast_decrement_nesting() == 0:
             torch.clear_autocast_cache()
-        torch.set_autocast_enabled(self.prev, self._use_cuda)
+        torch.set_autocast_enabled(self.prev, self._device)
         torch.set_autocast_dtype(self.prev_dtype)
-        torch.set_autocast_layout(self.prev_layout)
         return False
 
     def __call__(self, func):

@@ -210,13 +210,14 @@ namespace torch { namespace autograd {
 static PyObject * set_autocast_enabled(PyObject* _unused, PyObject *args) {
   HANDLE_TH_ERRORS
   int enabled;
-  int use_cuda;
-  if (!PyArg_ParseTuple(args, "pp", &enabled, &use_cuda)) {
+  PyObject * device;
+  if (!PyArg_ParseTuple(args, "pO", &enabled, &device)) {
     throw TypeError("enabled and use_cuda must be a bool in set_autocast_enabled");
   }
   //std::cout<<"enabled is: "<<enabled<<std::endl;
   //std::cout<<"use_cuda is: "<<use_cuda<<std::endl;
-  at::autocast::set_enabled(enabled, use_cuda);
+  at::Device targetDevice = reinterpret_cast<THPDevice*>(device)->device;
+  at::autocast::set_enabled(enabled, targetDevice.type());
   Py_RETURN_NONE;
   END_HANDLE_TH_ERRORS
 }
@@ -249,10 +250,11 @@ static PyObject * set_autocast_layout(PyObject* _unused, PyObject *arg) {
 
 static PyObject * is_autocast_enabled(PyObject* _unused, PyObject *arg) {
   HANDLE_TH_ERRORS
-  if (!PyBool_Check(arg)) {
-    throw TypeError("use_cuda must be a bool (got %s)", Py_TYPE(arg)->tp_name);
+  if (!THPDevice_Check(arg)) {
+    throw TypeError("device must be a torch.device (got %s)", Py_TYPE(arg)->tp_name);
   }
-  if (at::autocast::is_enabled(arg == Py_True)) {
+  at::Device targetDevice = reinterpret_cast<THPDevice*>(arg)->device;
+  if (at::autocast::is_enabled(targetDevice.type())) {
     Py_RETURN_TRUE;
   } else {
     Py_RETURN_FALSE;

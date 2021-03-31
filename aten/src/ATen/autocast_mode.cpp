@@ -41,16 +41,16 @@ std::map<int, at::Layout> inv_layout_priority = flip_map(layout_priority);
   {STRIDED_LAYOUT_PRIORITY, at::kStrided},
 };*/
 
-bool is_enabled(bool use_cuda) {
-  if(use_cuda){
+bool is_enabled(c10::DeviceType TargetDeviceType) {
+  if(TargetDeviceType == c10::DeviceType::CUDA){
     return c10::impl::tls_is_dispatch_key_included(DispatchKey::Autocast);
   }else{
     return c10::impl::tls_is_dispatch_key_included(DispatchKey::AutocastCPU);
   }
 }
 
-void set_enabled(bool new_enabled, bool use_cuda) {
-  if(use_cuda){
+void set_enabled(bool new_enabled, c10::DeviceType TargetDeviceType) {
+  if(TargetDeviceType == c10::DeviceType::CUDA){
     c10::impl::tls_set_dispatch_key_included(DispatchKey::Autocast, new_enabled);
   }else{
     c10::impl::tls_set_dispatch_key_included(DispatchKey::AutocastCPU, new_enabled);

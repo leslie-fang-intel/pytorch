@@ -13,8 +13,8 @@ namespace autocast {
 
 #define ADD_NS(RAW_OP) at::RAW_OP
 
-TORCH_API bool is_enabled(bool use_cuda);
-TORCH_API void set_enabled(bool enabled, bool use_cuda);
+TORCH_API bool is_enabled(c10::DeviceType TargetDeviceType);
+TORCH_API void set_enabled(bool enabled, c10::DeviceType TargetDeviceType);
 TORCH_API at::ScalarType get_dtype();
 TORCH_API at::Layout get_layout();
 TORCH_API void set_dtype(at::ScalarType);
