@@ -309,11 +309,15 @@ void generic_wrapper_fallback(const OperatorHandle& op, torch::jit::Stack* stack
   }
 
   if(use_cuda){
-    c10::impl::tls_set_dispatch_key_included(DispatchKey::AutocastCUDA, true);
+    c10::impl::IncludeDispatchKeyGuard autocast_cuda(DispatchKey::AutocastCUDA);
+    //c10::impl::tls_set_dispatch_key_included(DispatchKey::AutocastCUDA, true);
+    op.callBoxed(stack);
   }else{
-    c10::impl::tls_set_dispatch_key_included(DispatchKey::AutocastCPU, true);
+    //TORCH_WARN("-------------LeslieDebug: Enable autocastCPU--------------");
+    c10::impl::IncludeDispatchKeyGuard autocast_cpu(DispatchKey::AutocastCPU);
+    //c10::impl::tls_set_dispatch_key_included(DispatchKey::AutocastCPU, true);
+    op.callBoxed(stack);
   }
-  op.callBoxed(stack);
   return;
 }
 
