@@ -236,7 +236,7 @@ auto ConvParams::use_mkldnn(const at::Tensor& input, const at::Tensor& weight) c
   }
   return (input.is_mkldnn()) || // input is mkldnn Tensor
     (input.device().is_cpu() &&
-     input.scalar_type() == kFloat && // only on CPU Float Tensors
+     (input.scalar_type() == kFloat || input.scalar_type() == kBFloat16) && // only on CPU Float Tensors
      !transposed && // or transposed tensors
      // For 1x1 filters, MKLDNN is faster than THNN when multi-threaded,
      // but THNN is faster when single-threaded.
