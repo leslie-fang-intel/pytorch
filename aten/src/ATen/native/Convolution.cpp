@@ -235,6 +235,9 @@ auto ConvParams::use_mkldnn(const at::Tensor& input, const at::Tensor& weight) c
   if (!at::globalContext().userEnabledMkldnn()) {
     return false;
   }
+  if (input.device().is_cpu() && input.scalar_type() == kBFloat16) {
+    return true;
+  }
   return (input.is_mkldnn()) || // input is mkldnn Tensor
     (input.device().is_cpu() &&
      input.scalar_type() == kFloat && // only on CPU Float Tensors
@@ -546,8 +549,9 @@ static at::Tensor subtensor(at::Tensor& tensor, int dim, int groups, int g) {
   if (!tensor.defined()) {
     return at::Tensor();
   }
+  auto memory_format = tensor.suggest_memory_format();
   int64_t n = tensor.sizes()[dim] / groups;
-  return tensor.narrow(dim, n * g, n).contiguous();
+  return tensor.narrow(dim, n * g, n).contiguous(memory_format);
 }
 
 
@@ -898,9 +902,15 @@ at::Tensor _convolution(
              || (input.is_mkldnn() && bias.device().is_cpu() && bias.scalar_type() == kFloat),
              "Input type (", input.toString(), ") and bias type (", bias.toString(),
              ") should be the same or input should be a MKLDNN tensor and bias is a dense tensor");
+    bool use_channels_last = input.suggest_memory_format() == at::MemoryFormat::ChannelsLast ||
+                             weight.suggest_memory_format() == at::MemoryFormat::ChannelsLast;
+    auto mkldnn_memory_format = use_channels_last ? at::MemoryFormat::ChannelsLast
+                                                  : at::MemoryFormat::Contiguous;
     if (!input_is_mkldnn) {
-      output = at::mkldnn_convolution(input.contiguous(), weight.contiguous(), bias.defined() ? bias.contiguous() : bias,
-                                      params.padding, params.stride, params.dilation, params.groups);
+      output = at::mkldnn_convolution(
+          input.contiguous(mkldnn_memory_format), weight.contiguous(mkldnn_memory_format),
+          bias.defined() ? bias.contiguous() : bias,
+          params.padding, params.stride, params.dilation, params.groups);
     } else {
       // do not call contiguous on mkldnn tensor
       output = at::mkldnn_convolution(input, weight, bias,
@@ -940,12 +950,20 @@ at::Tensor _convolution(
           params.stride,
           params.padding);
   } else if (input.device().is_cpu() || input.is_cuda()) {
+    bool is_channels_last_supported = (input.ndimension() == 4) &&
+        !params.use_nnpack(input, weight) && input.device().is_cpu() &&
+        !params.is_dilated();
+    if (is_channels_last_supported) {
+      auto memory_format = input.suggest_memory_format();
+      input = input.contiguous(memory_format);
+    } else {
+      input = input.contiguous();
+    }
     if (params.groups == 1) {
       output = at::_convolution_nogroup(
-          input.contiguous(), weight, bias, params.stride, params.padding, params.dilation, params.transposed, params.output_padding);
+          input, weight, bias, params.stride, params.padding, params.dilation, params.transposed, params.output_padding);
     } else {
       std::vector<Tensor> outputs(params.groups);
-      input = input.contiguous();
       for (int g = 0; g < params.groups; ++g) {
         auto input_g = subtensor(input, 1, params.groups, g);
         auto weight_g = subtensor(weight, 0, params.groups, g);
