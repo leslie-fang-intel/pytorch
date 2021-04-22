@@ -13,11 +13,14 @@ namespace at {
 namespace autocast {
 
 bool is_enabled() {
-  return c10::impl::tls_is_dispatch_key_included(DispatchKey::Autocast);
+  //return c10::impl::tls_is_dispatch_key_included(DispatchKey::Autocast);
+  return !c10::impl::tls_is_dispatch_key_excluded(DispatchKey::AutocastCUDA) || !c10::impl::tls_is_dispatch_key_excluded(DispatchKey::AutocastCPU);
 }
 
 void set_enabled(bool new_enabled) {
-  c10::impl::tls_set_dispatch_key_included(DispatchKey::Autocast, new_enabled);
+  //c10::impl::tls_set_dispatch_key_included(DispatchKey::Autocast, new_enabled);
+  c10::impl::tls_set_dispatch_key_excluded(DispatchKey::AutocastCPU, !new_enabled);
+  c10::impl::tls_set_dispatch_key_excluded(DispatchKey::AutocastCUDA, !new_enabled);
 }
 
 namespace {
@@ -68,7 +71,7 @@ Tensor cached_cast(at::ScalarType to_type, const Tensor& arg) {
   if (is_eligible(arg) && (arg.scalar_type() != to_type)) {
     // Heuristic:  Do what Apex does, and cache fp16 casts of fp32 model weights (leaves).
     // See cached_casts declaration above for detailed strategy.
-    bool can_try_cache = (to_type == at::kHalf && arg.scalar_type() == at::kFloat && arg.requires_grad() && arg.is_leaf() && !arg.is_view());
+    bool can_try_cache = ( (to_type == at::kHalf || to_type == at::kBFloat16) && arg.scalar_type() == at::kFloat && arg.requires_grad() && arg.is_leaf() && !arg.is_view());
     if (can_try_cache) {
       auto it = cached_casts.find(arg.unsafeGetTensorImpl());
       if (it != cached_casts.end()) {
@@ -90,6 +93,7 @@ Tensor cached_cast(at::ScalarType to_type, const Tensor& arg) {
 // Wrapper templates below are specialized based on a policy template parameter.
 enum class CastPolicy : uint8_t {
   fp16 = 0, // Cast all inputs to at::kHalf before running the op.
+  bf16,
   fp32, // Cast all inputs to at::kFloat before running the op.
   fp32_set_opt_dtype, // Treats functions (like softmax) that
                       //   1. we'd like to run in fp32 and
@@ -103,6 +107,7 @@ enum class CastPolicy : uint8_t {
                      // The wrapper policy is:  append at::kFloat to the args, and redispatch to the
                      // type-aware overload.
   promote, // Run in the widest dtype among several args.
+  promote_bf16, // Run in the widest dtype among several args.
 };
 
 /********************************************************************************************************
@@ -128,11 +133,21 @@ struct WrapFunction_<CastPolicy::fp16, Redispatch, F, Ret, guts::typelist::typel
   }
 };
 
+// CastPolicy::bf16
+template<class Redispatch, Redispatch* F, class Ret, class... Args>
+struct WrapFunction_<CastPolicy::bf16, Redispatch, F, Ret, guts::typelist::typelist<Args...>> {
+  static Ret call(Args... args) {
+    c10::impl::ExcludeDispatchKeyGuard no_autocast(DispatchKey::AutocastCPU);
+    return (*F)(cached_cast(at::kBFloat16, args)...);
+  }
+};
+
 // CastPolicy::fp32
 template<class Redispatch, Redispatch* F, class Ret, class... Args>
 struct WrapFunction_<CastPolicy::fp32, Redispatch, F, Ret, guts::typelist::typelist<Args...>> {
   static Ret call(Args... args) {
     c10::impl::ExcludeDispatchKeyGuard no_autocast(DispatchKey::Autocast);
+    c10::impl::ExcludeDispatchKeyGuard no_autocastCPU(DispatchKey::AutocastCPU);
     return (*F)(cached_cast(at::kFloat, args)...);
   }
 };
@@ -168,6 +183,16 @@ struct WrapFunction_<CastPolicy::promote, Redispatch, F, Ret, guts::typelist::ty
   static Ret call(Args... args) {
     c10::impl::ExcludeDispatchKeyGuard no_autocast(DispatchKey::Autocast);
     auto to_type = promote_type(at::kHalf, args...);
+    return (*F)(cached_cast(to_type, args)...);
+  }
+};
+
+// CastPolicy::promote_fb16
+template<class Redispatch, Redispatch* F, class Ret, class... Args>
+struct WrapFunction_<CastPolicy::promote_bf16, Redispatch, F, Ret, guts::typelist::typelist<Args...>> {
+  static Ret call(Args... args) {
+    c10::impl::ExcludeDispatchKeyGuard no_autocast(DispatchKey::AutocastCPU);
+    auto to_type = promote_type(at::kBFloat16, args...);
     return (*F)(cached_cast(to_type, args)...);
   }
 };
@@ -411,6 +436,76 @@ TORCH_LIBRARY_IMPL(aten, Autocast, m) {
 
   m.impl(TORCH_SELECTIVE_NAME("aten::binary_cross_entropy"),
          TORCH_FN((&at::autocast::binary_cross_entropy_banned)));
+}
+
+TORCH_LIBRARY_IMPL(_, AutocastCPU, m) {
+  m.fallback(torch::CppFunction::makeFallthrough());
+}
+
+TORCH_LIBRARY_IMPL(aten, AutocastCPU, m) {
+  //BF16
+  KERNEL(ADD_NS(conv1d), "conv1d", Tensor (const Tensor &, const Tensor &, const c10::optional<Tensor>&, IntArrayRef, IntArrayRef, IntArrayRef, int64_t), bf16)
+  KERNEL(ADD_NS(conv2d), "conv2d", Tensor (const Tensor &, const Tensor &, const c10::optional<Tensor>&, IntArrayRef, IntArrayRef, IntArrayRef, int64_t), bf16)
+  KERNEL(ADD_NS(conv3d), "conv3d", Tensor (const Tensor &, const Tensor &, const c10::optional<Tensor>&, IntArrayRef, IntArrayRef, IntArrayRef, int64_t), bf16)
+  KERNEL(ADD_NS(_log_softmax), "_log_softmax", Tensor (const Tensor &, int64_t, bool), bf16)
+  KERNEL(ADD_NS(bmm), "bmm", Tensor (const Tensor &, const Tensor &), bf16)
+  KERNEL(ADD_NS(mm), "mm", Tensor (const Tensor &, const Tensor &), bf16)
+  KERNEL(ADD_NS(baddbmm), "baddbmm", Tensor (const Tensor &, const Tensor &, const Tensor &, const Scalar&, const Scalar&), bf16)
+  KERNEL(ADD_NS(addmm), "addmm", Tensor (const Tensor &, const Tensor &, const Tensor &, const Scalar&, const Scalar&), bf16)
+  KERNEL(ADD_NS(addbmm), "addbmm", Tensor (const Tensor &, const Tensor &, const Tensor &, const Scalar&, const Scalar&), bf16)
+  KERNEL(ADD_NS(linear), "linear", Tensor (const Tensor &, const Tensor &, const c10::optional<Tensor> &), bf16)
+
+  // fp32 cast policy
+  KERNEL(ADD_NS(conv_transpose3d), "conv_transpose3d.input", Tensor (const Tensor &, const Tensor &, const c10::optional<Tensor> &, IntArrayRef, IntArrayRef, IntArrayRef, int64_t, IntArrayRef), fp32)
+  KERNEL(ADD_NS(batch_norm), "batch_norm", Tensor (const Tensor &, const c10::optional<Tensor> &, const c10::optional<Tensor> &, const c10::optional<Tensor> &, const c10::optional<Tensor> &, bool, double, double, bool), fp32)
+  KERNEL(ADD_NS(max_pool2d), "max_pool2d", Tensor (const Tensor &, IntArrayRef, IntArrayRef, IntArrayRef, IntArrayRef, bool), fp32)
+  KERNEL(ADD_NS(adaptive_avg_pool2d), "adaptive_avg_pool2d", Tensor (const Tensor &, IntArrayRef), fp32)
+
+  KERNEL(ADD_NS(convolution), "convolution", Tensor (const Tensor &, const Tensor &, const c10::optional<Tensor>&, IntArrayRef, IntArrayRef, IntArrayRef, bool, IntArrayRef, int64_t), fp32)
+  KERNEL(ADD_NS(dropout), "dropout", Tensor (const Tensor &, double, bool), fp32)
+  KERNEL(ADD_NS(avg_pool2d), "avg_pool2d", Tensor (const Tensor &, IntArrayRef, IntArrayRef, IntArrayRef, bool, bool, c10::optional<int64_t>), fp32)
+  KERNEL(ADD_NS(avg_pool3d), "avg_pool3d", Tensor (const Tensor &, IntArrayRef, IntArrayRef, IntArrayRef, bool, bool, c10::optional<int64_t>), fp32)
+  KERNEL(ADD_NS(gelu), "gelu", Tensor (const Tensor &), fp32)
+  KERNEL(ADD_NS(upsample_nearest1d), "upsample_nearest1d", Tensor (const Tensor &, IntArrayRef, c10::optional<double>), fp32)
+  KERNEL(ADD_NS(upsample_nearest1d), "upsample_nearest1d.vec", Tensor (const Tensor &, c10::optional<IntArrayRef>, c10::optional<ArrayRef<double>>), fp32)
+  KERNEL(ADD_NS(upsample_nearest2d), "upsample_nearest2d", Tensor (const Tensor &, IntArrayRef, c10::optional<double>, c10::optional<double>), fp32)
+  KERNEL(ADD_NS(upsample_nearest2d), "upsample_nearest2d.vec", Tensor (const Tensor &, c10::optional<IntArrayRef>, c10::optional<ArrayRef<double>>), fp32)
+  KERNEL(ADD_NS(upsample_nearest3d), "upsample_nearest3d", Tensor (const Tensor &, IntArrayRef, c10::optional<double>, c10::optional<double>, c10::optional<double>), fp32)
+  KERNEL(ADD_NS(upsample_nearest3d), "upsample_nearest3d.vec", Tensor (const Tensor &, c10::optional<IntArrayRef>, c10::optional<ArrayRef<double>>), fp32)
+  KERNEL(ADD_NS(upsample_linear1d), "upsample_linear1d", Tensor (const Tensor &, IntArrayRef, bool, c10::optional<double>), fp32)
+  KERNEL(ADD_NS(upsample_linear1d), "upsample_linear1d.vec", Tensor (const Tensor &, c10::optional<IntArrayRef>, bool, c10::optional<ArrayRef<double>>), fp32)
+  KERNEL(ADD_NS(upsample_bilinear2d), "upsample_bilinear2d", Tensor (const Tensor &, IntArrayRef, bool, c10::optional<double>, c10::optional<double>), fp32)
+  KERNEL(ADD_NS(upsample_bilinear2d), "upsample_bilinear2d.vec", Tensor (const Tensor &, c10::optional<IntArrayRef>, bool, c10::optional<ArrayRef<double>>), fp32)
+  KERNEL(ADD_NS(upsample_trilinear3d), "upsample_trilinear3d", Tensor (const Tensor &, IntArrayRef, bool, c10::optional<double>, c10::optional<double>, c10::optional<double>), fp32)
+  KERNEL(ADD_NS(upsample_trilinear3d), "upsample_trilinear3d.vec", Tensor (const Tensor &, c10::optional<IntArrayRef>, bool, c10::optional<ArrayRef<double>>), fp32)
+  KERNEL(ADD_NS(binary_cross_entropy), "binary_cross_entropy", Tensor (const Tensor &, const Tensor &, const c10::optional<Tensor>&, int64_t), fp32)
+  KERNEL(ADD_NS(binary_cross_entropy_with_logits), "binary_cross_entropy_with_logits", Tensor (const Tensor &, const Tensor &, const c10::optional<Tensor>&, const c10::optional<Tensor>&, int64_t), fp32)
+  KERNEL(ADD_NS(pow), "pow.Tensor_Scalar", Tensor (const Tensor &, const Scalar &), fp32)
+  KERNEL(ADD_NS(pow), "pow.Tensor_Tensor", Tensor (const Tensor &, const Tensor &), fp32)
+  KERNEL(ADD_NS(pow), "pow.Scalar", Tensor (const Scalar&, const Tensor &), fp32)
+  KERNEL(ADD_NS(smooth_l1_loss), "smooth_l1_loss", Tensor (const Tensor &, const Tensor &, int64_t, double), fp32)
+  KERNEL(ADD_NS(reflection_pad1d), "reflection_pad1d", Tensor (const Tensor &, IntArrayRef), fp32)
+  KERNEL(ADD_NS(std), "std", Tensor (const Tensor &, bool), fp32)
+  KERNEL(ADD_NS(std), "std.dim", Tensor (const Tensor &, IntArrayRef, bool, bool), fp32)
+  KERNEL(ADD_NS(instance_norm), "instance_norm", Tensor (const Tensor &, const c10::optional<Tensor>&, const c10::optional<Tensor>&, const c10::optional<Tensor>&, const c10::optional<Tensor>&, bool, double, double, bool), fp32)
+
+  // promote
+  KERNEL(ADD_NS(cat), "cat", Tensor (TensorList, int64_t), promote_bf16)
+  KERNEL(ADD_NS(stack), "stack", Tensor (TensorList, int64_t), promote_bf16)
+
+  m.impl(TORCH_SELECTIVE_NAME("aten::topk"),
+         TORCH_FN((&WrapFunction<CastPolicy::fp32,
+                                 std::tuple<Tensor,Tensor> (const Tensor &, int64_t, int64_t, bool, bool),
+                                 std::tuple<Tensor,Tensor> (const Tensor &, int64_t, int64_t, bool, bool),
+                                 &ADD_NS(topk)>::type::call)));
+
+  m.impl(TORCH_SELECTIVE_NAME("aten::sort"),
+         TORCH_FN((&WrapFunction<CastPolicy::fp32,
+                                 std::tuple<Tensor,Tensor> (const Tensor &, int64_t, bool),
+                                 std::tuple<Tensor,Tensor> (const Tensor &, int64_t, bool),
+                                 &ADD_NS(sort)>::type::call)));
+
+
 }
 
 }

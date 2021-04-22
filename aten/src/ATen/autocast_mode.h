@@ -5,7 +5,7 @@ namespace autocast {
 
 namespace {
   bool is_autocast_eligible(const Tensor& tensor) {
-    return (tensor.is_cuda() || tensor.is_xla()) && tensor.is_floating_point();
+    return  tensor.is_floating_point();
   }
 } // namespace
 
@@ -33,6 +33,8 @@ inline at::ScalarType prioritize(at::ScalarType current, const Tensor& nextArg) 
       return current; // ignores double tensors
     } else if (current == at::kFloat || next == at::kFloat) {
       return at::kFloat; // prioritizes float over half
+    } else if (current == at::kBFloat16 && next == at::kBFloat16) {
+      return at::kBFloat16;
     } else if (current == at::kHalf && next == at::kHalf) {
       return at::kHalf;
     } else {
