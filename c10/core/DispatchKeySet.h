@@ -207,6 +207,11 @@ constexpr DispatchKeySet autograd_dispatch_keyset = DispatchKeySet({
     DispatchKey::AutogradOther,
 });
 
+constexpr DispatchKeySet autocast_dispatch_keyset = DispatchKeySet({
+    DispatchKey::AutocastCPU,
+    DispatchKey::AutocastCUDA,
+});
+
 // See Note [TLS Initialization]
 constexpr DispatchKeySet default_included_set = DispatchKeySet({
     DispatchKey::BackendSelect,
@@ -290,7 +295,7 @@ static inline DispatchKey legacyExtractDispatchKey(DispatchKeySet s) {
   // top of existing "backend" keys like CPU/CUDA, you need to add it
   // here.  At the moment, autograd keys and InplaceOrView key need this
   // treatment;
-  return (s - autograd_dispatch_keyset_with_InplaceOrView).highestPriorityTypeId();
+  return (s - autograd_dispatch_keyset_with_InplaceOrView - autocast_dispatch_keyset).highestPriorityTypeId();
 }
 
 template<class T>
