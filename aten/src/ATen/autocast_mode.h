@@ -14,6 +14,8 @@ TORCH_API void set_enabled(bool enabled);
 TORCH_API void clear_cache();
 TORCH_API int increment_nesting();
 TORCH_API int decrement_nesting();
+TORCH_API at::ScalarType get_autocast_dtype();
+TORCH_API void set_autocast_dtype(at::ScalarType dtype);
 
 /********************************************************************
 Logic to extract the promote type from any Tensor or TensorList args.
