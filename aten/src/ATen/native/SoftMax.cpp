@@ -64,57 +64,119 @@ void host_softmax(Tensor output, const Tensor& input, const int64_t dim) {
 }
 
 template <typename scalar_t, bool LogSoftMax>
-void host_softmax_backward(
-    Tensor& gI,
-    const Tensor& grad,
-    const Tensor& output,
-    int64_t dim) {
+struct host_softmax_backward {
+  static void apply(
+      Tensor& gI,
+      const Tensor& grad,
+      const Tensor& output,
+      int64_t dim) {
 
-  int64_t outer_size = 1;
-  int64_t dim_size = grad.size(dim);
-  int64_t inner_size = 1;
-  for (int64_t i = 0; i < dim; ++i)
-    outer_size *= grad.size(i);
-  for (int64_t i = dim + 1; i < grad.dim(); ++i)
-    inner_size *= grad.size(i);
-  int64_t dim_stride = inner_size;
-  int64_t outer_stride = dim_size * dim_stride;
-  scalar_t* gradInput_data_base = gI.data_ptr<scalar_t>();
-  scalar_t* output_data_base = output.data_ptr<scalar_t>();
-  scalar_t* gradOutput_data_base = grad.data_ptr<scalar_t>();
-  int64_t grain_size = std::min(internal::GRAIN_SIZE / dim_size, (int64_t)1);
-  parallel_for(
-      0, outer_size * inner_size, grain_size, [&](int64_t begin, int64_t end) {
-        for (int64_t i = begin; i < end; i++) {
-          int64_t outer_idx = i / inner_size;
-          int64_t inner_idx = i % inner_size;
-          scalar_t* gradInput_data =
-              gradInput_data_base + outer_idx * outer_stride + inner_idx;
-          scalar_t* output_data =
-              output_data_base + outer_idx * outer_stride + inner_idx;
-          const scalar_t* gradOutput_data =
-              gradOutput_data_base + outer_idx * outer_stride + inner_idx;
+    int64_t outer_size = 1;
+    int64_t dim_size = grad.size(dim);
+    int64_t inner_size = 1;
+    for (int64_t i = 0; i < dim; ++i)
+      outer_size *= grad.size(i);
+    for (int64_t i = dim + 1; i < grad.dim(); ++i)
+      inner_size *= grad.size(i);
+    int64_t dim_stride = inner_size;
+    int64_t outer_stride = dim_size * dim_stride;
+    scalar_t* gradInput_data_base = gI.data_ptr<scalar_t>();
+    scalar_t* output_data_base = output.data_ptr<scalar_t>();
+    scalar_t* gradOutput_data_base = grad.data_ptr<scalar_t>();
+    int64_t grain_size = std::min(internal::GRAIN_SIZE / dim_size, (int64_t)1);
+    parallel_for(
+        0, outer_size * inner_size, grain_size, [&](int64_t begin, int64_t end) {
+          for (int64_t i = begin; i < end; i++) {
+            int64_t outer_idx = i / inner_size;
+            int64_t inner_idx = i % inner_size;
+            scalar_t* gradInput_data =
+                gradInput_data_base + outer_idx * outer_stride + inner_idx;
+            scalar_t* output_data =
+                output_data_base + outer_idx * outer_stride + inner_idx;
+            const scalar_t* gradOutput_data =
+                gradOutput_data_base + outer_idx * outer_stride + inner_idx;
 
-          acc_type<scalar_t, false> sum = 0;
-          for (int64_t d = 0; d < dim_size; d++)
-            if (LogSoftMax)
-              sum += gradOutput_data[d * dim_stride];
-            else
-              sum +=
-                  gradOutput_data[d * dim_stride] * output_data[d * dim_stride];
+            acc_type<scalar_t, false> sum = 0;
+            for (int64_t d = 0; d < dim_size; d++)
+              if (LogSoftMax)
+                sum += gradOutput_data[d * dim_stride];
+              else
+                sum +=
+                    gradOutput_data[d * dim_stride] * output_data[d * dim_stride];
 
-          for (int64_t d = 0; d < dim_size; d++) {
-            if (LogSoftMax) {
-              gradInput_data[d * dim_stride] = gradOutput_data[d * dim_stride] -
-                  std::exp(output_data[d * dim_stride]) * sum;
-            } else {
-              gradInput_data[d * dim_stride] = output_data[d * dim_stride] *
-                  (gradOutput_data[d * dim_stride] - sum);
+            for (int64_t d = 0; d < dim_size; d++) {
+              if (LogSoftMax) {
+                gradInput_data[d * dim_stride] = gradOutput_data[d * dim_stride] -
+                    std::exp(output_data[d * dim_stride]) * sum;
+              } else {
+                gradInput_data[d * dim_stride] = output_data[d * dim_stride] *
+                    (gradOutput_data[d * dim_stride] - sum);
+              }
             }
           }
-        }
-      });
-}
+        });
+  }
+};
+
+template <bool LogSoftMax>
+struct host_softmax_backward<BFloat16, LogSoftMax> {
+  static void apply(
+      Tensor& gI,
+      const Tensor& grad,
+      const Tensor& output,
+      int64_t dim) {
+    
+    TORCH_WARN("Hit Template");
+
+    using scalar_t = BFloat16;
+
+    int64_t outer_size = 1;
+    int64_t dim_size = grad.size(dim);
+    int64_t inner_size = 1;
+    for (int64_t i = 0; i < dim; ++i)
+      outer_size *= grad.size(i);
+    for (int64_t i = dim + 1; i < grad.dim(); ++i)
+      inner_size *= grad.size(i);
+    int64_t dim_stride = inner_size;
+    int64_t outer_stride = dim_size * dim_stride;
+    scalar_t* gradInput_data_base = gI.data_ptr<scalar_t>();
+    scalar_t* output_data_base = output.data_ptr<scalar_t>();
+    scalar_t* gradOutput_data_base = grad.data_ptr<scalar_t>();
+    int64_t grain_size = std::min(internal::GRAIN_SIZE / dim_size, (int64_t)1);
+    parallel_for(
+        0, outer_size * inner_size, grain_size, [&](int64_t begin, int64_t end) {
+          for (int64_t i = begin; i < end; i++) {
+            int64_t outer_idx = i / inner_size;
+            int64_t inner_idx = i % inner_size;
+            scalar_t* gradInput_data =
+                gradInput_data_base + outer_idx * outer_stride + inner_idx;
+            scalar_t* output_data =
+                output_data_base + outer_idx * outer_stride + inner_idx;
+            const scalar_t* gradOutput_data =
+                gradOutput_data_base + outer_idx * outer_stride + inner_idx;
+
+            acc_type<float, false> sum = 0;
+            for (int64_t d = 0; d < dim_size; d++)
+              if (LogSoftMax)
+                sum += c10::detail::f32_from_bits(gradOutput_data[d * dim_stride].x);
+              else
+                sum +=
+                    c10::detail::f32_from_bits(gradOutput_data[d * dim_stride].x) * c10::detail::f32_from_bits(output_data[d * dim_stride].x);
+
+            for (int64_t d = 0; d < dim_size; d++) {
+              if (LogSoftMax) {
+                gradInput_data[d * dim_stride] = c10::BFloat16(c10::detail::f32_from_bits(gradOutput_data[d * dim_stride].x) -
+                    std::exp(c10::detail::f32_from_bits(output_data[d * dim_stride].x)) * sum);
+              } else {
+                gradInput_data[d * dim_stride] = c10::BFloat16(c10::detail::f32_from_bits(output_data[d * dim_stride].x) *
+                    (c10::detail::f32_from_bits(gradOutput_data[d * dim_stride].x) - sum));
+              }
+            }
+          }
+        });
+  }
+};
+
 } // namespace
 
 Tensor softmax_cpu(const Tensor& input_, const int64_t dim_, const bool half_to_float) {
@@ -206,8 +268,8 @@ Tensor softmax_backward_cpu(
   if (grad.ndimension() > 0 && dim == grad.ndimension() - 1) {
     softmax_backward_lastdim_kernel(kCPU, grad_input, grad, output);
   } else {
-    AT_DISPATCH_FLOATING_TYPES(grad.scalar_type(), "softmax_backward", [&] {
-      host_softmax_backward<scalar_t, false>(grad_input, grad, output, dim);
+    AT_DISPATCH_FLOATING_TYPES_AND(at::ScalarType::BFloat16, grad.scalar_type(), "softmax_backward", [&] {
+      host_softmax_backward<scalar_t, false>::apply(grad_input, grad, output, dim);
     });
   }
   return grad_input;
@@ -246,7 +308,7 @@ Tensor log_softmax_backward_cpu(
   } else {
     AT_DISPATCH_FLOATING_TYPES_AND(at::ScalarType::BFloat16, grad.scalar_type(),
                                    "log_softmax_backward", [&] {
-                                     host_softmax_backward<scalar_t, true>(
+                                     host_softmax_backward<scalar_t, true>::apply(
                                          grad_input, grad, output, dim);
                                    });
   }
