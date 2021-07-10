@@ -207,7 +207,6 @@ struct vec_host_softmax_lastdim {
   }
 };
 
-#if defined(CPU_CAPABILITY_AVX2) && !defined(_MSC_VER)
 inline void _vec_softmax(
     BFloat16* input_data_base,
     BFloat16* output_data_base,
@@ -319,7 +318,6 @@ inline void _vec_softmax(
         }
       });
 }
-#endif
 
 template <typename scalar_t>
 inline void assert_vectorized_step(int vectorized_step){
