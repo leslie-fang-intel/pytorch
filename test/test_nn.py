@@ -16281,8 +16281,8 @@ class TestNNDeviceType(NNTestCase):
 
     @onlyOnCPUAndCUDA
     def test_softmax_bfloat16(self, device):
-        for dim in [0, 1]:
-            self._test_bfloat16_ops(torch.nn.Softmax(dim=dim), device, inp_dims=(16, 32), prec=1e-2)
+        for dim in [0, 1, 2, 3]:
+            self._test_bfloat16_ops(torch.nn.Softmax(dim=dim), device, inp_dims=(16, 33, 15, 16), prec=1e-2)
 
     @onlyCUDA
     @skipCUDAIfRocm
