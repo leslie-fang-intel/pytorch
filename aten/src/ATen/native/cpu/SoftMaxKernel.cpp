@@ -225,8 +225,6 @@ inline void _vec_softmax(
   parallel_for(
       0, outer_size * inner_size, grain_size, [&](int64_t begin, int64_t end) {
         int64_t idx = begin;
-        std::unique_ptr<float[]> temp_scalar_input(new float[dim_size]());
-        std::unique_ptr<float[]> temp_scalar_output(new float[dim_size]());
         std::unique_ptr<float[]> temp_vec_input(new float[dim_size*vectorized_step*2]());
         std::unique_ptr<float[]> temp_vec_output(new float[dim_size*vectorized_step*2]());
         float* temp_vec_input_data = temp_vec_input.get();
@@ -247,7 +245,7 @@ inline void _vec_softmax(
             Vec max_m256_o2 = std::get<1>(convert_result);
             std::get<0>(convert_result).store(temp_vec_input_data);
             std::get<1>(convert_result).store(temp_vec_input_data + vectorized_step);
-            for (int64_t d = 1; d < dim_size; d += 1) {
+            for (int64_t d = 1; d < dim_size; d++) {
               Vec_bf16 input_m256_bf16 = Vec_bf16::loadu(input_data + d * dim_stride);
               convert_result = convert_bfloat16_float(input_m256_bf16);
               max_m256_o1 = vec::maximum(max_m256_o1, std::get<0>(convert_result));
@@ -258,7 +256,7 @@ inline void _vec_softmax(
             // Step2: Calculate sum
             Vec sum_m256_o1 = Vec(0.0);
             Vec sum_m256_o2 = Vec(0.0);
-            for (int64_t d = 0; d < dim_size; d += 1) {
+            for (int64_t d = 0; d < dim_size; d++) {
               Vec output_m256_o1 = Vec::loadu(temp_vec_input_data + d*vectorized_step*2);
               Vec output_m256_o2 = Vec::loadu(temp_vec_input_data + d*vectorized_step*2 + vectorized_step);
               output_m256_o1 = output_m256_o1.exp();
@@ -271,7 +269,7 @@ inline void _vec_softmax(
               sum_m256_o2 = sum_m256_o2 + output_m256_o2;
             }
             // Step3: Unify
-            for (int64_t d = 0; d < dim_size; d += 1) {
+            for (int64_t d = 0; d < dim_size; d++) {
               Vec output_m256_o1 = Vec::loadu(temp_vec_output_data + d*vectorized_step*2);
               Vec output_m256_o2 = Vec::loadu(temp_vec_output_data + d*vectorized_step*2 + vectorized_step);
               output_m256_o1 = output_m256_o1/sum_m256_o1;
@@ -295,22 +293,22 @@ inline void _vec_softmax(
               BFloat16* output_data =
                   output_data_base + outer_idx * outer_stride + inner_idx;
               // Step1: Get max score
-              temp_scalar_input[0] = float(input_data[0]);
-              float max_input = temp_scalar_input[0];
-              for (int64_t d = 1; d < dim_size; d += 1) {
-                temp_scalar_input[d] = float(input_data[d * dim_stride]);
-                max_input = std::max(max_input, temp_scalar_input[d]);
+              float max_input = float(input_data[0]);
+              for (int64_t d = 1; d < dim_size; d++) {
+                max_input = std::max(max_input, float(input_data[d * dim_stride]));
               }
               // Step2: Calculate the Sum
               float sum_data = 0.0;
-              for (int64_t d = 0; d < dim_size; d += 1) {
-                temp_scalar_output[d] = std::exp(temp_scalar_input[d] - max_input);
-                sum_data += temp_scalar_output[d];
+              float temp_output_data = 0.0;
+              for (int64_t d = 0; d < dim_size; d++) {
+                temp_output_data = std::exp(input_data[d * dim_stride] - max_input);
+                sum_data += temp_output_data;
+                output_data[d * dim_stride] = c10::BFloat16(temp_output_data);
               }
               // Step3: Unify
-              for (int64_t d = 0; d < dim_size; d += 1) {
+              for (int64_t d = 0; d < dim_size; d++) {
                 output_data[d * dim_stride] =
-                    c10::BFloat16(temp_scalar_output[d]/sum_data);
+                    c10::BFloat16(float(output_data[d * dim_stride])/sum_data);
               }
             }
             idx += tail_number;
@@ -372,20 +370,20 @@ inline void _vec_softmax(
                 output_data_base + outer_idx * outer_stride + inner_idx;
             // Step 1: Get max Score
             Vec max_m256 = Vec::loadu(input_data);
-            for (int64_t d = 1; d < dim_size; d += 1) {
+            for (int64_t d = 1; d < dim_size; d++) {
               Vec input_m256 = Vec::loadu(input_data + d * dim_stride);
               max_m256 = vec::maximum(max_m256, input_m256);
             }
             // Step2: Calculate sum
             Vec sum_m256 = Vec(0.0);
-            for (int64_t d = 0; d < dim_size; d += 1) {
+            for (int64_t d = 0; d < dim_size; d++) {
               Vec output_m256 =
                   (Vec::loadu(input_data + d * dim_stride) - max_m256).exp();
               output_m256.store(output_data + d * dim_stride);
               sum_m256 = sum_m256 + output_m256;
             }
             // Step3: Unify
-            for (int64_t d = 0; d < dim_size; d += 1) {
+            for (int64_t d = 0; d < dim_size; d++) {
               Vec output_m256 =
                   Vec::loadu(output_data + d * dim_stride) / sum_m256;
               output_m256.store(output_data + d * dim_stride);
@@ -407,18 +405,18 @@ inline void _vec_softmax(
                   output_data_base + outer_idx * outer_stride + inner_idx;
               // Step1: Get max score
               scalar_t max_input = input_data[0];
-              for (int64_t d = 1; d < dim_size; d += 1) {
+              for (int64_t d = 1; d < dim_size; d++) {
                 max_input = std::max(max_input, input_data[d * dim_stride]);
               }
               // Step2: Calculate the Sum
               scalar_t sum_data = 0;
-              for (int64_t d = 0; d < dim_size; d += 1) {
+              for (int64_t d = 0; d < dim_size; d++) {
                 output_data[d * dim_stride] =
                     std::exp(input_data[d * dim_stride] - max_input);
                 sum_data += output_data[d * dim_stride];
               }
               // Step3: Unify
-              for (int64_t d = 0; d < dim_size; d += 1) {
+              for (int64_t d = 0; d < dim_size; d++) {
                 output_data[d * dim_stride] =
                     output_data[d * dim_stride]/sum_data;
               }
