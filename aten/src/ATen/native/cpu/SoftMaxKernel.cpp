@@ -318,32 +318,6 @@ inline void _vec_softmax(
 }
 
 template <typename scalar_t>
-inline void assert_vectorized_step(int vectorized_step){
-    TORCH_CHECK(false, "unsupported dtype to do the vectorized calculation");
-}
-
-template <>
-inline void assert_vectorized_step<double>(int vectorized_step){
-    TORCH_CHECK(
-      vectorized_step == 4,
-      "vectorized_step must equal to 4 for dtype of double");
-}
-
-template <>
-inline void assert_vectorized_step<float>(int vectorized_step){
-    TORCH_CHECK(
-      vectorized_step == 8,
-      "vectorized_step must equal to 8 for dtype of float");
-}
-
-template <>
-inline void assert_vectorized_step<BFloat16>(int vectorized_step){
-    TORCH_CHECK(
-      vectorized_step == 16,
-      "vectorized_step must equal to 16 for dtype of bfloat16");
-}
-
-template <typename scalar_t>
 inline void _vec_softmax(
     scalar_t* input_data_base,
     scalar_t* output_data_base,
@@ -354,8 +328,7 @@ inline void _vec_softmax(
   int64_t dim_stride = inner_size;
   int64_t outer_stride = dim_size * dim_stride;
   int64_t grain_size = std::min(internal::GRAIN_SIZE / dim_size, (int64_t)1);
-  int vectorized_step = Vec().size(); // Currently, we only support scalar_t with bfloat16, float32 or double
-  assert_vectorized_step<scalar_t>(vectorized_step);
+  int vectorized_step = Vec().size();
   parallel_for(
       0, outer_size * inner_size, grain_size, [&](int64_t begin, int64_t end) {
         int64_t idx = begin;
