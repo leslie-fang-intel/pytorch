@@ -135,3 +135,24 @@ class LinearLeakyReLU(_FusedModule):
             'Incorrect types for input modules{}{}'.format(
                 type(linear), type(leaky_relu))
         super().__init__(linear, leaky_relu)
+
+class Conv2dAddRelu(torch.nn.Module):
+    r"""This is a sequential container which calls the Linear and LeakyReLU modules.
+    During quantization this will be replaced with the corresponding fused module."""
+    #def __init__(self, conv, add, relu, *args):
+    def __init__(self, relu, add, conv):
+        # assert type(conv) == Conv2d and type(leaky_relu) == torch.nn.LeakyReLU, \
+        #     'Incorrect types for input modules{}{}'.format(
+        #         type(linear), type(leaky_relu))
+        super().__init__()
+        # self.args = list(args)
+        # for arg in self.args:
+        #     print(arg)
+        self.conv = conv
+        # self.extra_input = extra_input
+        self.add = add
+        self.relu = relu
+
+    def forward(self, x1, x2):
+        x1 = self.conv(x1)
+        return self.relu(self.add(x1, x2))
