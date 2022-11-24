@@ -284,6 +284,12 @@ struct PackedConvWeightsOnednn : public ConvPackedParamsBase<kSpatialDim> {
       double output_scale,
       int64_t output_zero_point) override;
 
+  at::Tensor apply_add_relu(
+      const at::Tensor& input,
+      const at::Tensor& accum,
+      double output_scale,
+      int64_t output_zero_point);
+
   at::Tensor apply_dynamic(
       const at::Tensor& input,
       bool reduce_range) override;
@@ -332,8 +338,22 @@ struct PackedConvWeightsOnednn : public ConvPackedParamsBase<kSpatialDim> {
   template <bool ReluFused>
   at::Tensor apply_impl(
       const at::Tensor& input,
+      const c10::optional<at::Tensor>& accum,
       double output_scale,
       int64_t output_zero_point);
+
+  // template <bool ReluFused>
+  // at::Tensor apply_impl2(
+  //     const at::Tensor& input,
+  //     double output_scale,
+  //     int64_t output_zero_point);
+
+  // template <bool ReluFused>
+  // at::Tensor apply_impl_with_accum(
+  //     const at::Tensor& input,
+  //     const c10::optional<at::Tensor>& accum,
+  //     double output_scale,
+  //     int64_t output_zero_point);
 
   ConvPrimitiveCache& get_conv_cache() {
     assert(!transpose());
