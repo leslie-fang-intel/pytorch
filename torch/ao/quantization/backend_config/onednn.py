@@ -146,6 +146,40 @@ conv_configs.append(
         .set_dtype_configs(conv_dtype_configs)
         .set_root_module(nn.Conv2d)
         .set_reference_quantized_module(nnqr.Conv2d))
+
+def fuse_conv_add_relu(is_qat, relu, add_pattern):
+    add, _, conv = add_pattern
+    return nni.Conv2dAddRelu(relu, add, conv)
+    #return conv
+
+def conv_add_relu_root_node_getter(pattern):
+    relu, add_pattern = pattern
+    _, _, conv = add_pattern
+    return conv
+
+def conv_add_relu_extra_inputs_getter(pattern):
+    """ get inputs pattern for extra inputs, inputs for root node
+    are assumed to be copied over from root node to the fused node
+    """
+    relu, add_pattern = pattern
+    _, extra_input, conv = add_pattern
+    return [extra_input]
+
+conv_configs.append(
+    BackendPatternConfig((nn.ReLU, (torch.add, MatchAllNode, nn.Conv2d)))
+        .set_observation_type(observation_type)
+        .set_dtype_configs(conv_dtype_configs)
+        .set_fuser_method(fuse_conv_add_relu)
+        ._set_root_node_getter(conv_add_relu_root_node_getter)
+        ._set_extra_inputs_getter(conv_add_relu_extra_inputs_getter)
+        .set_fused_module(nni.Conv2dAddRelu))
+
+conv_configs.append(
+    BackendPatternConfig(nni.Conv2dAddRelu)
+        .set_observation_type(observation_type)  # noqa: E131
+        .set_dtype_configs(conv_dtype_configs)
+        .set_root_module(nn.Conv2d)
+        .set_reference_quantized_module(nnqr.Conv2d))
 # ========================
 # |  CONFIGS FOR LINEAR  |
 # ========================

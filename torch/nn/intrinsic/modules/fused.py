@@ -13,6 +13,7 @@ from torch.ao.nn.intrinsic import LinearBn1d
 from torch.ao.nn.intrinsic import LinearReLU
 from torch.ao.nn.intrinsic import LinearLeakyReLU
 from torch.ao.nn.intrinsic import Conv2dAdd
+from torch.ao.nn.intrinsic import Conv2dAddRelu
 from torch.ao.nn.intrinsic.modules.fused import _FusedModule  # noqa: F401
 
 __all__ = [
@@ -31,4 +32,5 @@ __all__ = [
     'LinearReLU',
     'LinearLeakyReLU',
     'Conv2dAdd',
+    'Conv2dAddRelu',
 ]

@@ -152,3 +152,21 @@ class Conv2dAdd(_FusedModule):
         # to the last of the inputs of original node
         x1 = self[0](x1)
         return self.add(x1, x2)
+
+class Conv2dAddRelu(_FusedModule):
+    r"""This is a sequential container which calls the Linear and LeakyReLU modules.
+    During quantization this will be replaced with the corresponding fused module."""
+    def __init__(self, relu, add, conv):
+        # super().__init__()
+        # self.add = add
+        # self.conv = conv
+        super().__init__(conv)
+        self.add = add
+        self.relu = relu
+        # self.conv = conv
+
+    def forward(self, x1, x2):
+        # **TODO** Leslie to check: Looks like the extra input will always be append 
+        # to the last of the inputs of original node
+        x1 = self[0](x1)
+        return self.relu(self.add(x1, x2))
