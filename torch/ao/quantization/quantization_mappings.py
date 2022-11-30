@@ -110,6 +110,7 @@ DEFAULT_STATIC_QUANT_MODULE_MAPPINGS : Dict[Callable, Any] = {
     nni.ConvReLU2d: nniq.ConvReLU2d,
     nni.ConvReLU3d: nniq.ConvReLU3d,
     nni.Conv2dAdd: nniq.Conv2dAdd,
+    nni.Conv2dAddRelu: nniq.Conv2dAddRelu,
     nni.LinearReLU: nniq.LinearReLU,
     nni.LinearLeakyReLU: nniq.LinearLeakyReLU,
     nniqat.ConvBn1d: nnq.Conv1d,
