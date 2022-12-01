@@ -762,7 +762,7 @@ def convert(
     model.graph.eliminate_dead_code()
     model.recompile()
 
-    print("model before lower_to_fbgemm is: {}".format(model))
+    # print("model before lower_to_fbgemm is: {}".format(model))
 
     # TODO: maybe move this to quantize_fx.py
     if not is_reference:

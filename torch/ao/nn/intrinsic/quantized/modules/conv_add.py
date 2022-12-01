@@ -84,6 +84,7 @@ class Conv2dAddRelu(nnq.Conv2d):
             _reversed_padding_repeated_twice = _reverse_repeat_padding(self.padding)
             input = F.pad(input, _reversed_padding_repeated_twice,
                           mode=self.padding_mode)
+        # print("Before the calculation of conv2d_add_relu", flush=True)
         return torch.ops.quantized.conv2d_add_relu(
             input, extra_input, self._packed_params, self.scale, self.zero_point)
 
