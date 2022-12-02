@@ -186,6 +186,46 @@ conv_configs.append(
         ._set_extra_inputs_getter(conv_add_extra_inputs_getter_right)
         .set_fused_module(nni.Conv2dAdd))
 
+
+# conv + bn + add fusion
+def fuse_conv_bn_add_right(is_qat, add, bn_conv, _):
+    # add, _, conv = add_pattern
+    bn, conv = bn_conv
+    fused_conv = nn.utils.fusion.fuse_conv_bn_eval(conv, bn)
+    return nni.Conv2dAdd(add, fused_conv)
+    #return conv
+
+def conv_bn_add_root_node_getter_right(pattern):
+    _, bn_conv, _ = pattern
+    bn, conv = bn_conv
+    return conv
+
+def conv_bn_add_extra_inputs_getter_right(pattern):
+    """ get inputs pattern for extra inputs, inputs for root node
+    are assumed to be copied over from root node to the fused node
+    """
+    _, bn_conv, extra_input = pattern
+    bn, conv = bn_conv
+    return [extra_input]
+
+conv_configs.append(
+    BackendPatternConfig((torch.add, (nn.BatchNorm2d, nn.Conv2d), MatchAllNode))
+        .set_observation_type(observation_type)
+        .set_dtype_configs(conv_dtype_configs)
+        .set_fuser_method(fuse_conv_bn_add_right)
+        ._set_root_node_getter(conv_bn_add_root_node_getter_right)
+        ._set_extra_inputs_getter(conv_bn_add_extra_inputs_getter_right)
+        .set_fused_module(nni.Conv2dAdd))
+
+conv_configs.append(
+    BackendPatternConfig((operator.add, (nn.BatchNorm2d, nn.Conv2d), MatchAllNode))
+        .set_observation_type(observation_type)
+        .set_dtype_configs(conv_dtype_configs)
+        .set_fuser_method(fuse_conv_bn_add_right)
+        ._set_root_node_getter(conv_bn_add_root_node_getter_right)
+        ._set_extra_inputs_getter(conv_bn_add_extra_inputs_getter_right)
+        .set_fused_module(nni.Conv2dAdd))
+
 conv_configs.append(
     BackendPatternConfig(nni.Conv2dAdd)
         .set_observation_type(observation_type)  # noqa: E131
@@ -304,6 +344,47 @@ conv_configs.append(
         .set_fuser_method(fuse_conv_add_relu_right)
         ._set_root_node_getter(conv_add_relu_root_node_getter_right)
         ._set_extra_inputs_getter(conv_add_relu_extra_inputs_getter_right)
+        .set_fused_module(nni.Conv2dAddRelu))
+
+# Conv + BN + Add + Relu
+def fuse_conv_bn_add_relu_right(is_qat, relu, add_pattern):
+    add, bn_conv, _ = add_pattern
+    bn, conv = bn_conv
+    fused_conv = nn.utils.fusion.fuse_conv_bn_eval(conv, bn)
+    return nni.Conv2dAddRelu(relu, add, fused_conv)
+    #return conv
+
+def conv_bn_add_relu_root_node_getter_right(pattern):
+    relu, add_pattern = pattern
+    _, bn_conv, _ = add_pattern
+    bn, conv = bn_conv
+    return conv
+
+def conv_bn_add_relu_extra_inputs_getter_right(pattern):
+    """ get inputs pattern for extra inputs, inputs for root node
+    are assumed to be copied over from root node to the fused node
+    """
+    relu, add_pattern = pattern
+    _, bn_conv, extra_input = add_pattern
+    bn, conv = bn_conv
+    return [extra_input]
+
+conv_configs.append(
+    BackendPatternConfig((nn.ReLU, (torch.add, (nn.BatchNorm2d, nn.Conv2d), MatchAllNode)))
+        .set_observation_type(observation_type)
+        .set_dtype_configs(conv_dtype_configs)
+        .set_fuser_method(fuse_conv_bn_add_relu_right)
+        ._set_root_node_getter(conv_bn_add_relu_root_node_getter_right)
+        ._set_extra_inputs_getter(conv_bn_add_relu_extra_inputs_getter_right)
+        .set_fused_module(nni.Conv2dAddRelu))
+
+conv_configs.append(
+    BackendPatternConfig((nn.ReLU, (operator.add, (nn.BatchNorm2d, nn.Conv2d), MatchAllNode)))
+        .set_observation_type(observation_type)
+        .set_dtype_configs(conv_dtype_configs)
+        .set_fuser_method(fuse_conv_bn_add_relu_right)
+        ._set_root_node_getter(conv_bn_add_relu_root_node_getter_right)
+        ._set_extra_inputs_getter(conv_bn_add_relu_extra_inputs_getter_right)
         .set_fused_module(nni.Conv2dAddRelu))
 
 conv_configs.append(
