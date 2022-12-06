@@ -1393,9 +1393,10 @@ at::Tensor PackedConvWeightsOnednn<kSpatialDim>::apply_impl(
             params, src, weights, b, dst_dims, dst,
             strides, dilates, padding_l, padding_r, groups(),
             src_scales, weights_scales, ideep::scale_t(scale_size, inv_output_scale),
+            src_zero_points, dst_zero_points,
             op_attr, dnnl::algorithm::convolution_direct,
             dnnl::prop_kind::forward_inference,
-            ideep::u8s8, ideep::engine::cpu_engine(), ideep::zero_point_t(), ideep::zero_point_t(), dst_zero_points);
+            ideep::u8s8, ideep::engine::cpu_engine());
         get_conv_cache() = ConvPrimitiveCache(cache_key, params.pd, b, params.bias_attr);
         onednn_utils::try_reorder(
             weights, (ideep::tensor::desc)params.pd.weights_desc(), weights_scales);
