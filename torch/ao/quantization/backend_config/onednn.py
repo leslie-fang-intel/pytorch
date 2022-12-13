@@ -26,7 +26,7 @@ from ..fuser_method_mappings import (
     _reverse_sequential_wrapper2,
     _reverse3,
 )
-
+import torch.nn.qat as nnqat
 
 # ===================
 # |  DTYPE CONFIGS  |
@@ -35,6 +35,13 @@ from ..fuser_method_mappings import (
 onednn_weighted_op_int8_dtype_config = DTypeConfig(
     input_dtype=torch.quint8,
     output_dtype=torch.quint8,
+    weight_dtype=torch.qint8,
+    bias_dtype=torch.float,
+)
+
+onednn_weighted_op_qint8_dtype_config = DTypeConfig(
+    input_dtype=torch.qint8,
+    output_dtype=torch.qint8,
     weight_dtype=torch.qint8,
     bias_dtype=torch.float,
 )
@@ -104,9 +111,15 @@ def _fuse_linear_bn_leaky_relu(is_qat, linear, bn, leaky_relu):
 # |  CONFIGS FOR CONV  |
 # ======================
 
-conv_dtype_configs = [onednn_weighted_op_int8_dtype_config]
+conv_dtype_configs = [onednn_weighted_op_int8_dtype_config, onednn_weighted_op_qint8_dtype_config]
 conv_configs = _get_conv_configs(conv_dtype_configs)
-
+# conv_configs.append(
+#     BackendPatternConfig(nn.Conv2d)
+#         .set_observation_type(ObservationType.OUTPUT_USE_DIFFERENT_OBSERVER_AS_INPUT)  # noqa: E131
+#         .set_dtype_configs(onednn_weighted_op_qint8_dtype_config)
+#         .set_root_module(nn.Conv2d)
+#         .set_reference_quantized_module(nnqr.Conv2d)
+#         .set_qat_module(nnqat.Conv2d))
 
 # ========================
 # |  CONFIGS FOR LINEAR  |

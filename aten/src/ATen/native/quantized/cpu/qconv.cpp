@@ -1178,13 +1178,14 @@ at::Tensor PackedConvWeightsOnednn<kSpatialDim>::apply_impl(
   ConvDimChecks<kSpatialDim>(
       act.ndimension(), stride().size(), padding().size(),
       output_padding().size(), dilation().size(), func_name, transpose());
-  TORCH_CHECK(act.scalar_type() == c10::ScalarType::QUInt8,
-      func_name, " (ONEDNN): data type of input should be QUint8.");
+  // TORCH_CHECK(act.scalar_type() == c10::ScalarType::QUInt8,
+  //     func_name, " (ONEDNN): data type of input should be QUint8.");
 
   // src
+  bool u8_input = (act.scalar_type() == c10::ScalarType::QUInt8) ? true : false;
   auto act_contig = act.contiguous(kSpatialDim == 2 ? c10::MemoryFormat::ChannelsLast : c10::MemoryFormat::ChannelsLast3d);
   auto src_dims = act_contig.sizes().vec();
-  auto src_data_type = dnnl::memory::data_type::u8;
+  auto src_data_type = u8_input ? dnnl::memory::data_type::u8 : dnnl::memory::data_type::s8;
   auto src_desc = ideep::tensor::desc(src_dims, src_data_type,
       kSpatialDim == 2 ? ideep::format_tag::nhwc : ideep::format_tag::ndhwc);
   ideep::tensor src;
@@ -1227,7 +1228,7 @@ at::Tensor PackedConvWeightsOnednn<kSpatialDim>::apply_impl(
   at::Tensor output = at::_empty_affine_quantized(
       dst_dims,
       device(c10::kCPU)
-          .dtype(c10::kQUInt8)
+          .dtype(u8_input ? c10::kQUInt8 : c10::kQInt8)
           .memory_format(kSpatialDim == 2 ?
               c10::MemoryFormat::ChannelsLast :
               c10::MemoryFormat::ChannelsLast3d),
@@ -1237,7 +1238,7 @@ at::Tensor PackedConvWeightsOnednn<kSpatialDim>::apply_impl(
   if (output.numel() == 0) {
     return output;
   }
-  ideep::tensor dst({dst_dims, ideep::tensor::data_type::u8, {output.strides().cbegin(), output.strides().cend()}},
+  ideep::tensor dst({dst_dims, u8_input ? ideep::tensor::data_type::u8 : ideep::tensor::data_type::s8, {output.strides().cbegin(), output.strides().cend()}},
                     output.data_ptr());
   // Parameters
   const ideep::dims& strides = stride().vec();
@@ -1253,6 +1254,12 @@ at::Tensor PackedConvWeightsOnednn<kSpatialDim>::apply_impl(
   double inv_output_scale = 1.0/output_scale;
   const ideep::zero_point_t src_zero_points = ideep::zero_point_t(1, input_zp);
   const ideep::zero_point_t dst_zero_points = ideep::zero_point_t(1, output_zero_point);
+
+  std::cout<<"input_zp is: "<<input_zp<<std::endl;
+  std::cout<<"input_scale is: "<<input_scale<<std::endl;
+  std::cout<<"output_zero_point is: "<<output_zero_point<<std::endl;
+  std::cout<<"output_scale is: "<<output_scale<<std::endl;
+
   ideep::attr_t op_attr = kReluFused ? ideep::attr_t::fuse_relu() : ideep::attr_t();
   // Since src zero point is unknown, set runtime value here
   op_attr.set_zero_points(DNNL_ARG_SRC, ideep::utils::tensor_zp_mask(1), {DNNL_RUNTIME_S32_VAL});
@@ -1315,7 +1322,7 @@ at::Tensor PackedConvWeightsOnednn<kSpatialDim>::apply_impl(
             src_scales, weights_scales, ideep::scale_t(scale_size, inv_output_scale),
             op_attr, dnnl::algorithm::convolution_direct,
             dnnl::prop_kind::forward_inference,
-            ideep::u8s8, ideep::engine::cpu_engine());
+            u8_input ? ideep::u8s8 : ideep::s8s8, ideep::engine::cpu_engine());
         get_conv_cache() = ConvPrimitiveCache(cache_key, params.pd, b, params.bias_attr);
         onednn_utils::try_reorder(
             weights, (ideep::tensor::desc)params.pd.weights_desc(), weights_scales);
@@ -1338,7 +1345,7 @@ at::Tensor PackedConvWeightsOnednn<kSpatialDim>::apply_impl(
           src_scales, weights_scales, ideep::scale_t(scale_size, inv_output_scale),
           op_attr, dnnl::algorithm::convolution_direct,
           dnnl::prop_kind::forward_inference,
-          ideep::u8s8, ideep::engine::cpu_engine());
+          u8_input ? ideep::u8s8 : ideep::s8s8, ideep::engine::cpu_engine());
       onednn_utils::try_reorder(
             weights, (ideep::tensor::desc)params.pd.weights_desc(), weights_scales);
       ideep::convolution_forward::compute(params, src, weights, b, dst);
