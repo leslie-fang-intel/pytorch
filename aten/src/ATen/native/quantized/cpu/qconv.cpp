@@ -1331,7 +1331,7 @@ at::Tensor PackedConvWeightsOnednn<kSpatialDim>::apply_impl(
   }
 
   // Since src zero point is unknown, set runtime value here
-  op_attr.set_zero_points(DNNL_ARG_SRC, ideep::utils::tensor_zp_mask(1), {DNNL_RUNTIME_S32_VAL});
+  op_attr.set_zero_points(DNNL_ARG_SRC, ideep::utils::tensor_zp_mask(1), src_zero_points);
 
   // Bias might be modified outside (e.g. by quantization bias correction).
   // If so, update the prepacked bias as well.
