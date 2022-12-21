@@ -3614,8 +3614,8 @@ register_pointwise(
     use_libdevice_for_f64=True,
 )
 register_pointwise(aten.logical_not, convert_input_to_bool=True)
-register_pointwise(aten.maximum)
-register_pointwise(aten.minimum)
+maximum = register_pointwise(aten.maximum)
+minimum = register_pointwise(aten.minimum)
 register_pointwise(aten.neg)
 register_pointwise(
     aten.reciprocal, type_promotion_kind=ELEMENTWISE_TYPE_PROMOTION_KIND.INT_TO_FLOAT
@@ -3736,6 +3736,26 @@ def foobar(self, *args, **kwargs):
 def _realize(x):
     x.realize()
     return clone(x)
+
+
+@register_lowering(torch.ops.quantized_decomposed.quantize_per_tensor.tensor)
+def quantize_per_tensor_tensor(input, scale, zero_point, quant_min, quant_max, dtype):
+    quant_min_tensor = full_like(input, quant_min)
+    quant_max_tensor = full_like(input, quant_max)
+
+    def clamp(v):
+        return maximum(quant_min_tensor, minimum(quant_max_tensor, v))
+
+    output = clamp(add(round(div(input, scale)), zero_point))
+    output = to_dtype(output, dtype)
+    return output
+
+
+@register_lowering(torch.ops.quantized_decomposed.dequantize_per_tensor.tensor)
+def dequantize_per_tensor_tensor(input, scale, zero_point, quant_min, quant_max, dtype):
+    output = mul(sub(input, zero_point), scale)
+    output = to_dtype(output, torch.float32)
+    return output
 
 
 def _import_kernels():
