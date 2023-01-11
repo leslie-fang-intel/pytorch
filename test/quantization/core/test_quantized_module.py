@@ -275,7 +275,7 @@ class TestStaticQuantizedModule(QuantizationTestCase):
             out_channels_per_group, groups, kernel_size, X_scale, X_zero_point,
             W_scale, W_zero_point, use_bias, use_channelwise)
 
-        if post_op == "add":
+        if post_op in ["add", "add_relu"]:
             (X2_value_min, X2_value_max) = (0, 4)
             X2_init = torch.randint(
                 X2_value_min,
@@ -293,7 +293,7 @@ class TestStaticQuantizedModule(QuantizationTestCase):
         qconv_module.scale = Y_scale
         qconv_module.zero_point = Y_zero_point
 
-        if post_op == "relu" or post_op == "add":
+        if post_op in ["relu", "add", "add_relu"]:
             conv_module[0].weight.data = W
             if use_bias:
                 conv_module[0].bias.data = b
@@ -316,7 +316,7 @@ class TestStaticQuantizedModule(QuantizationTestCase):
         self.assertEqual(Y_zero_point, qconv_module.zero_point)
 
         # Test forward
-        if post_op == "add":
+        if post_op in ["add", "add_relu"]:
             Y_exp = conv_module(X, X2)
             Y_exp = torch.quantize_per_tensor(
                 Y_exp, scale=Y_scale, zero_point=Y_zero_point, dtype=torch.quint8)
@@ -369,7 +369,7 @@ class TestStaticQuantizedModule(QuantizationTestCase):
         self.assertEqual(qconv_module.scale, loaded_qconv_module.scale)
         self.assertEqual(qconv_module.zero_point,
                          loaded_qconv_module.zero_point)
-        if post_op == "add":
+        if post_op in ["add", "add_relu"]:
             Y_loaded = loaded_qconv_module(X_q, X2_q)
         else:
             Y_loaded = loaded_qconv_module(X_q)
@@ -393,7 +393,7 @@ class TestStaticQuantizedModule(QuantizationTestCase):
         self.assertEqual(copied_conv.scale, qconv_module.scale)
         self.assertEqual(copied_conv.zero_point,
                          qconv_module.zero_point)
-        if post_op == "add":
+        if post_op in ["add", "add_relu"]:
             Y_copied = copied_conv(X_q, X2_q)
         else:
             Y_copied = copied_conv(X_q)
@@ -405,7 +405,7 @@ class TestStaticQuantizedModule(QuantizationTestCase):
         self.assertEqual(deepcopied_conv.scale, qconv_module.scale)
         self.assertEqual(deepcopied_conv.zero_point,
                          qconv_module.zero_point)
-        if post_op == "add":
+        if post_op in ["add", "add_relu"]:
             Y_deepcopied = deepcopied_conv(X_q, X2_q)
         else:
             Y_deepcopied = deepcopied_conv(X_q)
@@ -414,8 +414,14 @@ class TestStaticQuantizedModule(QuantizationTestCase):
 
         # JIT testing
         self.checkScriptable(
-            qconv_module, [[X_q, X2_q]] if (post_op == "add") else [[X_q]],
+            qconv_module, [[X_q, X2_q]] if (post_op in ["add", "add_relu"]) else [[X_q]],
             check_save_load=True)
+
+        if post_op in ["add_relu"]:
+            # **TODO Leslie** Remove this part when enabling the lowering in next PR.
+            # workaround in this PR to return from here, since the below lowering part enabled in next PR
+            # We will enable below check in next PR
+            return
 
         class _FusedModule_two_input_args(torch.nn.intrinsic._FusedModule):
             # Help Module for ConvAdd2d since torch.nn.intrinsic._FusedModule only support one input arg
@@ -429,7 +435,7 @@ class TestStaticQuantizedModule(QuantizationTestCase):
 
         fused_conv_module.qconfig = torch.ao.quantization.default_qconfig
         torch.ao.quantization.prepare(fused_conv_module, inplace=True)
-        if post_op == "add":
+        if post_op in ["add", "add_relu"]:
             fused_conv_module(X.float(), X2)
         else:
             fused_conv_module(X.float())
@@ -860,6 +866,66 @@ class TestStaticQuantizedModule(QuantizationTestCase):
                     out_channels_per_group, groups, kernel_size, stride, padding,
                     pad_mode, dilation, X_scale, X_zero_point, W_scale, W_zero_point,
                     Y_scale, Y_zero_point, use_bias, "add", use_channelwise, X2_scale, X2_zero_point)
+
+    @skipIfNoONEDNN
+    def test_conv2d_add_relu(self):
+        """test API functionality for nn.intrinsic.quantized.ConvAdd2d"""
+        with override_quantized_engine('onednn'):
+            options = itertools.product(
+                ["zeros", "reflect"],  # pad_mode
+                [True, False],  # use_bias
+                [True, False],  # use_channelwise
+            )
+            for pad_mode, use_bias, use_channelwise in options:
+                batch_size = 2
+                in_channels_per_group = 2
+                H = 8
+                W = 8
+                out_channels_per_group = 2
+                groups = 3
+                kernel_h = 3
+                kernel_w = 3
+                stride_h = 2
+                stride_w = 2
+                pad_h = 1
+                pad_w = 1
+                dilation = 1
+                # Tests the correctness of the conv2d module.
+                in_channels = in_channels_per_group * groups
+                out_channels = out_channels_per_group * groups
+                input_feature_map_size = (H, W)
+                kernel_size = (kernel_h, kernel_w)
+                stride = (stride_h, stride_w)
+                padding = (pad_h, pad_w)
+                dilation = (dilation, dilation)
+                X_scale = 1.3
+                X_zero_point = 2
+                X2_scale = 1.2
+                X2_zero_point = 1
+                W_scale = [0.5]
+                W_zero_point = [0] if qengine_is_onednn() else [3]
+                Y_scale = 5.0
+                Y_zero_point = 4
+
+                qconv_cls = nniq.ConvAddReLU2d
+                module_name = "QuantizedConvAddReLU2d"
+                qconv_module = qconv_cls(
+                    in_channels, out_channels, kernel_size, stride, padding,
+                    dilation, groups, use_bias, padding_mode=pad_mode
+                )
+
+                conv_module = nn.Conv2d(
+                    in_channels, out_channels, kernel_size, stride, padding,
+                    dilation, groups, use_bias, padding_mode=pad_mode)
+                conv_module = torch.ao.nn.intrinsic.ConvAddReLU2d(nn.ReLU(), torch.add, conv_module)
+                conv_module = conv_module.float()
+
+                self._test_conv_api_impl(
+                    module_name, qconv_module, conv_module, batch_size,
+                    in_channels_per_group, input_feature_map_size,
+                    out_channels_per_group, groups, kernel_size, stride, padding,
+                    pad_mode, dilation, X_scale, X_zero_point, W_scale, W_zero_point,
+                    Y_scale, Y_zero_point, use_bias, "add_relu", use_channelwise, X2_scale, X2_zero_point)
 
     def test_pool_api(self):
         """Tests the correctness of the pool module.
