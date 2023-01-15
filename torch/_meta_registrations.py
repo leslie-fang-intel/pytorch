@@ -543,6 +543,21 @@ def meta_conv(
     out = out.to(memory_format=pick_memory_format())  # type: ignore[call-overload]
     return out
 
+# @register_meta(torch.ops.quantized.conv2d_relu.new)
+# def meta_quantized_conv(
+#     input_tensor: torch.Tensor,
+#     weight: torch.Tensor,
+#     bias: torch.Tensor,
+#     stride: List[int],
+#     padding: List[int],
+#     dilation: List[int],
+#     is_transposed: bool,
+#     output_padding: List[int],
+#     groups: int,
+# ):
+#     print("------ hit my point ------")
+#     return input_tensor
+
 
 if torch._C.has_mkldnn:
     _meta_lib_dont_use_me_use_register_meta_for_mkldnn = torch.library.Library(

@@ -912,6 +912,7 @@ class FakeTensorMode(TorchDispatchMode):
         # run kernel registered to meta for func, which include
         # python meta registrations, prims, decomps, and c++ meta fns (structured kernels)
         try:
+            # import pdb;pdb.set_trace()
             with in_kernel_invocation_manager(self):
                 r = func(*args, **kwargs)
         except NotImplementedError as not_implemented_error:

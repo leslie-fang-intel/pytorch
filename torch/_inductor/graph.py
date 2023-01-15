@@ -300,6 +300,13 @@ class GraphLowering(torch.fx.Interpreter):
     def get_attr(self, target, args, kwargs):
         # this is a constant
         value = getattr(self.module, target)
+
+        print(type(value), flush=True)
+        if type(value) == torch.ScriptObject:
+            return value
+            # return torch.__torch__.torch.classes.quantized.Conv2dPackedParamsBase(value)
+            # return torch.classes.quantized.Conv2dPackedParamsBase(value)
+
         with no_dispatch():
             if value.shape == ():
                 return Constant(value.item(), value.dtype, value.device)

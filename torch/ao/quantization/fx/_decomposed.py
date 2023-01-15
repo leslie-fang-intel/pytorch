@@ -174,6 +174,176 @@ def dequantize_per_tensor_tensor_meta(input, scale, zero_point, quant_min, quant
     else:
         raise ValueError(f"Unsupported dtype in dequantize_per_tensor: {dtype}")
 
+from typing import List, Optional, Union
+from torch._prims_common import (
+    check,
+    corresponding_complex_dtype,
+    corresponding_real_dtype,
+    elementwise_dtypes,
+    ELEMENTWISE_TYPE_PROMOTION_KIND,
+    FloatLike,
+    IntLike,
+    make_contiguous_strides_for,
+)
+
+def calc_conv_nd_return_shape(
+    input_tensor: torch.Tensor,
+    weight: torch.Tensor,
+    stride: Union[List[int], int],
+    padding: Union[List[int], int],
+    dilation: Union[List[int], int],
+    is_transposed: bool,
+    groups: int,
+    output_padding: Optional[Union[List[int], int]] = None,
+):
+    def _formula(ln: int, p: int, d: int, k: int, s: int) -> int:
+        """
+        Formula to apply to calculate the length of some dimension of the output
+
+        See: https://pytorch.org/docs/stable/generated/torch.nn.Conv2d.html
+
+        Args:
+            ln: length of the dimension
+            p: padding in that dim
+            d: dilation in that dim
+            k: kernel size in that dim
+            s: stride in that dim
+        Returns:
+            The output length
+        """
+        return (ln + 2 * p - d * (k - 1) - 1) // s + 1
+
+    def _formula_transposed(ln: int, p: int, d: int, k: int, s: int, op: int) -> int:
+        """
+        Formula to apply to calculate the length of some dimension of the output
+        if transposed convolution is used.
+        See: https://pytorch.org/docs/stable/generated/torch.nn.ConvTranspose2d.html
+
+        Args:
+            ln: length of the dimension
+            p: padding in that dim
+            d: dilation in that dim
+            k: kernel size in that dim
+            s: stride in that dim
+            op: output padding in that dim
+
+        Returns:
+            The output length
+        """
+        return (ln - 1) * s - 2 * p + d * (k - 1) + op + 1
+
+    kernel_size = weight.shape[2:]
+    dims = input_tensor.shape[2:]
+    if is_transposed:
+        out_channels = groups * weight.shape[1]
+    else:
+        out_channels = weight.shape[0]
+        if weight.shape[1] * groups != input_tensor.shape[1]:
+            raise RuntimeError("Invalid channel dimensions")
+
+    ret_shape = [input_tensor.shape[0], out_channels]
+    if isinstance(stride, IntLike):
+        stride = [stride] * len(dims)
+    elif len(stride) == 1:
+        stride = [stride[0]] * len(dims)
+
+    if isinstance(padding, IntLike):
+        padding = [padding] * len(dims)
+    elif len(padding) == 1:
+        padding = [padding[0]] * len(dims)
+
+    if isinstance(dilation, IntLike):
+        dilation = [dilation] * len(dims)
+    elif len(dilation) == 1:
+        dilation = [dilation[0]] * len(dims)
+
+    output_padding_list: Optional[List[int]] = None
+    if output_padding:
+        if isinstance(output_padding, IntLike):
+            output_padding_list = [output_padding] * len(dims)
+        elif len(output_padding) == 1:
+            output_padding_list = [output_padding[0]] * len(dims)
+        else:
+            output_padding_list = output_padding
+
+    for i in range(len(dims)):
+        # If output_padding is present, we are dealing with a transposed convolution
+        if output_padding_list:
+            ret_shape.append(
+                _formula_transposed(
+                    dims[i],
+                    padding[i],
+                    dilation[i],
+                    kernel_size[i],
+                    stride[i],
+                    output_padding_list[i],
+                )
+            )
+        else:
+            ret_shape.append(
+                _formula(dims[i], padding[i], dilation[i], kernel_size[i], stride[i])
+            )
+
+    return ret_shape
+
+# quantized_decomposed_lib.define(
+#     "conv2d_prepack(Tensor weight, Tensor? bias, int[] stride,"
+#     "int[] padding, int[] dilation, int groups) -> __torch__.torch.classes.quantized.Conv2dPackedParamsBase")
+# @impl(quantized_decomposed_lib, "conv2d_prepack", "CompositeExplicitAutograd")
+# def conv2d_prepack(input, bias, stride, padding, dilation, groups):
+#     # assert zero_point.numel() == 1, f"Exepecting zero_point tensor to be one element, but received : {zero_point.numel()}"
+#     # assert scale.numel() == 1, f"Exepecting scale tensor to be one element, but received : {scale.numel()}"
+#     # assert input.dtype == dtype, f"Expecting input to have dtype: {dtype}"
+#     # if dtype in [torch.uint8, torch.int8, torch.int32]:
+#     #     return torch.empty_like(input, dtype=torch.float32)
+#     # else:
+#     #     raise ValueError(f"Unsupported dtype in dequantize_per_tensor: {dtype}")
+    
+#     # return input
+#     return torch.ops.quantized.conv2d_prepack(input, bias, stride, padding, dilation, groups)
+
+# @impl(quantized_decomposed_lib, "conv2d_prepack", "Meta")
+# def conv2d_prepack(input, bias, stride, padding, dilation, groups):    
+#     return input
+#     # return torch.ops.quantized.conv2d_prepack(input, bias, stride, padding, dilation, groups)
+#     #return
+
+quantized_decomposed_lib.define(
+    "conv2d_relu(Tensor qx, __torch__.torch.classes.quantized.Conv2dPackedParamsBase weight,"
+    "float output_scale, int output_zero_point) -> Tensor")
+@impl(quantized_decomposed_lib, "conv2d_relu", "CompositeExplicitAutograd")
+def conv2d_relu(qx, weight, output_scale, output_zero_point):
+    return torch.ops.quantized.conv2d_relu.new(qx, weight, output_scale, output_zero_point)
+
+# @impl(quantized_decomposed_lib, "conv2d_relu", "Meta")
+# def conv2d_relu(qx, weight, stride, padding, dilation, groups, output_scale, output_zero_point):
+#     return torch.ops.quantized.conv2d_relu.new(qx, weight, stride, padding, dilation, groups, output_scale, output_zero_point)
+
+quantized_decomposed_lib.define(
+    "conv2d_relu.tensor(Tensor qx, __torch__.torch.classes.quantized.Conv2dPackedParamsBase weight,"
+    "Tensor output_scale, Tensor output_zero_point) -> Tensor")
+@impl(quantized_decomposed_lib, "conv2d_relu.tensor", "CompositeExplicitAutograd")
+def conv2d_relu(qx, weight, output_scale, output_zero_point):
+    print("----- hit conv2d_relu with META Dispatch Key CompositeExplicitAutograd ----", flush=True)   
+    return torch.ops.quantized.conv2d_relu.new(qx, weight, output_scale, output_zero_point)
+@impl(quantized_decomposed_lib, "conv2d_relu.tensor", "Meta")
+def conv2d_relu(qx, weight, output_scale, output_zero_point):
+    print("----- hit conv2d_relu with META Dispatch Key Meta ----", flush=True)
+    print(qx.shape[2:], flush=True)
+    # w, b = torch.ops.quantized.conv2d_unpack(weight)
+    # print(w.shape[2:], flush=True)
+    return torch.empty_like(qx, dtype=qx.dtype)
+
+    # shape_out = calc_conv_nd_return_shape(
+    #     qx,
+    #     weight,
+    #     stride,
+    #     padding,
+    #     dilation,
+    #     is_transposed,
+    #     groups,
+    #     output_padding if is_transposed else None,
+    # )
 
 quantized_decomposed_lib.define(
     "choose_qparams.tensor(Tensor input, int quant_min, int quant_max, "

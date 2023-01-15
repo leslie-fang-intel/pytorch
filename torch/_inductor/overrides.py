@@ -595,7 +595,11 @@ def fuse_quantization(gm: torch.fx.GraphModule):
     if not is_quantized_graph_module(gm):
         return gm
 
-    # gm = fuse_reference_quantized_conv_relu(gm)
+    print("model before fuse_reference_quantized_conv_relu is: {}".format(gm), flush=True)
+
+    gm = fuse_reference_quantized_conv_relu(gm)
+
+    print("model after fuse_reference_quantized_conv_relu is: {}".format(gm), flush=True)
 
     return gm
 
@@ -641,4 +645,63 @@ def fuse_reference_quantized_conv_relu(gm: torch.fx.GraphModule):
     subgraph_rewriter.replace_pattern(gm, pattern, replacement)
     gm.graph.lint()
     gm.recompile()
+
+    # TODO, actually do the prepack and add it as a call_attr node in the graph
+    for n in gm.graph.nodes:
+        print("node is graph is: {}".format(n), flush=True)
+        print("node.target is: {}".format(n.target), flush=True)
+        if n.target == torch.ops.quantized.conv2d_relu.new:
+            print("---- hit torch.ops.quantized.conv2d_relu.new ----", flush=True)
+        if n.target == torch.ops.quantized.conv2d_prepack:
+            print("---- hit torch.ops.quantized.conv2d_prepack ----", flush=True)
+            # res = torch.ops.quantized.conv2d_prepack()
+            for args in n.args:
+                print(args)
+            # n.args[0] is quantize_per_channel
+
+            print("n.args[0].args[0] is: {}".format(n.args[0].args[0]))
+            print(n.args[0].args[0].op)
+            print(n.args[0].args[0].target)
+            # print(getattr(gm, n.args[0].args[0].target))
+            print(type(getattr(gm, n.args[0].args[0].target)))
+            
+            W_q = torch.quantize_per_channel(
+                getattr(gm, n.args[0].args[0].target), torch.tensor([1.0], dtype=torch.float, device=torch.device("cpu")),
+                torch.tensor([0], dtype=torch.float, device=torch.device("cpu")).long(), 0,
+                dtype=torch.qint8)
+            # res = torch.ops.quantized.conv2d_prepack(n.args[0], n.args[1], n.args[2], n.args[3], n.args[4], n.args[5])
+            res = torch.ops.quantized.conv2d_prepack(W_q, None, n.args[2], n.args[3], n.args[4], n.args[5])
+            setattr(gm, 'prepacked_weight', res) # set attr to graph module
+            # print("res is: {}".format(res))
+            # print("res is: {}".format(type(res)))
+
+            # example_inputs = torch.randn(1, 1, 224, 224)
+            # qx = torch.quantize_per_tensor(example_inputs, 1.0, 0, dtype=torch.quint8)
+            # qy = torch.ops.quantized.conv2d_relu.new(qx, res, 1.0, 0)
+            # print("qy is: {}".format(qy))
+
+            
+            assert list(n.users).__len__() == 1, "prepack node only has one user node as conv"
+            conv_node = list(n.users)[0]
+            print("conv_node.target is: {}".format(conv_node.target), flush=True)
+
+            with gm.graph.inserting_before(conv_node):
+                # packed_weight = gm.graph.create_node("get_attr", res, tuple(prepack_args), {})
+                packed_weight = gm.graph.get_attr("prepacked_weight", )
+            n.replace_all_uses_with(packed_weight)
+            gm.graph.erase_node(n)
+
+    gm.graph.lint()
+    gm.recompile()
+
+    # Replace torch.ops.quantized.conv2d_relu.new to torch.ops.quantized_decomposed.conv2d_relu
+    for n in gm.graph.nodes:
+        print("node is graph is: {}".format(n), flush=True)
+        print("node.target is: {}".format(n.target), flush=True)
+        if n.target == torch.ops.quantized.conv2d_relu.new:
+            n.target = torch.ops.quantized_decomposed.conv2d_relu
+
+    gm.graph.lint()
+    gm.recompile()    
+
     return gm
