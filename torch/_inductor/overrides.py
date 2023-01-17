@@ -597,7 +597,8 @@ def fuse_quantization(gm: torch.fx.GraphModule):
 
     print("model before fuse_reference_quantized_conv_relu is: {}".format(gm), flush=True)
 
-    gm = fuse_reference_quantized_conv_relu(gm)
+    # gm = fuse_reference_quantized_conv_relu(gm)
+    gm = fuse_reference_quantized_conv_relu_v2(gm)
 
     print("model after fuse_reference_quantized_conv_relu is: {}".format(gm), flush=True)
 
@@ -639,12 +640,14 @@ def fuse_reference_quantized_conv_relu(gm: torch.fx.GraphModule):
         # is lost. Here we hardcode conv2d for experiment.
         quantized = torch.ops.quantized
         w_packed = quantized.conv2d_prepack(qw, bias, stride, padding, dilation, groups)
-        qy = quantized.conv2d_relu.new(qx, w_packed, y_scale, y_zp)
+        qy = quantized_decomposed.conv2d_relu(qx, w_packed, y_scale, y_zp, qw, stride, padding, dilation, groups)
         return qy
 
     subgraph_rewriter.replace_pattern(gm, pattern, replacement)
     gm.graph.lint()
     gm.recompile()
+
+    print("graph after graph_rewriter is: {}".format(gm), flush=True)
 
     # TODO, actually do the prepack and add it as a call_attr node in the graph
     for n in gm.graph.nodes:
@@ -665,15 +668,25 @@ def fuse_reference_quantized_conv_relu(gm: torch.fx.GraphModule):
             # print(getattr(gm, n.args[0].args[0].target))
             print(type(getattr(gm, n.args[0].args[0].target)))
             
+            print(getattr(gm, n.args[0].args[0].target))
             W_q = torch.quantize_per_channel(
                 getattr(gm, n.args[0].args[0].target), torch.tensor([1.0], dtype=torch.float, device=torch.device("cpu")),
                 torch.tensor([0], dtype=torch.float, device=torch.device("cpu")).long(), 0,
                 dtype=torch.qint8)
             # res = torch.ops.quantized.conv2d_prepack(n.args[0], n.args[1], n.args[2], n.args[3], n.args[4], n.args[5])
+
+
+            print("n.args[2] is: {}".format(n.args[2]), flush=True)
+
             res = torch.ops.quantized.conv2d_prepack(W_q, None, n.args[2], n.args[3], n.args[4], n.args[5])
             setattr(gm, 'prepacked_weight', res) # set attr to graph module
-            # print("res is: {}".format(res))
-            # print("res is: {}".format(type(res)))
+            print("res is: {}".format(res), flush=True)
+            print("res is: {}".format(type(res)), flush=True)
+
+            origin_w, origin_b = torch.ops.quantized.conv2d_unpack(res)
+
+            print("origin_w is: {}".format(origin_w), flush=True)
+            print("origin_b is: {}".format(origin_b), flush=True)
 
             # example_inputs = torch.randn(1, 1, 224, 224)
             # qx = torch.quantize_per_tensor(example_inputs, 1.0, 0, dtype=torch.quint8)
@@ -694,14 +707,65 @@ def fuse_reference_quantized_conv_relu(gm: torch.fx.GraphModule):
     gm.graph.lint()
     gm.recompile()
 
-    # Replace torch.ops.quantized.conv2d_relu.new to torch.ops.quantized_decomposed.conv2d_relu
-    for n in gm.graph.nodes:
-        print("node is graph is: {}".format(n), flush=True)
-        print("node.target is: {}".format(n.target), flush=True)
-        if n.target == torch.ops.quantized.conv2d_relu.new:
-            n.target = torch.ops.quantized_decomposed.conv2d_relu
+    # # Replace torch.ops.quantized.conv2d_relu.new to torch.ops.quantized_decomposed.conv2d_relu
+    # for n in gm.graph.nodes:
+    #     print("node is graph is: {}".format(n), flush=True)
+    #     print("node.target is: {}".format(n.target), flush=True)
+    #     if n.target == torch.ops.quantized.conv2d_relu.new:
+    #         n.target = torch.ops.quantized_decomposed.conv2d_relu
 
+    # gm.graph.lint()
+    # gm.recompile()    
+
+    return gm
+
+
+def fuse_reference_quantized_conv_relu_v2(gm: torch.fx.GraphModule):
+    """
+    For experiment
+    Currently, quantized.convNd_prepck and quantized.convNd cannot be traced by meta tensor
+    and cannot be lowered either.
+    """
+    aten = torch.ops.aten
+    quantized_decomposed = torch.ops.quantized_decomposed
+    convolution = aten.convolution.default
+    relu = aten.relu.default
+    quantize_per_tensor = quantized_decomposed.quantize_per_tensor
+    dequantize_per_tensor = quantized_decomposed.dequantize_per_tensor
+    quantize_per_channel = quantized_decomposed.quantize_per_channel
+    dequantize_per_channel = quantized_decomposed.dequantize_per_channel
+
+    def pattern(
+        qx, x_scale, x_zp, x_quant_min, x_quant_max, x_dtype,
+        qw, w_scale, w_zp, w_axis, w_quant_min, w_quant_max, w_dtype,
+        bias, stride, padding, dilation, is_transposed, out_padding, groups,
+            y_scale, y_zp, y_quant_min, y_quant_max, y_dtype):
+        x = dequantize_per_tensor(qx, x_scale, x_zp, x_quant_min, x_quant_max, x_dtype)
+        w = dequantize_per_channel(qw, w_scale, w_zp, w_axis, w_quant_min, w_quant_max, w_dtype)
+        y = convolution(x, w, bias, stride, padding, dilation, is_transposed, out_padding, groups)
+        y = relu(y)
+        qy = quantize_per_tensor(y, y_scale, y_zp, y_quant_min, y_quant_max, y_dtype)
+        return qy
+
+    def replacement(
+        qx, x_scale, x_zp, x_quant_min, x_quant_max, x_dtype,
+        qw, w_scale, w_zp, w_axis, w_quant_min, w_quant_max, w_dtype,
+        bias, stride, padding, dilation, is_transposed, out_padding, groups,
+            y_scale, y_zp, y_quant_min, y_quant_max, y_dtype):
+        # TODO: aten.convolution can be used for all conv1d/2d/3d but the spatial dim info
+        # is lost. Here we hardcode conv2d for experiment.
+        # quantized = torch.ops.quantized
+        # w_packed = quantized.conv2d_prepack(qw, bias, stride, padding, dilation, groups)
+        
+        # qy = quantized_decomposed.conv2d_relu_v2(qx, qw, bias, stride, padding, dilation, groups, y_scale, y_zp)
+
+        qy = quantized_decomposed.conv2d_relu_v2(qx, qw, bias, stride, padding, dilation, groups, y_scale, y_zp,
+        x_scale, x_zp, w_scale, w_zp, w_axis)
+
+        return qy
+
+    subgraph_rewriter.replace_pattern(gm, pattern, replacement)
     gm.graph.lint()
-    gm.recompile()    
+    gm.recompile()
 
     return gm

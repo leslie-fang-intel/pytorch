@@ -13,6 +13,10 @@ extern template int register_conv_params<2>();
 extern template int register_conv_params<3>();
 int register_embedding_params();
 
+// TORCH_LIBRARY(CPU, m) {
+//   m.def(TORCH_SELECTIVE_SCHEMA("quantized::conv2d_prepack(Tensor weight, Tensor? bias, int[] stride, int[] padding, int[] dilation, int groups) -> __torch__.torch.classes.quantized.Conv2dPackedParamsBase"));
+// }
+
 TORCH_LIBRARY(quantized, m) {
   register_linear_params();
   register_conv_params<2>();

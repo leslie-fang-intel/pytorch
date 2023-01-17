@@ -304,6 +304,7 @@ class GraphLowering(torch.fx.Interpreter):
         print(type(value), flush=True)
         if type(value) == torch.ScriptObject:
             return value
+            # return Constant(value, torch.qint8, torch.device("cpu"))
             # return torch.__torch__.torch.classes.quantized.Conv2dPackedParamsBase(value)
             # return torch.classes.quantized.Conv2dPackedParamsBase(value)
 

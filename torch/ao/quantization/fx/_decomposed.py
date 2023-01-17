@@ -308,12 +308,12 @@ def calc_conv_nd_return_shape(
 #     # return torch.ops.quantized.conv2d_prepack(input, bias, stride, padding, dilation, groups)
 #     #return
 
-quantized_decomposed_lib.define(
-    "conv2d_relu(Tensor qx, __torch__.torch.classes.quantized.Conv2dPackedParamsBase weight,"
-    "float output_scale, int output_zero_point) -> Tensor")
-@impl(quantized_decomposed_lib, "conv2d_relu", "CompositeExplicitAutograd")
-def conv2d_relu(qx, weight, output_scale, output_zero_point):
-    return torch.ops.quantized.conv2d_relu.new(qx, weight, output_scale, output_zero_point)
+# quantized_decomposed_lib.define(
+#     "conv2d_relu(Tensor qx, __torch__.torch.classes.quantized.Conv2dPackedParamsBase weight,"
+#     "float output_scale, int output_zero_point) -> Tensor")
+# @impl(quantized_decomposed_lib, "conv2d_relu", "CompositeExplicitAutograd")
+# def conv2d_relu(qx, weight, output_scale, output_zero_point):
+#     return torch.ops.quantized.conv2d_relu.new(qx, weight, output_scale, output_zero_point)
 
 # @impl(quantized_decomposed_lib, "conv2d_relu", "Meta")
 # def conv2d_relu(qx, weight, stride, padding, dilation, groups, output_scale, output_zero_point):
@@ -321,29 +321,77 @@ def conv2d_relu(qx, weight, output_scale, output_zero_point):
 
 quantized_decomposed_lib.define(
     "conv2d_relu.tensor(Tensor qx, __torch__.torch.classes.quantized.Conv2dPackedParamsBase weight,"
-    "Tensor output_scale, Tensor output_zero_point) -> Tensor")
+    "Tensor output_scale, Tensor output_zero_point,"
+    "Tensor origin_qw, int[] stride, int[] padding, int[] dilation, int groups) -> Tensor")
 @impl(quantized_decomposed_lib, "conv2d_relu.tensor", "CompositeExplicitAutograd")
-def conv2d_relu(qx, weight, output_scale, output_zero_point):
+def conv2d_relu(qx, weight, output_scale, output_zero_point, origin_qw, stride, padding, dilation, groups):
     print("----- hit conv2d_relu with META Dispatch Key CompositeExplicitAutograd ----", flush=True)   
-    return torch.ops.quantized.conv2d_relu.new(qx, weight, output_scale, output_zero_point)
+    return torch.ops.quantized.conv2d_relu.new(qx, weight, output_scale, output_zero_point, origin_qw, stride, padding, dilation, groups)
 @impl(quantized_decomposed_lib, "conv2d_relu.tensor", "Meta")
-def conv2d_relu(qx, weight, output_scale, output_zero_point):
+def conv2d_relu(qx, weight, output_scale, output_zero_point, origin_qw, stride, padding, dilation, groups):
     print("----- hit conv2d_relu with META Dispatch Key Meta ----", flush=True)
+    # return torch.empty_like(qx, dtype=qx.dtype)
     print(qx.shape[2:], flush=True)
     # w, b = torch.ops.quantized.conv2d_unpack(weight)
-    # print(w.shape[2:], flush=True)
-    return torch.empty_like(qx, dtype=qx.dtype)
+    print(origin_qw.shape[2:], flush=True)
+    shape_out = calc_conv_nd_return_shape(
+        qx,
+        origin_qw,
+        stride,
+        padding,
+        dilation,
+        False,
+        groups,
+        None,
+    )
+    out = qx.new_empty(shape_out)
+    print("shape_out is: {}".format(shape_out))
+    return out
 
-    # shape_out = calc_conv_nd_return_shape(
-    #     qx,
-    #     weight,
-    #     stride,
-    #     padding,
-    #     dilation,
-    #     is_transposed,
-    #     groups,
-    #     output_padding if is_transposed else None,
-    # )
+
+
+quantized_decomposed_lib.define(
+    "conv2d_relu_v2.tensor(Tensor qx, Tensor qw, Tensor? bias,"
+    "int[] stride, int[] padding, int[] dilation, int groups, Tensor output_scale, Tensor output_zero_point,"
+    "Tensor input_scale, Tensor input_zero_point, Tensor weight_scale, Tensor weight_zero_point, int w_axis) -> Tensor")
+@impl(quantized_decomposed_lib, "conv2d_relu_v2.tensor", "CPU")
+def conv2d_relu_v2(qx, qw, bias, stride, padding, dilation, groups, output_scale, output_zero_point,
+    x_scale, x_zp, w_scale, w_zp, w_axis):
+    print("----- hit conv2d_relu_v2 with CPU Dispatch Key ----", flush=True)
+    quantized = torch.ops.quantized
+
+    # Input Workaround to test feasibility
+    # Re-constructure the qw and qx
+    real_qx = torch._make_per_tensor_quantized_tensor(qx, x_scale, x_zp)
+    real_qw = torch._make_per_channel_quantized_tensor(qw, w_scale, w_zp, w_axis)
+
+    w_packed = quantized.conv2d_prepack(real_qw, bias, stride, padding, dilation, groups)
+    qy = quantized.conv2d_relu.new(real_qx, w_packed, output_scale, output_zero_point)
+
+    # Output Workround: Return a int8 tensor without quantizer
+    return qy.int_repr()
+
+@impl(quantized_decomposed_lib, "conv2d_relu_v2.tensor", "Meta")
+def conv2d_relu_v2(qx, qw, bias, stride, padding, dilation, groups, output_scale, output_zero_point,
+    x_scale, x_zp, w_scale, w_zp, w_axis):
+    print("----- hit conv2d_relu_v2 with META Dispatch Key Meta ----", flush=True)
+    #return torch.empty_like(qx, dtype=qx.dtype)
+    print(qx.shape[2:], flush=True)
+    # w, b = torch.ops.quantized.conv2d_unpack(weight)
+    print(qw.shape[2:], flush=True)
+    shape_out = calc_conv_nd_return_shape(
+        qx,
+        qw,
+        stride,
+        padding,
+        dilation,
+        False,
+        groups,
+        None,
+    )
+    out = qx.new_empty(shape_out)
+    print("shape_out is: {}".format(shape_out))
+    return out
 
 quantized_decomposed_lib.define(
     "choose_qparams.tensor(Tensor input, int quant_min, int quant_max, "
