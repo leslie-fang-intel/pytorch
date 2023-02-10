@@ -247,8 +247,6 @@ def _replace_pattern(
                               remove_overlapping_matches=True)
     _matches: List[InternalMatch] = matcher.match(original_graph)
 
-    print("_matches's length is: {}".format(_matches.__len__()), flush=True)
-
     # Filter out matches that don't match the filter
     _matches = [
         m for m in _matches

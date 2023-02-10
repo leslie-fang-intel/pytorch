@@ -609,16 +609,10 @@ def fuse_quantization(gm: torch.fx.GraphModule, example_inputs):
     fake_mode = fake_mode_from_tensors(example_inputs)
     ShapeProp(gm, fake_mode=fake_mode).propagate(*example_inputs)
 
-    print("gm before prepare_dequant_for_fusion is: {}".format(gm), flush=True)
     gm = prepare_dequant_for_fusion(gm)
-
-    print("gm before prepack_weight_in_graph is: {}".format(gm), flush=True)
     gm = prepack_weight_in_graph(gm)
-    print("gm before fuse_reference_quantized_conv is: {}".format(gm), flush=True)
     gm = fuse_reference_quantized_conv(gm)
-    print("gm before fuse_reference_quantized_linear is: {}".format(gm), flush=True)
     gm = fuse_reference_quantized_linear(gm)
-    print("gm after fuse_reference_quantized_linear is: {}".format(gm), flush=True)
 
     return gm
 
@@ -649,7 +643,6 @@ def prepare_dequant_for_fusion(gm: torch.fx.GraphModule):
     # node1 and node2.
     for node in gm.graph.nodes:
         if node.target == torch.ops.quantized_decomposed.dequantize_per_tensor:
-            print(list(node.users), flush=True)
             user_list = list(node.users)
             if user_list.__len__() > 1:
                 # q_node, scale, zp, min, max, dtype
@@ -658,18 +651,10 @@ def prepare_dequant_for_fusion(gm: torch.fx.GraphModule):
                 for index in range(1, user_list.__len__()):
                     # step1: copy dq node to new node
                     user_node = user_list[index]
-                    print("user_node is: {}".format(user_node), flush=True)
                     # step2: connect new dq node of input and output
                     with gm.graph.inserting_before(user_node):
                         new_dq_node = gm.graph.call_function(torch.ops.quantized_decomposed.dequantize_per_tensor, args=node.args)
                         new_dq_node.meta = copy.copy(node.meta)
-                        # # Find the idx of dq in origin user_node
-                        # idx = 0
-                        # for arg in user_node.args:
-                        #     if arg == node:
-                        #         break
-                        #     idx += 1
-                        # user_node.update_arg(idx, new_dq_node)
                         user_node.replace_input_with(node, new_dq_node)
                 
     gm.graph.lint()
@@ -838,12 +823,7 @@ def fuse_reference_quantized_conv(gm: torch.fx.GraphModule):
     for name, unary_post_op in unary_post_ops.items():
         pattern = gen_conv_pattern(unary_post_op)
         replacement = gen_conv_replacement(name)
-        matchs = subgraph_rewriter.replace_pattern(gm, pattern, replacement)
-        for match in matchs:
-            print("match.anchor is:{}".format(match.anchor), flush=True)
-        gm.graph.lint()
-        gm.recompile()
-        print("graph is: {}".format(gm), flush=True)
+        subgraph_rewriter.replace_pattern(gm, pattern, replacement)
     
     gm.graph.lint()
     gm.recompile()
