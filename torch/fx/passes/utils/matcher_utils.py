@@ -149,6 +149,7 @@ class SubgraphMatcher:
             for pn, gn in match.nodes_map.items():
                 if pn.op not in {"placeholder", "output"} and gn in nodes_matched:
                     found_overlap = True
+                    print("found_overlap is: {}".format(found_overlap), flush=True)
                     break
 
             if not found_overlap:
@@ -348,6 +349,7 @@ class SubgraphMatcher:
             before = len(valid_matches)
             matches = self._remove_overlapping_matches(valid_matches)
             after = len(matches)
+            print("Filtered out {} - {} matches because matched subgraphs are overlapping".format(before, after), flush=True)
             if before != after:
                 logger.info(f"Filtered out {before - after} matches because matched subgraphs are overlapping")
 
