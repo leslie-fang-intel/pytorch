@@ -806,8 +806,8 @@ struct Vectorized<c10::quint8> : public Vectorizedqi {
   }
 
   static Vectorized<c10::quint8> convert(
-      const float_vec_return_type& rhs) {
-    auto* rhs_data = (float*)rhs.data();
+      const float* rhs_data) {
+    // auto* rhs_data = (float*)rhs.data();
     uint8_t quantized_values[64];
     std::cout<<"hit this path convert"<<std::endl;
     ConvertAvx512<c10::quint8>(
