@@ -10,6 +10,8 @@
 #include <sleef.h>
 #endif
 
+#include <iostream>
+
 namespace at {
 namespace vec {
 // See Note [CPU_CAPABILITY namespace]
