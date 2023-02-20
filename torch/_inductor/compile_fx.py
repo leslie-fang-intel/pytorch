@@ -372,7 +372,6 @@ def compile_fx(
     config_patches: Optional[Dict[str, Any]] = None,
 ):
     """Main entrypoint to a compile given FX graph"""
-
     if config_patches:
         with config.patch(config_patches):
             return compile_fx(
@@ -436,6 +435,14 @@ def compile_fx(
             ),
         )(model_, example_inputs_)
 
+def compile_fx_quantization(gm: torch.fx.GraphModule, example_inputs: tuple):
+    if not isinstance(example_inputs, tuple):
+        if isinstance(example_inputs, torch.Tensor):
+            example_inputs = (example_inputs,)
+    gm.graph._codegen = torch.fx.graph.CodeGen()
+    gm.graph.eliminate_dead_code()
+    gm.recompile()
+    return compile_fx(gm, [*example_inputs])
 
 def _shape_env_from_inputs(inputs):
     shape_env = None
