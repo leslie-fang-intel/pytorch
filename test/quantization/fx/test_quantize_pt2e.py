@@ -405,6 +405,40 @@ class TestQuantizePT2EModels(QuantizationTestCase):
         for with_bias, use_relu in cases:
             self._test_inductor_backend_helper(Mod(with_bias, use_relu), input_shape)
 
+    def test_conv2d_relu_conv2d_inductor_backend(self):
+        '''
+        Test to ensure the TensorMeta keet after fusion
+        '''
+        class Mod(torch.nn.Module):
+            def __init__(self, with_bias: bool) -> None:
+                super().__init__()
+                self.conv = torch.nn.Conv2d(
+                    in_channels=3,
+                    out_channels=16,
+                    kernel_size=3,
+                    stride=1,
+                    padding=1,
+                    bias=with_bias
+                )
+                self.relu = torch.nn.ReLU()
+                self.conv2 = torch.nn.Conv2d(
+                    in_channels=16,
+                    out_channels=16,
+                    kernel_size=3,
+                    stride=1,
+                    padding=1,
+                    bias=with_bias
+                )
+
+            def forward(self, x):
+                x = self.conv(x)
+                return self.conv2(self.relu(x))
+
+        input_shape = (1, 3, 16, 16)
+        with_bias_list = [True, False]
+        for with_bias in with_bias_list:
+            self._test_inductor_backend_helper(Mod(with_bias), input_shape)
+
     def test_conv3d_inductor_backend(self):
         '''
         Quantize and lower convolution 3d + relu with Inductor quantization backend.
