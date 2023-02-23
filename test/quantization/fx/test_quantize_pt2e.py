@@ -495,3 +495,32 @@ class TestQuantizePT2EModels(QuantizationTestCase):
         cases = itertools.product(with_bias_list, use_relu_list)
         for with_bias, use_relu in cases:
             self._test_inductor_backend_helper(Mod(with_bias, use_relu), input_shape)
+
+    def test_linear_relu_linear_inductor_backend(self):
+        '''
+        Test for linear to keep tensor meta.
+        For experiment.
+        '''
+        class Mod(torch.nn.Module):
+            def __init__(self, with_bias: bool) -> None:
+                super().__init__()
+                self.linear = torch.nn.Linear(
+                    in_features=16,
+                    out_features=8,
+                    bias=with_bias
+                )
+                self.relu = torch.nn.ReLU()
+                self.linear2 = torch.nn.Linear(
+                    in_features=8,
+                    out_features=8,
+                    bias=with_bias
+                )
+
+            def forward(self, x):
+                x = self.linear(x)
+                return self.linear2(self.relu(x))
+
+        input_shape = (1, 16)
+        with_bias_list = [True, False]
+        for with_bias in with_bias_list:
+            self._test_inductor_backend_helper(Mod(with_bias), input_shape)
