@@ -610,11 +610,18 @@ def fuse_quantization(gm: torch.fx.GraphModule, example_inputs):
     ShapeProp(gm, fake_mode=fake_mode).propagate(*example_inputs)
 
     # Fuse `dq - op (- post ops) - q` to quantized op
+    print("gm before fuse_reference_quantized_conv is: {}".format(gm), flush=True)
     gm = fuse_reference_quantized_conv(gm)
+    print("gm after fuse_reference_quantized_conv is: {}".format(gm), flush=True)
     gm = fuse_reference_quantized_linear(gm)
+
+    # from torch.fx.passes.shape_prop import ShapeProp
+    # fake_mode = fake_mode_from_tensors(example_inputs)
+    # ShapeProp(gm, fake_mode=fake_mode).propagate(*example_inputs)
 
     # Reorder quantized weight to desired format for oneDNN kernel
     # After that, weight is a MKLDNN tensor and it replaces the original one in graph
+    # print("gm before prepack_weight_in_graph is: {}".format(gm), flush=True)
     gm = prepack_weight_in_graph(gm)
 
     return gm
@@ -704,7 +711,12 @@ def _prepack_conv_weight(gm: torch.fx.GraphModule):
             bias_node = node.args[7]
             # Prepack weight into an MKLDNN tensor of dtype int8
             w_scales = getattr(gm, node.args[4].target)
+            print("--------", flush=True)
+            print("node is: {}".format(node), flush=True)
+            print("node.args[0] is: {}".format(node.args[0]), flush=True)
+            print("node.args[0].meta is: {}".format(node.args[0].meta), flush=True)
             x_shape = node.args[0].meta.get("tensor_meta").shape
+            print("Finish get tensor_meta of node is: {}".format(node), flush=True)
             x_scale = getattr(gm, node.args[1].target)
             x_zp = getattr(gm, node.args[2].target)
             bias = getattr(gm, bias_node.target) if bias_node is not None else None
@@ -812,6 +824,94 @@ def pre_quantize_weights(gm: torch.fx.GraphModule):
 def fuse_reference_quantized_conv(gm: torch.fx.GraphModule):
     """
     For experiment
+    Replace pattern:
+    # dequantize_per_channel -
+    # dequantize_per_tensor  - conv - post_op(or none) - quantize_per_tensor
+    into new pattern:
+    # torch.ops.quantized_decomposed.conv_unary_inductor
+    """
+    aten = torch.ops.aten
+    quantized_decomposed = torch.ops.quantized_decomposed
+    convolution = aten.convolution.default
+    relu = aten.relu.default
+    relu_ = aten.relu_.default
+    quantize_per_tensor = quantized_decomposed.quantize_per_tensor
+    dequantize_per_tensor = quantized_decomposed.dequantize_per_tensor
+    dequantize_per_channel = quantized_decomposed.dequantize_per_channel
+
+    unary_post_ops = {
+        'relu' : relu,
+        'relu_' : relu_,
+    }
+    for name, unary_post_op in unary_post_ops.items():
+        for node in gm.graph.nodes:
+            if node.target is convolution:
+                print("hit node.op", flush=True)
+                print("hit node.args.__len:{}".format(len(node.args)), flush=True)
+
+                (x, w, bias, stride, padding, dilation, is_transposed, out_padding, groups) = node.args
+                assert x.target == dequantize_per_tensor, "input's node should be dequantize_per_tensor"
+                assert w.target == dequantize_per_channel, "weight's node should be dequantize_per_channel"
+                (qx, x_scale, x_zp, x_quant_min, x_quant_max, x_dtype) = x.args
+                (qw, w_scale, w_zp, w_axis, w_quant_min, w_quant_max, w_dtype) = w.args
+                if len(list(node.users)) != 1:
+                    # There are more than 1 users of this conv node, fail to fuse
+                    continue
+                print(list(node.users)[0], flush=True)
+                if list(node.users)[0].target is unary_post_op:
+                    # conv relu fusion
+                    unary_op_to_be_fused = list(node.users)[0]
+                    if list(unary_op_to_be_fused.users)[0].target != quantize_per_tensor:
+                        # Not meet fusion pattern: the op after unary_op is not quantize_per_tensor
+                        continue
+                    quant_per_tensor_node = list(unary_op_to_be_fused.users)[0]
+                    (y, y_scale, y_zp, y_quant_min, y_quant_max, y_dtype) = quant_per_tensor_node.args
+                    with gm.graph.inserting_after(quant_per_tensor_node):
+                        args = (qx, x_scale, x_zp, qw, w_scale, w_zp, w_axis, 
+                                bias, stride, padding, dilation, groups, y_scale,
+                                y_zp, name)
+                        new_conv_node = gm.graph.call_function(quantized_decomposed.conv_unary_inductor, args=args)
+                    # Copy node meta
+                    new_conv_node.meta = copy.copy(quant_per_tensor_node.meta)
+                    quant_per_tensor_node.replace_all_uses_with(new_conv_node)
+
+                    gm.graph.erase_node(quant_per_tensor_node) # erase quantize_per_tensor
+                    gm.graph.erase_node(unary_op_to_be_fused) # erase unary_op
+                    gm.graph.erase_node(node) # erase conv
+                    gm.graph.erase_node(w) # erase dequantize_per_channel
+                    gm.graph.erase_node(x) # erase dequantize_per_tensor
+
+                elif list(node.users)[0].target is quantize_per_tensor:
+                    # Single conv without post op
+                    # list(node.users)[0] is quant node after conv
+                    quant_per_tensor_node = list(node.users)[0]
+                    (y, y_scale, y_zp, y_quant_min, y_quant_max, y_dtype) = quant_per_tensor_node.args
+                    with gm.graph.inserting_after(quant_per_tensor_node):
+                        args = (qx, x_scale, x_zp, qw, w_scale, w_zp, w_axis, 
+                                bias, stride, padding, dilation, groups, y_scale,
+                                y_zp, "none")
+                        new_conv_node = gm.graph.call_function(quantized_decomposed.conv_unary_inductor, args=args)
+                    # Copy node meta
+                    new_conv_node.meta = copy.copy(quant_per_tensor_node.meta)
+                    quant_per_tensor_node.replace_all_uses_with(new_conv_node)
+                    
+                    gm.graph.erase_node(quant_per_tensor_node) # erase quantize_per_tensor
+                    gm.graph.erase_node(node) # erase conv
+                    gm.graph.erase_node(w) # erase dequantize_per_channel
+                    gm.graph.erase_node(x) # erase dequantize_per_tensor
+
+                else:
+                    # Not meet fusion pattern: the op after conv is not unary_op to be fused or quantize_per_tensor
+                    continue
+    gm.graph.eliminate_dead_code()
+    gm.graph.lint()
+    gm.recompile()
+    return gm
+
+def fuse_reference_quantized_conv_legacy(gm: torch.fx.GraphModule):
+    """
+    For experiment
+    The legacy method using the subgraph_rewriter which missing the tensor meta information after fusion
     """
     aten = torch.ops.aten
     quantized_decomposed = torch.ops.quantized_decomposed
