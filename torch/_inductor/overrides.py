@@ -610,18 +610,11 @@ def fuse_quantization(gm: torch.fx.GraphModule, example_inputs):
     ShapeProp(gm, fake_mode=fake_mode).propagate(*example_inputs)
 
     # Fuse `dq - op (- post ops) - q` to quantized op
-    print("gm before fuse_reference_quantized_conv is: {}".format(gm), flush=True)
     gm = fuse_reference_quantized_conv(gm)
-    print("gm after fuse_reference_quantized_conv is: {}".format(gm), flush=True)
     gm = fuse_reference_quantized_linear(gm)
-
-    # from torch.fx.passes.shape_prop import ShapeProp
-    # fake_mode = fake_mode_from_tensors(example_inputs)
-    # ShapeProp(gm, fake_mode=fake_mode).propagate(*example_inputs)
 
     # Reorder quantized weight to desired format for oneDNN kernel
     # After that, weight is a MKLDNN tensor and it replaces the original one in graph
-    # print("gm before prepack_weight_in_graph is: {}".format(gm), flush=True)
     gm = prepack_weight_in_graph(gm)
 
     return gm
@@ -711,12 +704,7 @@ def _prepack_conv_weight(gm: torch.fx.GraphModule):
             bias_node = node.args[7]
             # Prepack weight into an MKLDNN tensor of dtype int8
             w_scales = getattr(gm, node.args[4].target)
-            print("--------", flush=True)
-            print("node is: {}".format(node), flush=True)
-            print("node.args[0] is: {}".format(node.args[0]), flush=True)
-            print("node.args[0].meta is: {}".format(node.args[0].meta), flush=True)
             x_shape = node.args[0].meta.get("tensor_meta").shape
-            print("Finish get tensor_meta of node is: {}".format(node), flush=True)
             x_scale = getattr(gm, node.args[1].target)
             x_zp = getattr(gm, node.args[2].target)
             bias = getattr(gm, bias_node.target) if bias_node is not None else None
