@@ -1634,6 +1634,9 @@ static at::Tensor onednn_conv_int8_with_prepacked_weight_bias(
     at::Tensor act, // contains quantized values but not QTensor
     double act_scale,
     int64_t act_zero_point,
+    c10::optional<at::Tensor> accum, // accum to fused with conv add
+    double accum_scale,
+    int64_t accum_zero_point,
     at::Tensor weight, // MKLDNN tensor with quantized values
     at::Tensor weight_scales,
     at::Tensor weight_zero_points,
@@ -1956,6 +1959,7 @@ class ConvInt8CpuTensor final {
 #if AT_MKLDNN_ENABLED()
     return onednn_conv_int8_with_prepacked_weight_bias<postOpFused>(
         act, act_scale, act_zero_point,
+        c10::nullopt /*accum*/, 0.0 /*accum_scale*/, 0 /*accum_zero_point*/,
         weight, weight_scales, weight_zero_points,
         bias, stride, padding, dilation,
         groups, output_scale, output_zero_point
@@ -1965,38 +1969,38 @@ class ConvInt8CpuTensor final {
   }
 };
 
-// template <bool kReluFused>
-// class ConvAddInt8CpuTensor final {
-//  public:
-//   static Tensor run_with_packed_weight_bias(
-//       Tensor act, // contains quantized values but not QTensor
-//       double act_scale,
-//       int64_t act_zero_point,
-//       Tensor accum, // contains quantized values but not QTensor
-//       double accum_scale,
-//       int64_t accum_zero_point,
-//       Tensor weight, // contains quantized values but not QTensor
-//       Tensor weight_scales,
-//       Tensor weight_zero_points,
-//       c10::optional<Tensor> bias,
-//       torch::List<int64_t> stride,
-//       torch::List<int64_t> padding,
-//       torch::List<int64_t> dilation,
-//       int64_t groups,
-//       double output_scale,
-//       int64_t output_zero_point) {
-// #if AT_MKLDNN_ENABLED()
-//     return onednn_conv_int8_with_prepacked_weight_bias<kReluFused>(
-//         act, act_scale, act_zero_point,
-//         accum, accum_scale, accum_zero_point,
-//         weight, weight_scales, weight_zero_points,
-//         bias, stride, padding, dilation,
-//         groups, output_scale, output_zero_point
-//     );
-// #endif
-//     TORCH_CHECK(false, "Unimplemented (int8 conv with packed weight and bias)");
-//   }
-// };
+template <PostOp postOpFused>
+class ConvAddInt8CpuTensor final {
+ public:
+  static Tensor run_with_packed_weight_bias(
+      Tensor act, // contains quantized values but not QTensor
+      double act_scale,
+      int64_t act_zero_point,
+      Tensor accum, // contains quantized values but not QTensor
+      double accum_scale,
+      int64_t accum_zero_point,
+      Tensor weight, // contains quantized values but not QTensor
+      Tensor weight_scales,
+      Tensor weight_zero_points,
+      c10::optional<Tensor> bias,
+      torch::List<int64_t> stride,
+      torch::List<int64_t> padding,
+      torch::List<int64_t> dilation,
+      int64_t groups,
+      double output_scale,
+      int64_t output_zero_point) {
+#if AT_MKLDNN_ENABLED()
+    return onednn_conv_int8_with_prepacked_weight_bias<postOpFused>(
+        act, act_scale, act_zero_point,
+        accum, accum_scale, accum_zero_point,
+        weight, weight_scales, weight_zero_points,
+        bias, stride, padding, dilation,
+        groups, output_scale, output_zero_point
+    );
+#endif
+    TORCH_CHECK(false, "Unimplemented (int8 conv with packed weight and bias)");
+  }
+};
 
 TORCH_LIBRARY_IMPL(quantized, QuantizedCPU, m) {
   m.impl(TORCH_SELECTIVE_NAME("quantized::conv1d"),          QConv1dInt8<false>::run);
@@ -2029,7 +2033,7 @@ TORCH_LIBRARY_IMPL(quantized, CPU, m) {
 TORCH_LIBRARY_IMPL(quantized, MkldnnCPU, m) {
   m.impl(TORCH_SELECTIVE_NAME("quantized::conv_int8_packed_weight"),      ConvInt8CpuTensor<PostOp::None>::run_with_packed_weight_bias);
   m.impl(TORCH_SELECTIVE_NAME("quantized::conv_relu_int8_packed_weight"), ConvInt8CpuTensor<PostOp::ReLU>::run_with_packed_weight_bias);
-  //m.impl(TORCH_SELECTIVE_NAME("quantized::conv_add_int8_packed_weight"), ConvAddInt8CpuTensor<false>::run_with_packed_weight_bias);
+  m.impl(TORCH_SELECTIVE_NAME("quantized::conv_add_int8_packed_weight"), ConvAddInt8CpuTensor<PostOp::Add>::run_with_packed_weight_bias);
 }
 
 TORCH_LIBRARY_IMPL(_quantized, QuantizedCPU, m) {
