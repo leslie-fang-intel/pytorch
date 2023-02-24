@@ -282,7 +282,7 @@ class TestQuantizePT2EModels(QuantizationTestCase):
             # second run
             inductor_result = run(*example_inputs)
 
-    def _test_inductor_backend_helper(self, mod: torch.nn.Module, input_shape: tuple):
+    def _test_inductor_backend_helper(self, mod: torch.nn.Module, input_shape: tuple, pytree_unflatten: bool = False):
         import copy
         from torch import _dynamo, _inductor
         import logging
@@ -325,7 +325,7 @@ class TestQuantizePT2EModels(QuantizationTestCase):
             m = convert_pt2e(m)
             after_quant_result = m(*example_inputs)
 
-            run = compile_fx_quantization(m, example_inputs)
+            run = compile_fx_quantization(m, example_inputs, pytree_unflatten = pytree_unflatten)
 
             inductor_result = run(*example_inputs)
 
@@ -337,13 +337,15 @@ class TestQuantizePT2EModels(QuantizationTestCase):
             m2 = convert_fx(m2)
             eager_result = m2(*example_inputs)
 
+            if pytree_unflatten:
+                assert type(inductor_result) is torch.Tensor, "output type of inductor should be a Tensor"
             # Results should match. inductor_result is a tuple
-            self.assertEqual(inductor_result[0], eager_result)
+            self.assertEqual(inductor_result if pytree_unflatten else inductor_result[0], eager_result)
 
             # second run
             inductor_result = run(*example_inputs)
             eager_result = m2(*example_inputs)
-            self.assertEqual(inductor_result[0], eager_result)
+            self.assertEqual(inductor_result if pytree_unflatten else inductor_result[0], eager_result)
 
     def test_conv1d_inductor_backend(self):
         '''
@@ -550,45 +552,4 @@ class TestQuantizePT2EModels(QuantizationTestCase):
 
         input_shape = (1, 3, 16, 16)
         mod = Mod(True, True).eval()
-        qengine = 'x86'
-        with override_quantized_engine(qengine):
-            input_format = torch.channels_last
-            example_inputs = (torch.randn(input_shape).to(memory_format=input_format),)
-            m = copy.deepcopy(mod.eval())
-            m, guards = torchdynamo.export(
-                m,
-                *copy.deepcopy(example_inputs),
-                aten_graph=True,
-                tracing_mode="real",
-            )
-            backend_config = get_inductor_pt2e_backend_config()
-            qconfig = get_default_qconfig(qengine)
-            qconfig_mapping = QConfigMapping().set_global(qconfig)
-            before_fusion_result = m(*example_inputs)
-
-            m = prepare_pt2e(m, qconfig_mapping, example_inputs, backend_config)
-            after_prepare_result = m(*example_inputs)
-
-            m = convert_pt2e(m)
-            after_quant_result = m(*example_inputs)
-
-            run = compile_fx_quantization(m, example_inputs, pytree_unflatten = True)
-
-            inductor_result = run(*example_inputs)
-            assert type(inductor_result) is torch.Tensor, "output type of inductor should be a Tensor"
-
-            # FX quantization path
-            m2 = copy.deepcopy(mod.eval())
-            from torch.ao.quantization import get_default_qconfig_mapping
-            qconfig_mapping = get_default_qconfig_mapping(qengine)
-            m2 = prepare_fx(m2, qconfig_mapping, *example_inputs)
-            m2(*example_inputs)
-            m2 = convert_fx(m2)
-            eager_result = m2(*example_inputs)
-
-            self.assertEqual(inductor_result, eager_result)
-
-            # second run
-            inductor_result = run(*example_inputs)
-            eager_result = m2(*example_inputs)
-            self.assertEqual(inductor_result, eager_result)
+        self._test_inductor_backend_helper(mod, input_shape, pytree_unflatten = True)
