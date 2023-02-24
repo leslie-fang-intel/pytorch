@@ -1652,10 +1652,14 @@ static at::Tensor onednn_conv_int8_with_prepacked_weight_bias(
   /*********************************/
   int kSpatialDim = act.dim() - 2;
   bool is_1d = (1 == kSpatialDim);
+  // has_accum: extra input besides the conv to do conv add fusion.
+  bool has_accum = (postOpFused == PostOp::Add);
   std::string func_name = "Inductor int8 conv";
   func_name += std::to_string(kSpatialDim) + "d";
   if (postOpFused == PostOp::ReLU) {
     func_name += "_relu";
+  } else if(postOpFused == PostOp::Add) {
+    func_name += "_add";
   }
   func_name += "_with_prepacked_weight";
   // For conv1d, compute as conv2d then squeeze output
@@ -1764,11 +1768,32 @@ static at::Tensor onednn_conv_int8_with_prepacked_weight_bias(
   if (output.numel() == 0) {
     return output;
   }
-  ideep::tensor dst({dst_dims, ideep::tensor::data_type::u8, {output.strides().cbegin(), output.strides().cend()}},
-                    output.data_ptr());
+  ideep::tensor dst;
+  at::Tensor accum_contig;
+  if (has_accum) {
+    auto dst_desc = ideep::tensor::desc(dst_dims, src_data_type,
+        kSpatialDim == 2 ? ideep::format_tag::nhwc : ideep::format_tag::ndhwc);
+    accum_contig = accum.value().contiguous(kSpatialDim == 2 ? c10::MemoryFormat::ChannelsLast : c10::MemoryFormat::ChannelsLast3d);
+    TORCH_CHECK(accum_contig.dtype() == output.dtype(), "The output tensor should have same dtype as the accum tensor.");
+    // When fused with sum, the dst tensor will share the data ptr as the accum tensor.
+    dst.init(dst_desc, accum_contig.data_ptr());
+  } else {
+    dst = ideep::tensor({dst_dims, ideep::tensor::data_type::u8, {output.strides().cbegin(), output.strides().cend()}},
+                      output.data_ptr());
+  }
 
   // attr
-  op_attr = (postOpFused == PostOp::ReLU) ? ideep::attr_t::fuse_relu() : ideep::attr_t();
+  if (has_accum) {
+    op_attr = (postOpFused == PostOp::AddReLU) ? ideep::attr_t::residual_with_sum_zero_point() : ideep::attr_t::fuse_sum();
+    const ideep::scale_t accum_ideep_scale = ideep::scale_t(1, 1.0/accum_scale);
+    const ideep::zero_point_t accum_ideep_zero_points = ideep::zero_point_t(1, accum_zero_point);
+    // Set the dst scale and zero point with the value of accum.
+    // The true scale and zero point is stored in ideep::scale_t(scale_size, inv_output_scale) and dst_zero_points.
+    dst.set_scale(accum_ideep_scale);
+    dst.set_zero_point(accum_ideep_zero_points);
+  } else {
+    op_attr = (postOpFused == PostOp::ReLU) ? ideep::attr_t::fuse_relu() : ideep::attr_t();
+  }
   // Weight and bias are prepacked, so set reorder_weight as false here
   ideep::convolution_forward::compute<true, false>(
       src, expected_weight, expected_bias, dst_dims, dst,
@@ -1782,7 +1807,15 @@ static at::Tensor onednn_conv_int8_with_prepacked_weight_bias(
     output.squeeze_(quant_utils::kConv1dSqueezeDim + 2);
     return output;
   }
-  return output;
+  if (has_accum) {
+    // // When fused with sum, the accum tensor share the data ptr as dst tensor as the output.
+    // // Reset output's scale and zero point into accum_contig.
+    // set_quantizer_(accum_contig, at::make_per_tensor_affine_quantizer(
+    //     output_scale, output_zero_point, accum_contig.scalar_type()));
+    return accum_contig;
+  } else {
+    return output;
+  }
 }
 
 #endif // #if AT_MKLDNN_ENABLED()
