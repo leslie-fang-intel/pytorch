@@ -1653,13 +1653,15 @@ static at::Tensor onednn_conv_int8_with_prepacked_weight_bias(
   int kSpatialDim = act.dim() - 2;
   bool is_1d = (1 == kSpatialDim);
   // has_accum: extra input besides the conv to do conv add fusion.
-  bool has_accum = (postOpFused == PostOp::Add);
+  bool has_accum = (postOpFused == PostOp::Add) || (postOpFused == PostOp::AddReLU);
   std::string func_name = "Inductor int8 conv";
   func_name += std::to_string(kSpatialDim) + "d";
   if (postOpFused == PostOp::ReLU) {
     func_name += "_relu";
   } else if(postOpFused == PostOp::Add) {
     func_name += "_add";
+  } else if (postOpFused == PostOp::AddReLU) {
+    func_name += "_add_relu";
   }
   func_name += "_with_prepacked_weight";
   // For conv1d, compute as conv2d then squeeze output
@@ -2067,6 +2069,7 @@ TORCH_LIBRARY_IMPL(quantized, MkldnnCPU, m) {
   m.impl(TORCH_SELECTIVE_NAME("quantized::conv_int8_packed_weight"),      ConvInt8CpuTensor<PostOp::None>::run_with_packed_weight_bias);
   m.impl(TORCH_SELECTIVE_NAME("quantized::conv_relu_int8_packed_weight"), ConvInt8CpuTensor<PostOp::ReLU>::run_with_packed_weight_bias);
   m.impl(TORCH_SELECTIVE_NAME("quantized::conv_add_int8_packed_weight"), ConvAddInt8CpuTensor<PostOp::Add>::run_with_packed_weight_bias);
+  m.impl(TORCH_SELECTIVE_NAME("quantized::conv_add_relu_int8_packed_weight"), ConvAddInt8CpuTensor<PostOp::AddReLU>::run_with_packed_weight_bias);
 }
 
 TORCH_LIBRARY_IMPL(_quantized, QuantizedCPU, m) {

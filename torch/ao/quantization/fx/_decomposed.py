@@ -257,11 +257,17 @@ def conv_binary_inductor(qx, x_scale, x_zp, qaccum, accum_scale, accum_zp, qw, w
                          bias, stride, padding, dilation, groups, output_scale,
                          output_zero_point, binary_post_op):
     quantized = torch.ops.quantized
-    assert binary_post_op in ['add'], "unsupport binary_post_op"
-    return quantized.conv_add_int8_packed_weight(
-        qx, x_scale, x_zp, qaccum, accum_scale, accum_zp, qw, w_scale, w_zp, bias,
-        stride, padding, dilation, groups, output_scale, output_zero_point
-    )
+    assert binary_post_op in ['add', 'add_relu'], "unsupport binary_post_op"
+    if binary_post_op == 'add':
+        return quantized.conv_add_int8_packed_weight(
+            qx, x_scale, x_zp, qaccum, accum_scale, accum_zp, qw, w_scale, w_zp, bias,
+            stride, padding, dilation, groups, output_scale, output_zero_point
+        )
+    else:
+        return quantized.conv_add_relu_int8_packed_weight(
+            qx, x_scale, x_zp, qaccum, accum_scale, accum_zp, qw, w_scale, w_zp, bias,
+            stride, padding, dilation, groups, output_scale, output_zero_point
+        )
 
 @impl(quantized_decomposed_lib, "conv_binary_inductor.tensor", "Meta")
 def conv_binary_inductor(qx, x_scale, x_zp, qaccum, accum_scale, accum_zp, qw, w_scale, w_zp, w_axis, bias,
