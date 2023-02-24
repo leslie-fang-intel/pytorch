@@ -90,6 +90,7 @@ from ..backend_config.utils import (
     get_pattern_to_dtype_configs,
     get_module_to_qat_module,
     get_fusion_pattern_to_root_node_getter,
+    get_fusion_pattern_to_extra_inputs_getter,
 )
 from ..backend_config import (
     BackendConfig,
@@ -1331,6 +1332,16 @@ def insert_observers_for_model(
                     root_node_getter = pattern_to_root_node_getter.get(pattern, _default_root_node_getter)
                     root_node = root_node_getter(matched_node_pattern)
                     is_input_node_of_the_pattern = node is root_node
+                    print("node is: {}".format(node), flush=True)
+                    # if node.name == "convolution_default_1":
+                    #     import pdb;pdb.set_trace()
+                    # if node.name == "convolution_default_2":
+                    #      _maybe_insert_input_observers_for_node(
+                    #         node, qconfig, model, named_modules, model.graph,
+                    #         qhandler,
+                    #         prepare_custom_config,
+                    #         backend_config)
+                    #     import pdb;pdb.set_trace()
                     if is_input_node_of_the_pattern:
                         # this modifies node inplace
                         _maybe_insert_input_observers_for_node(
@@ -1343,6 +1354,22 @@ def insert_observers_for_model(
                         _maybe_insert_input_equalization_observers_for_node(
                             node, equalization_qconfig, model, named_modules, model.graph,
                             is_quantized_branch, backend_config)
+                    
+                    # For extra input node, it may also needs insert observers
+                    pattern_to_extra_inputs_getter = get_fusion_pattern_to_extra_inputs_getter(backend_config)
+                    def _default_extra_input_getter(node_pattern):
+                        return []
+                    extra_inputs_getter = pattern_to_extra_inputs_getter.get(pattern, _default_extra_input_getter)
+                    extra_input_node = extra_inputs_getter(matched_node_pattern)
+                    print("extra_input_node is: {}".format(extra_input_node))
+                    is_input_node_of_the_pattern = node in extra_input_node
+                    if is_input_node_of_the_pattern:
+                        _maybe_insert_input_observers_for_node(
+                            node, qconfig, model, named_modules, model.graph,
+                            qhandler,
+                            prepare_custom_config,
+                            backend_config)
+
 
                     is_last_node_of_pattern = node is last_node
                     is_general_tensor_value_op = \
@@ -1605,6 +1632,7 @@ def prepare(
     equalization_node_name_to_qconfig = _generate_node_name_to_qconfig(
         model, named_modules, model.graph, _equalization_config, node_name_to_scope)
     node_name_to_qconfig = _generate_node_name_to_qconfig(model, named_modules, model.graph, qconfig_mapping, node_name_to_scope)
+    print("node_name_to_qconfig is: {}".format(node_name_to_qconfig), flush=True)
 
     # match the patterns that will get quantized
     standalone_module_names = list(prepare_custom_config.standalone_module_names.keys())
@@ -1621,6 +1649,7 @@ def prepare(
         match_with_qconfig = (*match_without_qconfig, node_name_to_qconfig[node_name])
         node_name_to_match_result_with_qconfig[node_name] = match_with_qconfig
 
+    #print("match_with_qconfig is: {}".format(match_with_qconfig), flush=True)
     _run_prepare_fx_on_standalone_modules(
         model, is_qat, named_modules, node_name_to_match_result_with_qconfig, prepare_custom_config, backend_config)
 
