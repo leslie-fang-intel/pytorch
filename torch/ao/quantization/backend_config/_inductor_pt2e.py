@@ -19,6 +19,7 @@ weighted_op_quint8_dtype_config = DTypeConfig(
 )
 from typing import List
 from torch.ao.quantization.utils import MatchAllNode
+import itertools
 
 def get_linear_configs():
     linear_configs = []
@@ -109,26 +110,6 @@ def get_conv_configs():
         ._set_input_type_to_index({"weight": 1, "bias": 2})
     )
     # Conv add case
-    # conv_configs.append(
-    #     BackendPatternConfig((torch.ops.aten.convolution.default, torch.ops.aten.add.Tensor))
-    #     .set_observation_type(observation_type)  # noqa: E131
-    #     .set_dtype_configs(dtype_configs)
-    #     ._set_input_type_to_index({"weight": 1, "bias": 2})
-    # )
-    # conv_configs.append(
-    #     BackendPatternConfig((torch.ops.aten.convolution.default, torch.ops.aten.add_.Tensor))
-    #     .set_observation_type(observation_type)  # noqa: E131
-    #     .set_dtype_configs(dtype_configs)
-    #     ._set_input_type_to_index({"weight": 1, "bias": 2})
-    # )
-    # num_tensor_args_to_observation_type_mapping = {
-    #     # TODO: this is not used right now since we have extra check in prepare
-    #     # will need to change this to NO_OBSERVER later after we implemented
-    #     # Tensor dtype inference properly
-    #     0: ObservationType.OUTPUT_USE_DIFFERENT_OBSERVER_AS_INPUT,
-    #     1: ObservationType.OUTPUT_SHARE_OBSERVER_WITH_INPUT,
-    #     2: ObservationType.OUTPUT_USE_DIFFERENT_OBSERVER_AS_INPUT,
-    # }
     def _conv_add_root_node_getter_left(pattern):
         _, conv, _ = pattern
         return conv
@@ -138,24 +119,17 @@ def get_conv_configs():
         """
         _, conv, extra_input = pattern
         return [extra_input]
-    add_op = torch.ops.aten.add.Tensor
-    conv_configs.append(
-        BackendPatternConfig()
-            ._set_pattern_complex_format((add_op, torch.ops.aten.convolution.default, MatchAllNode))  # noqa: E131
-            .set_observation_type(observation_type)
-            .set_dtype_configs(dtype_configs)
-            ._set_input_type_to_index({"weight": 1, "bias": 2})
-            ._set_root_node_getter(_conv_add_root_node_getter_left)
-            ._set_extra_inputs_getter(_conv_add_extra_inputs_getter_left)
-            # ._set_num_tensor_args_to_observation_type(num_tensor_args_to_observation_type_mapping)
-    )
-    # conv_configs.append(
-    #     BackendPatternConfig()
-    #         ._set_pattern_complex_format((add_op, MatchAllNode, torch.ops.aten.convolution.default))  # noqa: E131
-    #         .set_observation_type(observation_type)
-    #         .set_dtype_configs(dtype_configs)
-    #         ._set_input_type_to_index({"weight": 1, "bias": 2})
-    # )
+    for add_op in [torch.ops.aten.add.Tensor, torch.ops.aten.add_.Tensor]:
+        conv_configs.append(
+            BackendPatternConfig()
+                ._set_pattern_complex_format((add_op, torch.ops.aten.convolution.default, MatchAllNode))  # noqa: E131
+                .set_observation_type(observation_type)
+                .set_dtype_configs(dtype_configs)
+                ._set_input_type_to_index({"weight": 1, "bias": 2})
+                ._set_root_node_getter(_conv_add_root_node_getter_left)
+                ._set_extra_inputs_getter(_conv_add_extra_inputs_getter_left)
+                # ._set_num_tensor_args_to_observation_type(num_tensor_args_to_observation_type_mapping)
+        )
     return conv_configs
 
 def get_pooling_configs():

@@ -413,7 +413,7 @@ class TestQuantizePT2EModels(QuantizationTestCase):
         For experiment.
         '''
         class Mod(torch.nn.Module):
-            def __init__(self, with_bias: bool, use_relu: bool) -> None:
+            def __init__(self, with_bias: bool, use_relu: bool, inplace_add: bool) -> None:
                 super().__init__()
                 self.conv = torch.nn.Conv2d(
                     in_channels=3, out_channels=16, kernel_size=3, stride=1, padding=1, bias=with_bias
@@ -422,19 +422,26 @@ class TestQuantizePT2EModels(QuantizationTestCase):
                 self.conv3 = torch.nn.Conv2d(in_channels=16, out_channels=16, kernel_size=3, stride=1, padding=1, bias=with_bias)
                 self.relu = torch.nn.ReLU()
                 self.use_relu = use_relu
+                self.inplace_add = inplace_add
 
             def forward(self, x):
-                x1 = self.conv(x)
-                y = self.conv2(x1) + self.conv3(x1)
-                return self.relu(y) if self.use_relu else y
+                if not self.inplace_add:
+                    x1 = self.conv(x)
+                    y = self.conv2(x1) + self.conv3(x1)
+                    return self.relu(y) if self.use_relu else y
+                else:
+                    x1 = self.conv(x)
+                    accum = self.conv2(x1)
+                    accum += self.conv3(x1)
+                    return self.relu(accum) if self.use_relu else accum
 
         input_shape = (1, 3, 16, 16)
         with_bias_list = [True, False]
         use_relu_list = [False]
-        cases = itertools.product(with_bias_list, use_relu_list)
-        for with_bias, use_relu in cases:
-            print("with_bias is: {}".format(with_bias), flush=True)
-            self._test_inductor_backend_helper(Mod(with_bias, use_relu), input_shape)
+        inplace_add_list = [True, False]
+        cases = itertools.product(with_bias_list, use_relu_list, inplace_add_list)
+        for with_bias, use_relu, inplace_add in cases:
+            self._test_inductor_backend_helper(Mod(with_bias, use_relu, inplace_add), input_shape)
 
     def test_conv2d_relu_conv2d_inductor_backend(self):
         '''
