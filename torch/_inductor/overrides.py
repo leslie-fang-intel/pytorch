@@ -609,6 +609,10 @@ def fuse_quantization(gm: torch.fx.GraphModule, example_inputs):
     fake_mode = fake_mode_from_tensors(example_inputs)
     ShapeProp(gm, fake_mode=fake_mode).propagate(*example_inputs)
 
+    from torch.fx.passes.graph_drawer import FxGraphDrawer
+    g = FxGraphDrawer(gm, "resnet18")
+    g.get_dot_graph().write_svg("/home/lesliefang/pytorch_1_7_1/torch_inductor/before_fuse_reference_quantized_conv.svg")
+        
     print("gm before fuse_reference_quantized_conv is: {}".format(gm), flush=True)
     # Fuse `dq - op (- post ops) - q` to quantized op
     gm = fuse_reference_quantized_conv(gm)
@@ -620,7 +624,6 @@ def fuse_quantization(gm: torch.fx.GraphModule, example_inputs):
     gm = prepack_weight_in_graph(gm)
     print("gm before return fuse_quantization is: {}".format(gm), flush=True)
 
-    from torch.fx.passes.graph_drawer import FxGraphDrawer
     g = FxGraphDrawer(gm, "resnet18")
     g.get_dot_graph().write_svg("/home/lesliefang/pytorch_1_7_1/torch_inductor/before_return_fuse_quantization.svg")
 
@@ -990,6 +993,7 @@ def fuse_reference_quantized_conv_unary(gm: torch.fx.GraphModule):
         for node in gm.graph.nodes:
             if node.target is convolution:
                 (x, w, bias, stride, padding, dilation, is_transposed, out_padding, groups) = node.args
+                print("node name is: {}".format(node.name), flush=True)
                 assert x.target == dequantize_per_tensor, "input's node should be dequantize_per_tensor"
                 assert w.target == dequantize_per_channel, "weight's node should be dequantize_per_channel"
                 (qx, x_scale, x_zp, x_quant_min, x_quant_max, x_dtype) = x.args

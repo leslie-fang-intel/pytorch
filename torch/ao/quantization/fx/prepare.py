@@ -1334,6 +1334,9 @@ def insert_observers_for_model(
                     is_input_node_of_the_pattern = node is root_node
                     if is_input_node_of_the_pattern:
                         # this modifies node inplace
+                        print("node before _maybe_insert_input_observers_for_nodeis: {}".format(node), flush=True)
+                        # if node.name == "convolution_default_3":
+                        #     import pdb;pdb.set_trace()
                         _maybe_insert_input_observers_for_node(
                             node, qconfig, model, named_modules, model.graph,
                             qhandler,
@@ -1377,37 +1380,42 @@ def insert_observers_for_model(
                         # Step2: Check if it's the conv add fusion cases.
                         def check_conv_add_fusion_pattern(extra_input):
                             print("len(extra_input.users) is: {}".format(len(extra_input.users)), flush=True)
-                            if len(extra_input.users) is not 1:
-                                return False
-                            if list(extra_input.users)[0].target not in [torch.ops.aten.add.Tensor, torch.ops.aten.add_.Tensor]:
-                                return False
-                            add_node = list(extra_input.users)[0]
-                            if len(add_node.all_input_nodes) is not 2:
-                                # All the inputs to add_node should in its args parameters
-                                return False
-                            conv_node_idx = 0 if extra_input_node is add_node.all_input_nodes[1] else 1
-                            conv_node_to_check = add_node.all_input_nodes[conv_node_idx]
-                            return True if (conv_node_to_check.target is torch.ops.aten.convolution.default) else False
+                            # if len(extra_input.users) is not 1:
+                            #     return False
+                            # Find add node
+                            find_conv_add_fusion_pattern = False
+                            for user in list(extra_input.users):
+                                if user.target not in [torch.ops.aten.add.Tensor, torch.ops.aten.add_.Tensor]:
+                                    continue
+                                add_node = user
+                                if len(add_node.all_input_nodes) is not 2:
+                                    # All the inputs to add_node should in its args parameters
+                                    continue
+                                conv_node_idx = 0 if extra_input is add_node.all_input_nodes[1] else 1
+                                conv_node_to_check = add_node.all_input_nodes[conv_node_idx]
+                                if (conv_node_to_check.target is torch.ops.aten.convolution.default):
+                                    find_conv_add_fusion_pattern = True
+                                    break
+                            return find_conv_add_fusion_pattern, add_node
 
-                        if check_conv_add_fusion_pattern(node):
-                            # Step3.1: Insert fake quant if the extra_input node is conv
+                        find_conv_add_fusion_pattern, add_node = check_conv_add_fusion_pattern(node)
+                        if find_conv_add_fusion_pattern:
+                            # Step3.1: Insert fake quant to all the inputs (includes weight) of extra_input if the extra_input node is conv
                             if node.target is torch.ops.aten.convolution.default:
                                 _maybe_insert_input_observers_for_node(
                                     node, qconfig, model, named_modules, model.graph,
                                     qhandler,
                                     prepare_custom_config,
                                     backend_config)
-                            # Step3.2: Insert fake quant between extra_input node and add
-                            # add.replace_input_with(extra_input, obsertver)
+                            # Step3.2: Insert fake quant after extra_input node
+                            # So that, fake quant inserted between extra_input and add node
                             # Create observer
-                            if len(node.users) is 1:
-                                add_node = list(node.users)[0]
-                                new_obs_mod = qconfig.activation()
-                                new_obs_node = _insert_observer(
-                                    node, new_obs_mod, model, named_modules, model.graph)
+                            new_obs_mod = qconfig.activation()
+                            new_obs_node = _insert_observer(
+                                node, new_obs_mod, model, named_modules, model.graph)
 
-                                add_node.replace_input_with(node, new_obs_node)
-                            
+                            #node.replace_all_uses_with(new_obs_node)
+                            add_node.replace_input_with(node, new_obs_node)
 
 
                     is_last_node_of_pattern = node is last_node
