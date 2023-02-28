@@ -437,7 +437,7 @@ class TestQuantizePT2EModels(QuantizationTestCase):
 
         input_shape = (1, 3, 16, 16)
         with_bias_list = [True, False]
-        use_relu_list = [False]
+        use_relu_list = [True, False]
         inplace_add_list = [True, False]
         cases = itertools.product(with_bias_list, use_relu_list, inplace_add_list)
         for with_bias, use_relu, inplace_add in cases:

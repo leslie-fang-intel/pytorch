@@ -130,6 +130,30 @@ def get_conv_configs():
                 ._set_extra_inputs_getter(_conv_add_extra_inputs_getter_left)
                 # ._set_num_tensor_args_to_observation_type(num_tensor_args_to_observation_type_mapping)
         )
+    # Conv add ReLU case
+    def _conv_add_relu_root_node_getter_left(pattern):
+        relu, add_pattern = pattern
+        _, conv, _ = add_pattern
+        return conv
+    def _conv_add_relu_extra_inputs_getter_left(pattern):
+        """ get inputs pattern for extra inputs, inputs for root node
+        are assumed to be copied over from root node to the fused node
+        """
+        relu, add_pattern = pattern
+        _, conv, extra_input = add_pattern
+        return [extra_input]
+    relu = torch.ops.aten.relu.default
+    for add_op in [torch.ops.aten.add.Tensor, torch.ops.aten.add_.Tensor]:
+        conv_configs.append(
+            BackendPatternConfig()
+                ._set_pattern_complex_format((relu, (add_op, torch.ops.aten.convolution.default, MatchAllNode)))  # noqa: E131
+                .set_observation_type(observation_type)
+                .set_dtype_configs(dtype_configs)
+                ._set_input_type_to_index({"weight": 1, "bias": 2})
+                ._set_root_node_getter(_conv_add_relu_root_node_getter_left)
+                ._set_extra_inputs_getter(_conv_add_relu_extra_inputs_getter_left)
+                # ._set_num_tensor_args_to_observation_type(num_tensor_args_to_observation_type_mapping)
+        )
     return conv_configs
 
 def get_pooling_configs():

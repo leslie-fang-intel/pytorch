@@ -257,7 +257,7 @@ def conv_binary_inductor(qx, x_scale, x_zp, qaccum, accum_scale, accum_zp, qw, w
                          bias, stride, padding, dilation, groups, output_scale,
                          output_zero_point, binary_post_op):
     quantized = torch.ops.quantized
-    assert binary_post_op in ['add', 'add_', 'add_relu'], "unsupport binary_post_op"
+    assert binary_post_op in ['add', 'add_', 'add_relu', 'add__relu'], "unsupport binary_post_op"
     if binary_post_op in ['add', 'add_']:
         return quantized.conv_add_int8_packed_weight(
             qx, x_scale, x_zp, qaccum, accum_scale, accum_zp, qw, w_scale, w_zp, bias,
