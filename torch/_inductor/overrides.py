@@ -882,6 +882,8 @@ def fuse_reference_quantized_conv_binary(gm: torch.fx.GraphModule):
         'add_' : [add_],
         'add_relu' : [add, relu],
         'add__relu' : [add_, relu],
+        'add_relu_' : [add, relu_],
+        'add__relu_' : [add_, relu_],
     }
     for name, binary_post_op in binary_post_ops.items():
         for node in gm.graph.nodes:
