@@ -1348,76 +1348,6 @@ def insert_observers_for_model(
                             node, equalization_qconfig, model, named_modules, model.graph,
                             is_quantized_branch, backend_config)
 
-
-                    # Leslie: Hack way to handle the case of conv add fusion. Check with Meta for upstream Solution.
-                    # conv etra_input
-                    #  \    /
-                    #    add
-                    # There are 2 missing fake quant by previous logic and need to be done here
-                    # Thing1:
-                    #   Only the root node which is conv in this case, all the inputs will be fake quant inserted. 
-                    #   However, when the extra_input node is also conv, the fake quant will not inserted at its weight.
-                    # Thing2:
-                    #   For oneDNN 2.X version's conv add fusion, it requires all the input to add is int8. So need to insert fake quant
-                    #   between add and extra_input node.
-                    # Details of Hack way:
-                    #   1. We first get all the pattern which configure the extra_input. Since we have the assumptation in recipe:
-                    #      1.1 We will config extra_input for conv add fusion.
-                    #      1.2 The root node of conv add fusion is a conv node.
-                    #   2. We will check the pattern is conv add or not.
-                    #   3. If the pattern is conv add, we will do the 2 things mentioned above.
-                    pattern_to_extra_inputs_getter = get_fusion_pattern_to_extra_inputs_getter(backend_config)
-                    def _default_extra_input_getter(node_pattern):
-                        return []
-                    extra_inputs_getter = pattern_to_extra_inputs_getter.get(pattern, _default_extra_input_getter)
-                    # TODO, Judge conv add pattern, and do some hack way here
-                    print("pattern is: {}".format(pattern))
-                    extra_input_node = extra_inputs_getter(matched_node_pattern)
-                    print("extra_input_node is: {}".format(extra_input_node))
-                    # Step1: Only each extra_input node will be the start point to handle these 2 hack things.
-                    is_input_node_of_the_pattern = node in extra_input_node
-                    if is_input_node_of_the_pattern:
-                        # Step2: Check if it's the conv add fusion cases.
-                        def check_conv_add_fusion_pattern(extra_input):
-                            print("len(extra_input.users) is: {}".format(len(extra_input.users)), flush=True)
-                            # if len(extra_input.users) is not 1:
-                            #     return False
-                            # Find add node
-                            find_conv_add_fusion_pattern = False
-                            for user in list(extra_input.users):
-                                if user.target not in [torch.ops.aten.add.Tensor, torch.ops.aten.add_.Tensor]:
-                                    continue
-                                add_node = user
-                                if len(add_node.all_input_nodes) is not 2:
-                                    # All the inputs to add_node should in its args parameters
-                                    continue
-                                conv_node_idx = 0 if extra_input is add_node.all_input_nodes[1] else 1
-                                conv_node_to_check = add_node.all_input_nodes[conv_node_idx]
-                                if (conv_node_to_check.target is torch.ops.aten.convolution.default):
-                                    find_conv_add_fusion_pattern = True
-                                    break
-                            return find_conv_add_fusion_pattern, add_node
-
-                        find_conv_add_fusion_pattern, add_node = check_conv_add_fusion_pattern(node)
-                        if find_conv_add_fusion_pattern:
-                            # Step3.1: Insert fake quant to all the inputs (includes weight) of extra_input if the extra_input node is conv
-                            if node.target is torch.ops.aten.convolution.default:
-                                _maybe_insert_input_observers_for_node(
-                                    node, qconfig, model, named_modules, model.graph,
-                                    qhandler,
-                                    prepare_custom_config,
-                                    backend_config)
-                            # Step3.2: Insert fake quant after extra_input node
-                            # So that, fake quant inserted between extra_input and add node
-                            # Create observer
-                            new_obs_mod = qconfig.activation()
-                            new_obs_node = _insert_observer(
-                                node, new_obs_mod, model, named_modules, model.graph)
-
-                            #node.replace_all_uses_with(new_obs_node)
-                            add_node.replace_input_with(node, new_obs_node)
-
-
                     is_last_node_of_pattern = node is last_node
                     is_general_tensor_value_op = \
                         (qhandler is not None and qhandler.is_general_tensor_value_op())
@@ -1502,7 +1432,88 @@ def insert_observers_for_model(
         elif node.op == 'output':
             outputs_seen_counter += 1
             results_node = node
+    
+    print("model.graph before add recipe is: {}".format(model.graph), flush=True)
 
+    for node in list(model.graph.nodes):
+        if  node.op in ('call_module', 'call_method', 'call_function', 'output'):
+            # check for matches
+            last_node, matched_node_pattern, pattern, qhandler, qconfig = (
+                node_name_to_match_result_with_qconfig.get(node.name, (None, None, None, None, None))  # type: ignore[assignment]
+            )
+            # Handle the add fusion recipe
+            # Leslie: Hack way to handle the case of conv add fusion. Check with Meta for upstream Solution.
+            # conv etra_input
+            #  \    /
+            #    add
+            # There are 2 missing fake quant by previous logic and need to be done here
+            # Thing1:
+            #   Only the root node which is conv in this case, all the inputs will be fake quant inserted. 
+            #   However, when the extra_input node is also conv, the fake quant will not inserted at its weight.
+            # Thing2:
+            #   For oneDNN 2.X version's conv add fusion, it requires all the input to add is int8. So need to insert fake quant
+            #   between add and extra_input node.
+            # Details of Hack way:
+            #   1. We first get all the pattern which configure the extra_input. Since we have the assumptation in recipe:
+            #      1.1 We will config extra_input for conv add fusion.
+            #      1.2 The root node of conv add fusion is a conv node.
+            #   2. We will check the pattern is conv add or not.
+            #   3. If the pattern is conv add, we will do the 2 things mentioned above.
+            pattern_to_extra_inputs_getter = get_fusion_pattern_to_extra_inputs_getter(backend_config)
+            def _default_extra_input_getter(node_pattern):
+                return []
+            extra_inputs_getter = pattern_to_extra_inputs_getter.get(pattern, _default_extra_input_getter)
+            # TODO, Judge conv add pattern, and do some hack way here
+            print("pattern is: {}".format(pattern))
+            extra_input_node = extra_inputs_getter(matched_node_pattern)
+            print("extra_input_node is: {}".format(extra_input_node))
+            # Step1: Only each extra_input node will be the start point to handle these 2 hack things.
+            is_input_node_of_the_pattern = node in extra_input_node
+            if is_input_node_of_the_pattern:
+                # Step2: Check if it's the conv add fusion cases.
+                def check_conv_add_fusion_pattern(extra_input):
+                    print("len(extra_input.users) is: {}".format(len(extra_input.users)), flush=True)
+                    # if len(extra_input.users) is not 1:
+                    #     return False
+                    # Find add node
+                    find_conv_add_fusion_pattern = False
+                    for user in list(extra_input.users):
+                        if user.target not in [torch.ops.aten.add.Tensor, torch.ops.aten.add_.Tensor]:
+                            continue
+                        add_node = user
+                        if len(add_node.all_input_nodes) is not 2:
+                            # All the inputs to add_node should in its args parameters
+                            continue
+                        conv_node_idx = 0 if extra_input is add_node.all_input_nodes[1] else 1
+                        conv_node_to_check = add_node.all_input_nodes[conv_node_idx]
+                        if (conv_node_to_check.target is torch.ops.aten.convolution.default):
+                            find_conv_add_fusion_pattern = True
+                            break
+                    return find_conv_add_fusion_pattern, add_node
+
+                find_conv_add_fusion_pattern, add_node = check_conv_add_fusion_pattern(node)
+                if find_conv_add_fusion_pattern:
+                    # Step3.1: Insert fake quant to all the inputs (includes weight) of extra_input if the extra_input node is conv
+                    if node.target is torch.ops.aten.convolution.default:
+                        _maybe_insert_input_observers_for_node(
+                            node, qconfig, model, named_modules, model.graph,
+                            qhandler,
+                            prepare_custom_config,
+                            backend_config)
+                    # Step3.2: Insert fake quant after extra_input node
+                    # So that, fake quant inserted between extra_input and add node
+                    # Create observer
+                    new_obs_mod = qconfig.activation()
+                    new_obs_node = _insert_observer(
+                        node, new_obs_mod, model, named_modules, model.graph)
+
+                    print("node for conv add pattern is: {}".format(node), flush=True)
+                    #node.replace_all_uses_with(new_obs_node)
+                    add_node.replace_input_with(node, new_obs_node)
+                    for user in list(node.users):
+                        print("user is: {}".format(user), flush=True)
+                        if user is not new_obs_node:
+                            user.replace_input_with(node, new_obs_node)
     return results_node
 
 def _run_prepare_fx_on_standalone_modules(
