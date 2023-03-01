@@ -1258,7 +1258,6 @@ def insert_observers_for_model(
     results_node = None
 
     # TODO: change this to insert obs/fq by pattern instead of by node
-    print("node_name_to_match_result_with_qconfig is: {}".format(node_name_to_match_result_with_qconfig), flush=True)
     for node in nodes_before_observation:
 
         if node.op == 'placeholder':
@@ -1273,7 +1272,6 @@ def insert_observers_for_model(
                 node_name_to_match_result_with_qconfig.get(node.name, (None, None, None, None, None))  # type: ignore[assignment]
             )
             equalization_qconfig = equalization_config_map.get(node.name, None)
-            print("matched_node_pattern is: {}".format(matched_node_pattern), flush=True)
             this_node_dtype_info = node.meta["target_dtype_info"]
             if "val" in node.meta:
                 output_is_a_tensor = (
@@ -1335,9 +1333,6 @@ def insert_observers_for_model(
                     is_input_node_of_the_pattern = node is root_node
                     if is_input_node_of_the_pattern:
                         # this modifies node inplace
-                        print("node before _maybe_insert_input_observers_for_nodeis: {}".format(node), flush=True)
-                        # if node.name == "convolution_default_3":
-                        #     import pdb;pdb.set_trace()
                         _maybe_insert_input_observers_for_node(
                             node, qconfig, model, named_modules, model.graph,
                             qhandler,
@@ -1433,8 +1428,6 @@ def insert_observers_for_model(
         elif node.op == 'output':
             outputs_seen_counter += 1
             results_node = node
-    
-    print("model.graph before add recipe is: {}".format(model.graph), flush=True)
 
     # There 3 hack way to ensure the fake-quant inserted correctly for conv_add_relu in RN50
     # **TODO** Leslie: Find a upstream solution.
@@ -1467,19 +1460,12 @@ def insert_observers_for_model(
             def _default_extra_input_getter(node_pattern):
                 return []
             extra_inputs_getter = pattern_to_extra_inputs_getter.get(pattern, _default_extra_input_getter)
-            # TODO, Judge conv add pattern, and do some hack way here
-            print("pattern is: {}".format(pattern))
             extra_input_node = extra_inputs_getter(matched_node_pattern)
-            print("extra_input_node is: {}".format(extra_input_node))
             # Step1: Only each extra_input node will be the start point to handle these 2 hack things.
             is_input_node_of_the_pattern = node in extra_input_node
             if is_input_node_of_the_pattern:
                 # Step2: Check if it's the conv add fusion cases.
                 def check_conv_add_fusion_pattern(extra_input):
-                    print("len(extra_input.users) is: {}".format(len(extra_input.users)), flush=True)
-                    # if len(extra_input.users) is not 1:
-                    #     return False
-                    # Find add node
                     find_conv_add_fusion_pattern = False
                     for user in list(extra_input.users):
                         if user.target not in [torch.ops.aten.add.Tensor, torch.ops.aten.add_.Tensor]:
@@ -1511,11 +1497,9 @@ def insert_observers_for_model(
                     new_obs_node = _insert_observer(
                         node, new_obs_mod, model, named_modules, model.graph)
 
-                    print("node for conv add pattern is: {}".format(node), flush=True)
                     #node.replace_all_uses_with(new_obs_node)
                     add_node.replace_input_with(node, new_obs_node)
                     for user in list(node.users):
-                        print("user is: {}".format(user), flush=True)
                         if user is not new_obs_node:
                             user.replace_input_with(node, new_obs_node)
         
@@ -1538,7 +1522,6 @@ def insert_observers_for_model(
                         
                         def is_extra_input_node_conv(conv_node):
                             quant_node = conv_node.args[0]
-                            print("conv node name: {0}, args[0]: {1}".format(conv_node.name, quant_node.name), flush=True)
                             if len(list(quant_node.users)) > 1:
                                 return True
                             return False
@@ -1743,7 +1726,6 @@ def prepare(
     equalization_node_name_to_qconfig = _generate_node_name_to_qconfig(
         model, named_modules, model.graph, _equalization_config, node_name_to_scope)
     node_name_to_qconfig = _generate_node_name_to_qconfig(model, named_modules, model.graph, qconfig_mapping, node_name_to_scope)
-    print("node_name_to_qconfig is: {}".format(node_name_to_qconfig), flush=True)
 
     # match the patterns that will get quantized
     standalone_module_names = list(prepare_custom_config.standalone_module_names.keys())
@@ -1760,7 +1742,6 @@ def prepare(
         match_with_qconfig = (*match_without_qconfig, node_name_to_qconfig[node_name])
         node_name_to_match_result_with_qconfig[node_name] = match_with_qconfig
 
-    #print("match_with_qconfig is: {}".format(match_with_qconfig), flush=True)
     _run_prepare_fx_on_standalone_modules(
         model, is_qat, named_modules, node_name_to_match_result_with_qconfig, prepare_custom_config, backend_config)
 

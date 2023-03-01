@@ -1810,10 +1810,6 @@ static at::Tensor onednn_conv_int8_with_prepacked_weight_bias(
     return output;
   }
   if (has_accum) {
-    // // When fused with sum, the accum tensor share the data ptr as dst tensor as the output.
-    // // Reset output's scale and zero point into accum_contig.
-    // set_quantizer_(accum_contig, at::make_per_tensor_affine_quantizer(
-    //     output_scale, output_zero_point, accum_contig.scalar_type()));
     return accum_contig;
   } else {
     return output;

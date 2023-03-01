@@ -149,11 +149,11 @@ def get_conv_configs():
         _, extra_input, conv = add_pattern
         return [extra_input]
     
-    conv_add_relu_optioins = itertools.product(
+    conv_add_relu_optioins_right = itertools.product(
         [torch.ops.aten.add.Tensor, torch.ops.aten.add_.Tensor],  # add op
         [torch.ops.aten.relu.default, torch.ops.aten.relu_.default],  # relu op
     )
-    for add_op, relu_op in conv_add_relu_optioins:
+    for add_op, relu_op in conv_add_relu_optioins_right:
         conv_configs.append(
             BackendPatternConfig()
                 ._set_pattern_complex_format((relu_op, (add_op, MatchAllNode, torch.ops.aten.convolution.default)))  # noqa: E131
