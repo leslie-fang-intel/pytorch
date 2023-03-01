@@ -478,6 +478,67 @@ class TestQuantizePT2EModels(QuantizationTestCase):
         for with_bias in with_bias_list:
             self._test_inductor_backend_helper(Mod(with_bias), input_shape)
 
+    def test_conv2d_add_relu_conv2d_inductor_backend(self):
+        '''
+        Test to ensure the TensorMeta keet after fusion
+        '''
+        class Mod(torch.nn.Module):
+            def __init__(self, with_bias: bool) -> None:
+                super().__init__()
+                self.conv = torch.nn.Conv2d(
+                    in_channels=3,
+                    out_channels=16,
+                    kernel_size=3,
+                    stride=1,
+                    padding=1,
+                    bias=with_bias
+                )
+                self.relu = torch.nn.ReLU(inplace=True)
+                self.conv2 = torch.nn.Conv2d(
+                    in_channels=16,
+                    out_channels=16,
+                    kernel_size=3,
+                    stride=1,
+                    padding=1,
+                    bias=with_bias
+                )
+                self.conv3 = torch.nn.Conv2d(
+                    in_channels=16,
+                    out_channels=16,
+                    kernel_size=3,
+                    stride=1,
+                    padding=1,
+                    bias=with_bias
+                )
+                self.conv4 = torch.nn.Conv2d(
+                    in_channels=16,
+                    out_channels=16,
+                    kernel_size=3,
+                    stride=1,
+                    padding=1,
+                    bias=with_bias
+                )
+                self.conv5 = torch.nn.Conv2d(
+                    in_channels=16,
+                    out_channels=16,
+                    kernel_size=3,
+                    stride=1,
+                    padding=1,
+                    bias=with_bias
+                )
+
+            def forward(self, x):
+                x1 = self.conv(x)
+                accum = self.conv2(x1)
+                accum += self.conv3(x1)
+                relu_res = self.relu(accum)
+                return self.conv5(self.conv4(relu_res)) + relu_res
+
+        input_shape = (1, 3, 16, 16)
+        with_bias_list = [True, False]
+        for with_bias in with_bias_list:
+            self._test_inductor_backend_helper(Mod(with_bias), input_shape)
+
     def test_conv3d_inductor_backend(self):
         '''
         Quantize and lower convolution 3d + relu with Inductor quantization backend.
