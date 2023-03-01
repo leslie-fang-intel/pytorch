@@ -1258,6 +1258,7 @@ def insert_observers_for_model(
     results_node = None
 
     # TODO: change this to insert obs/fq by pattern instead of by node
+    print("node_name_to_match_result_with_qconfig is: {}".format(node_name_to_match_result_with_qconfig), flush=True)
     for node in nodes_before_observation:
 
         if node.op == 'placeholder':
@@ -1272,7 +1273,7 @@ def insert_observers_for_model(
                 node_name_to_match_result_with_qconfig.get(node.name, (None, None, None, None, None))  # type: ignore[assignment]
             )
             equalization_qconfig = equalization_config_map.get(node.name, None)
-
+            print("matched_node_pattern is: {}".format(matched_node_pattern), flush=True)
             this_node_dtype_info = node.meta["target_dtype_info"]
             if "val" in node.meta:
                 output_is_a_tensor = (
@@ -1435,6 +1436,9 @@ def insert_observers_for_model(
     
     print("model.graph before add recipe is: {}".format(model.graph), flush=True)
 
+    # There 3 hack way to ensure the fake-quant inserted correctly for conv_add_relu in RN50
+    # **TODO** Leslie: Find a upstream solution.
+    # Hack1
     for node in list(model.graph.nodes):
         if  node.op in ('call_module', 'call_method', 'call_function', 'output'):
             # check for matches
@@ -1514,6 +1518,55 @@ def insert_observers_for_model(
                         print("user is: {}".format(user), flush=True)
                         if user is not new_obs_node:
                             user.replace_input_with(node, new_obs_node)
+        
+    # Hack to remove the fake quant between add and relu for RN50
+    # The pattern match doesn't work correctly, 
+    # 1. There still have fake quant between some add and relu
+    # 2. There still have fake quant conv and add
+    # Hack2: Remove fake quant between conv add
+    for node in list(model.graph.nodes):
+        if node.op in ('call_module', 'call_method', 'call_function', 'output'):
+            #if node.target in [torch.ops.aten.add.Tensor, torch.ops.aten.add_.Tensor]:
+            if node.target is torch.ops.aten.convolution.default:
+                remove_observer_between_conv_add = False
+                #if list(node.users)[0].target is "activation_post_process_56": # torch.ops.aten.relu_.default
+                if list(node.users)[0].op == 'call_module' and  isinstance(named_modules[str(list(node.users)[0].target)], ObserverBase):
+                    # Conv - observer
+                    observer = list(node.users)[0]
+                    if list(observer.users)[0].target in [torch.ops.aten.add.Tensor, torch.ops.aten.add_.Tensor]:
+                        # Conv - observer - add
+                        
+                        def is_extra_input_node_conv(conv_node):
+                            quant_node = conv_node.args[0]
+                            print("conv node name: {0}, args[0]: {1}".format(conv_node.name, quant_node.name), flush=True)
+                            if len(list(quant_node.users)) > 1:
+                                return True
+                            return False
+
+                        # If the conv node is not extra input node of add, remove the fake quant
+                        if not is_extra_input_node_conv(node):
+                            remove_observer_between_conv_add = True
+                if remove_observer_between_conv_add:
+                    observer = list(node.users)[0]
+                    add = list(observer.users)[0]
+                    add.replace_input_with(observer, node)
+
+    # Hack3: Remove fake quant between add relu
+    for node in list(model.graph.nodes):
+        if node.op in ('call_module', 'call_method', 'call_function', 'output'):
+            if node.target in [torch.ops.aten.add.Tensor, torch.ops.aten.add_.Tensor]:
+                remove_observer_between_add_relu = False
+                if list(node.users)[0].op == 'call_module' and  isinstance(named_modules[str(list(node.users)[0].target)], ObserverBase):
+                    # add - observer
+                    observer = list(node.users)[0]
+                    if list(observer.users)[0].target in [torch.ops.aten.relu_.default, torch.ops.aten.relu.default]:
+                        # add - observer - relu
+                        remove_observer_between_add_relu = True
+                if remove_observer_between_add_relu:
+                    observer = list(node.users)[0]
+                    relu = list(observer.users)[0]
+                    relu.replace_input_with(observer, node)
+
     return results_node
 
 def _run_prepare_fx_on_standalone_modules(
