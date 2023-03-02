@@ -1705,10 +1705,24 @@ static at::Tensor onednn_conv_int8_with_prepacked_weight_bias(
   // Scales of ONEDNN and PyTorch are reciprocal
   const ideep::scale_t& src_scales = ideep::scale_t(1, 1.0 / act_scale);
   double inv_output_scale = 1.0 / output_scale;
-  ideep::scale_t weights_scales(weight_scales.numel());
-  for (int i = 0; i < weight_scales.numel(); ++i) {
-    weights_scales[i] = 1.0 / weight_scales[i].item().toDouble();
-  }
+
+
+  // ideep::scale_t weights_scales(weight_scales.numel());
+  // for (int i = 0; i < weight_scales.numel(); ++i) {
+  //   weights_scales[i] = 1.0 / weight_scales[i].item().toDouble();
+  // }
+
+  //std::cout<<"weight_scales.to(c10::ScalarType::Double) dtype is: "<<(weight_scales.to(c10::ScalarType::Double)).scalar_type()<<std::endl;
+  //std::cout<<"(1.0 / (weight_scales.to(c10::ScalarType::Double))) dtype is: "<<(1.0 / (weight_scales.to(c10::ScalarType::Double))).scalar_type()<<std::endl;
+  at::Tensor inverse_weight_scales = (1.0 / (weight_scales.to(c10::ScalarType::Double))).to(c10::ScalarType::Float);
+  //std::cout<<"inverse_weight_scales dtype is: "<<inverse_weight_scales.scalar_type()<<std::endl;
+  TORCH_CHECK(
+      inverse_weight_scales.ndimension() == 1, "weight scales for conv should 1 dimention.");
+  TORCH_CHECK(
+      inverse_weight_scales.is_contiguous(), "weight scales should be contiguous.");
+  ideep::scale_t weights_scales((float*)inverse_weight_scales.data_ptr(), (float*)inverse_weight_scales.data_ptr() + inverse_weight_scales.numel());
+
+
   const ideep::zero_point_t src_zero_points = ideep::zero_point_t(1, act_zero_point);
   const ideep::zero_point_t dst_zero_points = ideep::zero_point_t(1, output_zero_point);
 

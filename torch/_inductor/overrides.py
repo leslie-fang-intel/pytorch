@@ -617,6 +617,11 @@ def fuse_quantization(gm: torch.fx.GraphModule, example_inputs):
     # After that, weight is a MKLDNN tensor and it replaces the original one in graph
     gm = prepack_weight_in_graph(gm)
 
+    # Since oneDNN requires inverse scales of PyTorch
+    # We should move it weight_scale's inverse from kernel run time into the graph preprocess.
+    # It will reduce the runtime overhead.
+    gm = inverse_weight_scale_in_graph(gm)
+
     return gm
 
 def prepare_dequant_for_fusion(gm: torch.fx.GraphModule):
@@ -790,6 +795,14 @@ def _prepack_linear_weight(gm: torch.fx.GraphModule):
 def prepack_weight_in_graph(gm: torch.fx.GraphModule):
     gm = _prepack_conv_weight(gm)
     gm = _prepack_linear_weight(gm)
+    return gm
+
+def _inverse_conv_weight_scales(gm: torch.fx.GraphModule):
+    # Since the scale in PyTorch is an inverse to what's oneDNN needed
+    return gm
+
+def inverse_weight_scale_in_graph(gm: torch.fx.GraphModule):
+    gm = _inverse_conv_weight_scales(gm)
     return gm
 
 def _quantize_and_replace_weight(

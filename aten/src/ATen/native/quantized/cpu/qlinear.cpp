@@ -930,10 +930,22 @@ static at::Tensor onednn_linear_int8_with_prepacked_weight_bias(
   const ideep::scale_t& src_scales = ideep::scale_t(1, 1.0 / input_scale);
   double inv_output_scale = 1.0 / output_scale;
   const ideep::scale_t& dst_scales = ideep::scale_t(1, inv_output_scale);
-  ideep::scale_t weights_scales(weight_scales.numel());
-  for (int i = 0; i < weight_scales.numel(); ++i) {
-    weights_scales[i] = 1.0 / weight_scales[i].item().toDouble();
-  }
+
+
+  // ideep::scale_t weights_scales(weight_scales.numel());
+  // for (int i = 0; i < weight_scales.numel(); ++i) {
+  //   weights_scales[i] = 1.0 / weight_scales[i].item().toDouble();
+  // }
+
+  // at::Tensor inverse_weight_scales = 1.0 / weight_scales;
+  at::Tensor inverse_weight_scales = (1.0 / (weight_scales.to(c10::ScalarType::Double))).to(c10::ScalarType::Float);
+  TORCH_CHECK(
+      inverse_weight_scales.ndimension() == 1, "weight scales for conv should 1 dimention.");
+  TORCH_CHECK(
+      inverse_weight_scales.is_contiguous(), "weight scales should be contiguous.");
+  ideep::scale_t weights_scales((float*)inverse_weight_scales.data_ptr(), (float*)inverse_weight_scales.data_ptr() + inverse_weight_scales.numel());
+
+
   const ideep::zero_point_t src_zero_points = ideep::zero_point_t(1, input_zero_point);
   const ideep::zero_point_t dst_zero_points = ideep::zero_point_t(1, output_zero_point);
 
