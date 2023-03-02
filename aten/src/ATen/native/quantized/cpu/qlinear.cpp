@@ -908,7 +908,7 @@ static at::Tensor onednn_linear_int8_with_prepacked_weight_bias(
     double input_scale,
     int64_t input_zero_point,
     at::Tensor weight, // MKLDNN tensor with quantized values
-    at::Tensor weight_scales,
+    at::Tensor inv_weight_scales,
     at::Tensor weight_zero_points,
     c10::optional<at::Tensor> bias, // Bias is packed if not None
     double output_scale,
@@ -937,13 +937,14 @@ static at::Tensor onednn_linear_int8_with_prepacked_weight_bias(
   //   weights_scales[i] = 1.0 / weight_scales[i].item().toDouble();
   // }
 
-  // at::Tensor inverse_weight_scales = 1.0 / weight_scales;
-  at::Tensor inverse_weight_scales = (1.0 / (weight_scales.to(c10::ScalarType::Double))).to(c10::ScalarType::Float);
+  //at::Tensor inverse_weight_scales = (1.0 / (weight_scales.to(c10::ScalarType::Double))).to(c10::ScalarType::Float);
   TORCH_CHECK(
-      inverse_weight_scales.ndimension() == 1, "weight scales for conv should 1 dimention.");
+      inv_weight_scales.ndimension() == 1, "weight scales for conv should 1 dimention.");
   TORCH_CHECK(
-      inverse_weight_scales.is_contiguous(), "weight scales should be contiguous.");
-  ideep::scale_t weights_scales((float*)inverse_weight_scales.data_ptr(), (float*)inverse_weight_scales.data_ptr() + inverse_weight_scales.numel());
+      inv_weight_scales.is_contiguous(), "weight scales should be contiguous.");
+  TORCH_CHECK(
+      inv_weight_scales.scalar_type() == c10::ScalarType::Float, "weight scales should be dtype c10::ScalarType::Float.");
+  ideep::scale_t weights_scales((float*)inv_weight_scales.data_ptr(), (float*)inv_weight_scales.data_ptr() + inv_weight_scales.numel());
 
 
   const ideep::zero_point_t src_zero_points = ideep::zero_point_t(1, input_zero_point);
@@ -1104,7 +1105,7 @@ class LinearInt8CpuTensor final {
       double act_scale,
       int64_t act_zero_point,
       Tensor weight, // MkldnnCPU tensor with quantized values
-      Tensor weight_scales,
+      Tensor inv_weight_scales,
       Tensor weight_zero_points,
       c10::optional<Tensor> bias,
       double output_scale,
@@ -1112,7 +1113,7 @@ class LinearInt8CpuTensor final {
 #if AT_MKLDNN_ENABLED()
     return onednn_linear_int8_with_prepacked_weight_bias<kReluFused>(
         act, act_scale, act_zero_point,
-        weight, weight_scales, weight_zero_points,
+        weight, inv_weight_scales, weight_zero_points,
         bias, output_scale, output_zero_point
     );
 #endif

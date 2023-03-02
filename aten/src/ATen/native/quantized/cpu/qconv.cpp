@@ -1638,7 +1638,7 @@ static at::Tensor onednn_conv_int8_with_prepacked_weight_bias(
     double accum_scale,
     int64_t accum_zero_point,
     at::Tensor weight, // MKLDNN tensor with quantized values
-    at::Tensor weight_scales,
+    at::Tensor inv_weight_scales, // Already do inverse in the graph prepare phase for weight scales
     at::Tensor weight_zero_points,
     c10::optional<at::Tensor> bias, // Bias is packed if not None
     torch::List<int64_t> stride,
@@ -1706,21 +1706,13 @@ static at::Tensor onednn_conv_int8_with_prepacked_weight_bias(
   const ideep::scale_t& src_scales = ideep::scale_t(1, 1.0 / act_scale);
   double inv_output_scale = 1.0 / output_scale;
 
-
-  // ideep::scale_t weights_scales(weight_scales.numel());
-  // for (int i = 0; i < weight_scales.numel(); ++i) {
-  //   weights_scales[i] = 1.0 / weight_scales[i].item().toDouble();
-  // }
-
-  //std::cout<<"weight_scales.to(c10::ScalarType::Double) dtype is: "<<(weight_scales.to(c10::ScalarType::Double)).scalar_type()<<std::endl;
-  //std::cout<<"(1.0 / (weight_scales.to(c10::ScalarType::Double))) dtype is: "<<(1.0 / (weight_scales.to(c10::ScalarType::Double))).scalar_type()<<std::endl;
-  at::Tensor inverse_weight_scales = (1.0 / (weight_scales.to(c10::ScalarType::Double))).to(c10::ScalarType::Float);
-  //std::cout<<"inverse_weight_scales dtype is: "<<inverse_weight_scales.scalar_type()<<std::endl;
   TORCH_CHECK(
-      inverse_weight_scales.ndimension() == 1, "weight scales for conv should 1 dimention.");
+      inv_weight_scales.ndimension() == 1, "weight scales for conv should 1 dimention.");
   TORCH_CHECK(
-      inverse_weight_scales.is_contiguous(), "weight scales should be contiguous.");
-  ideep::scale_t weights_scales((float*)inverse_weight_scales.data_ptr(), (float*)inverse_weight_scales.data_ptr() + inverse_weight_scales.numel());
+      inv_weight_scales.is_contiguous(), "weight scales should be contiguous.");
+  TORCH_CHECK(
+      inv_weight_scales.scalar_type() == c10::ScalarType::Float, "weight scales should be dtype c10::ScalarType::Float.");
+  ideep::scale_t weights_scales((float*)inv_weight_scales.data_ptr(), (float*)inv_weight_scales.data_ptr() + inv_weight_scales.numel());
 
 
   const ideep::zero_point_t src_zero_points = ideep::zero_point_t(1, act_zero_point);
@@ -1992,7 +1984,7 @@ class ConvInt8CpuTensor final {
       double act_scale,
       int64_t act_zero_point,
       Tensor weight, // contains quantized values but not QTensor
-      Tensor weight_scales,
+      Tensor inv_weight_scales,
       Tensor weight_zero_points,
       c10::optional<Tensor> bias,
       torch::List<int64_t> stride,
@@ -2005,7 +1997,7 @@ class ConvInt8CpuTensor final {
     return onednn_conv_int8_with_prepacked_weight_bias<postOpFused>(
         act, act_scale, act_zero_point,
         c10::nullopt /*accum*/, 0.0 /*accum_scale*/, 0 /*accum_zero_point*/,
-        weight, weight_scales, weight_zero_points,
+        weight, inv_weight_scales, weight_zero_points,
         bias, stride, padding, dilation,
         groups, output_scale, output_zero_point
     );
@@ -2025,7 +2017,7 @@ class ConvAddInt8CpuTensor final {
       double accum_scale,
       int64_t accum_zero_point,
       Tensor weight, // contains quantized values but not QTensor
-      Tensor weight_scales,
+      Tensor inv_weight_scales,
       Tensor weight_zero_points,
       c10::optional<Tensor> bias,
       torch::List<int64_t> stride,
@@ -2038,7 +2030,7 @@ class ConvAddInt8CpuTensor final {
     return onednn_conv_int8_with_prepacked_weight_bias<postOpFused>(
         act, act_scale, act_zero_point,
         accum, accum_scale, accum_zero_point,
-        weight, weight_scales, weight_zero_points,
+        weight, inv_weight_scales, weight_zero_points,
         bias, stride, padding, dilation,
         groups, output_scale, output_zero_point
     );
