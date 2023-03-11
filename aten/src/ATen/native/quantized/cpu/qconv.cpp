@@ -1720,22 +1720,22 @@ static at::Tensor onednn_conv_int8_with_prepacked_weight_bias(
 
   // Weight
   auto packed_weight = at::native::itensor_from_mkldnn(weight);
-  // Here we check weight desc and reorder weight if necessary
-  // because input shape may change and so does weight layout
-  auto op_attr = ideep::attr_t();
-  ideep::scale_t bias_scales, op_scales;
-  std::tie(bias_scales, op_scales) = ideep::utils::compute_scales(
-      src_scales[0], inv_output_scale, weights_scales);
-  int scale_size = weights_scales.size();
-  op_attr.set_output_scales(ideep::utils::op_scale_mask(scale_size), op_scales);
-  op_attr.set_zero_points(DNNL_ARG_SRC, 0, src_zero_points);
-  op_attr.set_zero_points(DNNL_ARG_DST, 0, dst_zero_points);
-  auto w_desc = ideep::convolution_forward::expected_weights_desc(
-      weight.sizes().vec(), dnnl::memory::data_type::s8,
-      stride.vec(), padding.vec(), padding.vec(), dilation.vec(), groups,
-      dnnl::algorithm::convolution_direct, dnnl::prop_kind::forward_inference,
-      dnnl::memory::data_type::u8, act.sizes().vec(), op_attr, /*is_channels_last=*/true);
-  ideep::tensor expected_weight = packed_weight.reorder_if_differ_in(w_desc);
+  // // Here we check weight desc and reorder weight if necessary
+  // // because input shape may change and so does weight layout
+  // auto op_attr = ideep::attr_t();
+  // ideep::scale_t bias_scales, op_scales;
+  // std::tie(bias_scales, op_scales) = ideep::utils::compute_scales(
+  //     src_scales[0], inv_output_scale, weights_scales);
+  // int scale_size = weights_scales.size();
+  // op_attr.set_output_scales(ideep::utils::op_scale_mask(scale_size), op_scales);
+  // op_attr.set_zero_points(DNNL_ARG_SRC, 0, src_zero_points);
+  // op_attr.set_zero_points(DNNL_ARG_DST, 0, dst_zero_points);
+  // auto w_desc = ideep::convolution_forward::expected_weights_desc(
+  //     weight.sizes().vec(), dnnl::memory::data_type::s8,
+  //     stride.vec(), padding.vec(), padding.vec(), dilation.vec(), groups,
+  //     dnnl::algorithm::convolution_direct, dnnl::prop_kind::forward_inference,
+  //     dnnl::memory::data_type::u8, act.sizes().vec(), op_attr, /*is_channels_last=*/true);
+  // ideep::tensor expected_weight = packed_weight.reorder_if_differ_in(w_desc);
 
   // Bias
   c10::optional<ideep::tensor> onednn_bias{c10::nullopt};
@@ -1760,7 +1760,7 @@ static at::Tensor onednn_conv_int8_with_prepacked_weight_bias(
   src.init(src_desc, act_contig.data_ptr());
   // dst
   const std::vector<int64_t>& input_size = src.get_dims();
-  const auto& kernel_size = expected_weight.get_dims();
+  const auto& kernel_size = packed_weight.get_dims();
   std::vector<int64_t> output_sizes;
   output_sizes = at::native::conv_output_size(input_size, kernel_size, padding.vec(), stride.vec(), dilation.vec());
   ideep::dims dst_dims = ideep::dims({output_sizes.cbegin(), output_sizes.cend()});
@@ -1790,6 +1790,7 @@ static at::Tensor onednn_conv_int8_with_prepacked_weight_bias(
                       output.data_ptr());
   }
 
+  ideep::attr_t op_attr;
   // attr
   if (has_accum) {
     op_attr = (postOpFused == PostOp::AddReLU) ? ideep::attr_t::residual_with_sum_zero_point() : ideep::attr_t::fuse_sum();
@@ -1802,15 +1803,30 @@ static at::Tensor onednn_conv_int8_with_prepacked_weight_bias(
   } else {
     op_attr = (postOpFused == PostOp::ReLU) ? ideep::attr_t::fuse_relu() : ideep::attr_t();
   }
-  // Weight and bias are prepacked, so set reorder_weight as false here
-  ideep::convolution_forward::compute<true, false>(
-      src, expected_weight, expected_bias, dst_dims, dst,
+  op_attr.set_zero_points(DNNL_ARG_SRC, 0, src_zero_points);
+
+  ConvParams params;
+  ideep::convolution_forward::prepare(
+      params, src, packed_weight, expected_bias, dst_dims, dst,
       stride.vec(), dilation.vec(), padding.vec(), padding.vec(), groups,
       src_scales, weights_scales, ideep::scale_t(1, inv_output_scale),
-      src_zero_points, dst_zero_points, op_attr,
-      dnnl::algorithm::convolution_direct,
+      src_zero_points, dst_zero_points,
+      op_attr, dnnl::algorithm::convolution_direct,
       dnnl::prop_kind::forward_inference,
       ideep::u8s8, ideep::engine::cpu_engine());
+  auto expected_weight_desc = ideep::tensor::desc(params.pd.weights_desc(), groups);
+  ideep::tensor expected_weight = packed_weight.reorder_if_differ_in(expected_weight_desc);
+  ideep::convolution_forward::compute<false, false>(params, src, expected_weight, expected_bias, dst);
+
+  // // Weight and bias are prepacked, so set reorder_weight as false here
+  // ideep::convolution_forward::compute<true, false>(
+  //     src, expected_weight, expected_bias, dst_dims, dst,
+  //     stride.vec(), dilation.vec(), padding.vec(), padding.vec(), groups,
+  //     src_scales, weights_scales, ideep::scale_t(1, inv_output_scale),
+  //     src_zero_points, dst_zero_points, op_attr,
+  //     dnnl::algorithm::convolution_direct,
+  //     dnnl::prop_kind::forward_inference,
+  //     ideep::u8s8, ideep::engine::cpu_engine());
   if (is_1d) {
     output.squeeze_(quant_utils::kConv1dSqueezeDim + 2);
     return output;
