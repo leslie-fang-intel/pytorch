@@ -1348,7 +1348,7 @@ def insert_observers_for_model(
 
                         conv_add_rely_pattern_list = [(torch.ops.aten.relu.default, (torch.ops.aten.add.Tensor, torch.ops.aten.convolution.default, MatchAllNode)),
                                                       (torch.ops.aten.relu_.default, (torch.ops.aten.add_.Tensor, torch.ops.aten.convolution.default, MatchAllNode)),]
-                        insert_quant_to_extra_node = True
+                        insert_quant_to_extra_node = False
                         if pattern in conv_add_rely_pattern_list and insert_quant_to_extra_node:
                             # 1. Get the extra input node and check if the extra input node is conv or not
                             pattern_to_extra_inputs_getter = get_fusion_pattern_to_extra_inputs_getter(backend_config)
@@ -1657,9 +1657,12 @@ def prepare(
     standalone_module_classes = list(prepare_custom_config.standalone_module_classes.keys())
 
     custom_module_classes = get_custom_module_class_keys(prepare_custom_config.float_to_observed_mapping)
+    print("pattern_to_quantize_handler is: {}".format(pattern_to_quantize_handler), flush=True)
     matches_without_qconfig = _find_matches(
         model.graph, named_modules, pattern_to_quantize_handler, root_node_getter_mapping,
         standalone_module_names, standalone_module_classes, custom_module_classes)
+
+    print("matches_without_qconfig is: {}".format(matches_without_qconfig), flush=True)
 
     # map qconfig instances to matches
     node_name_to_match_result_with_qconfig = {}
