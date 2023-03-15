@@ -19,7 +19,7 @@ from .graph_module import (
 )
 from torch.nn.utils.parametrize import type_before_parametrizations
 from typing import Any, Dict, List, Callable, Optional, Tuple, Type, Set, Iterable
-
+from torch.ao.quantization.backend_config._inductor_pt2e import conv_add_pattern_list
 
 __all__: List[str] = []
 
@@ -131,8 +131,7 @@ def _find_matches(
             match_value,
             matched_pattern):
         if isinstance(node_pattern, Node):
-            conv_add_rely_pattern_list = [(torch.ops.aten.relu.default, (torch.ops.aten.add.Tensor, torch.ops.aten.convolution.default, MatchAllNode)),
-                                            (torch.ops.aten.relu_.default, (torch.ops.aten.add_.Tensor, torch.ops.aten.convolution.default, MatchAllNode)),]
+            conv_add_rely_pattern_list = conv_add_pattern_list
             if (matched_pattern in conv_add_rely_pattern_list) and (pattern is MatchAllNode):
                 # Skip to add extra input node of conv add relu into the pattern list
                 print("---- skip add extra input node of conv add relu into match_map----", flush=True)

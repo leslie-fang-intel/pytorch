@@ -109,6 +109,8 @@ from typing import Any, Dict, List, Optional, Set, Tuple, Type, Union, Callable
 
 from torch.ao.quantization.utils import MatchAllNode
 
+from torch.ao.quantization.backend_config._inductor_pt2e import conv_add_pattern_list
+
 __all__ = [
     "insert_observers_for_model",
     "prepare",
@@ -1346,8 +1348,7 @@ def insert_observers_for_model(
                             node, equalization_qconfig, model, named_modules, model.graph,
                             is_quantized_branch, backend_config)
 
-                        conv_add_rely_pattern_list = [(torch.ops.aten.relu.default, (torch.ops.aten.add.Tensor, torch.ops.aten.convolution.default, MatchAllNode)),
-                                                      (torch.ops.aten.relu_.default, (torch.ops.aten.add_.Tensor, torch.ops.aten.convolution.default, MatchAllNode)),]
+                        conv_add_rely_pattern_list = conv_add_pattern_list
                         insert_quant_to_extra_node = False
                         if pattern in conv_add_rely_pattern_list and insert_quant_to_extra_node:
                             # 1. Get the extra input node and check if the extra input node is conv or not
