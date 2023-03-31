@@ -716,13 +716,13 @@ def _new_prepack_conv_weight(gm: torch.fx.GraphModule):
             ), "weight's node should be dequantize_per_channel"
             x_shape = node.args[0].meta.get("tensor_meta").shape
             # print("x_shape is: {}".format(x_shape), flush=True)
-            (qx, x_scale, x_zp, x_quant_min, x_quant_max, x_dtype) = x_dq_per_tensor.args
+            (qx, x_scale_node, x_zp_node, x_quant_min, x_quant_max, x_dtype) = x_dq_per_tensor.args
             (weight_node, w_scale, w_zp, w_axis, w_quant_min, w_quant_max, w_dtype) = w_dq_per_channel.args
             weight_int8 = getattr(gm, weight_node.target)
             bias = getattr(gm, bias_node.target) if bias_node is not None else None
             w_scales = getattr(gm, w_scale.target)
-            x_scale = getattr(gm, x_scale.target)
-            x_zp = getattr(gm, x_zp.target)
+            x_scale = getattr(gm, x_scale_node.target)
+            x_zp = getattr(gm, x_zp_node.target)
             packed_weight, packed_bias = torch.ops.quantized.conv_prepack_cpu_tensor(
                 weight_int8,
                 w_scales,
@@ -759,17 +759,22 @@ def _new_prepack_conv_weight(gm: torch.fx.GraphModule):
                     x_dq_per_tensor,
                     w_dq_per_channel,
                     bias_node,
+                    packed_weight_node,
+                    w_scale,
+                    w_zp,
+                    w_axis,
+                    packed_bias_node,
                     stride,
                     padding,
                     dilation,
                     is_transposed,
                     out_padding,
                     groups,
-                    packed_weight_node,
-                    packed_bias_node,
+                    x_scale_node,
+                    x_zp_node
                 )
                 new_conv_node = gm.graph.call_function(
-                    quantized_decomposed.conv_inductor, args=args
+                    torch.ops.quantized.conv_prepacked_weight, args=args
                 )
                 # Copy node meta
                 new_conv_node.meta = copy.copy(node.meta)

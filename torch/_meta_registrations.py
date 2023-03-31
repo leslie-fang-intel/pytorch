@@ -755,6 +755,52 @@ if torch._C.has_mkldnn:
         "quantized", "IMPL", "Meta"
     )
 
+    @register_meta(torch.ops.quantized.conv_prepacked_weight.tensor)
+    def meta_int8_convolution_preapck_weight_tensor(
+        x,
+        w,
+        bias,
+        qw,
+        weight_scale,
+        weight_zero_point,
+        w_axis,
+        q_bias,
+        stride,
+        padding,
+        dilation,
+        is_transposed,
+        out_padding,
+        groups,
+        input_scale,
+        input_zp
+    ):
+        if len(x.shape) == 3 and len(qw.shape) == 4:
+            # For conv1d, x and w should both have rank 3
+            # But if weight is prepacked, it's rank is 4 by unsqueeze(2)
+            qw_squeezed = torch.squeeze(qw, 2)
+        else:
+            qw_squeezed = qw
+        shape_out = calc_conv_nd_return_shape(
+            x,
+            qw_squeezed,
+            stride,
+            padding,
+            dilation,
+            False,
+            groups,
+            None,
+        )
+        out_format = torch.channels_last
+        if len(shape_out) == 5:
+            out_format = torch.channels_last_3d
+        out = x.new_empty(shape_out)
+        if len(shape_out) == 3:
+            out = out.unsqueeze(2)
+        out = out.to(memory_format=out_format)
+        if len(shape_out) == 3:
+            out = out.squeeze(2)
+        return out
+
     @register_meta(torch.ops.quantized.conv_unary.tensor)
     def meta_int8_convolution_tensor_unary(
         qx,

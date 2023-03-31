@@ -542,6 +542,7 @@ std::tuple<at::Tensor, at::Tensor> prepack_qconv_weight_bias_onednn(
   } else {
     // Weight is quant per channel
     for (int i = 0; i < weight_scales.numel(); ++i) {
+      std::cout<<"i "<<i<<" weight_scales[i]" << weight_scales[i].item().toDouble()<<std::endl;
       weights_scales[i] = 1.0 / weight_scales[i].item().toDouble();
     }
   }
@@ -578,6 +579,10 @@ std::tuple<at::Tensor, at::Tensor> prepack_qconv_weight_bias_onednn(
   ideep::tensor exp_wgt;
   exp_wgt.init(w_desc);
   exp_wgt.feed_from(wgt, false); // expect wgt to be in [OC IC KH KW] format
+
+
+  std::cout<<"Inside prepack ideep tensor exp_wgt first element is: "<<int32_t(*((int8_t*)exp_wgt.get_data_handle()))<<std::endl;
+
   auto packed_weight = at::native::new_with_itensor_mkldnn(
       std::move(exp_wgt),
       optTypeMetaToScalarType(weight.options().dtype_opt()),
@@ -589,6 +594,9 @@ std::tuple<at::Tensor, at::Tensor> prepack_qconv_weight_bias_onednn(
   c10::optional<ideep::tensor> onednn_bias{c10::nullopt};
   if (bias.has_value()) {
     at::Tensor bias_val = bias.value();
+
+    // std::cout<<"Inside prepack bias_val is: "<<bias_val<<std::endl;
+
     TORCH_CHECK(bias_val.dim() == 1, "bias should be a vector (1D Tensor)");
     TORCH_CHECK(
         bias_val.size(0) == output_channels,
@@ -599,6 +607,26 @@ std::tuple<at::Tensor, at::Tensor> prepack_qconv_weight_bias_onednn(
     ideep::attr_t bias_attr =
         {ideep::utils::tensor_scale_mask(scale_size, false), bias_scales};
     auto expected_bias = onednn_bias.reorder_if_differ_in(bias_desc, bias_attr);
+
+    // std::cout<<"Inside prepack ideep tensor onednn_bias first element is: "<<float(*((float*)onednn_bias.get_data_handle()))<<std::endl;
+    // std::cout<<"Inside prepack ideep tensor expected_bias first element is: "<<float(*((float*)expected_bias.get_data_handle()))<<std::endl;
+
+
+    // // auto scale_size = bias_scales.size();
+    // std::vector<float> bias_scales2(scale_size);
+
+    // for (int i = 0; i < scale_size; i++) {
+    //   bias_scales2[i] = 1.0 / bias_scales[i];
+    // }
+
+    // ideep::attr_t bias_attr2 =
+    //     {ideep::utils::tensor_scale_mask(scale_size, false), bias_scales2};
+    // auto expected_bias2 = expected_bias.reorder_if_differ_in(bias_desc, bias_attr2);
+    // std::cout<<"Inside prepack ideep tensor expected_bias2 first element is: "<<float(*((float*)expected_bias2.get_data_handle()))<<std::endl;
+    // auto t2 = expected_bias2.to_public();
+    // std::cout<<"Inside prepack ideep tensor t2 first element is: "<<float(*((float*)t2.get_data_handle()))<<std::endl;
+
+
     packed_bias = at::native::new_with_itensor_mkldnn(
       std::move(expected_bias),
       optTypeMetaToScalarType(bias_val.options().dtype_opt()),

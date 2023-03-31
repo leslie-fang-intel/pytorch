@@ -24,14 +24,17 @@ namespace at { namespace native {
 #if AT_MKLDNN_ENABLED()
 
 Tensor mkldnn_to_dense(const Tensor& mkldnn_tensor, c10::optional<ScalarType> dtype, c10::optional<bool> masked_grad) {
-  TORCH_CHECK(mkldnn_tensor.scalar_type() == ScalarType::Float ||
-              mkldnn_tensor.scalar_type() == ScalarType::BFloat16,
-              "mkldnn_to_dense expects float or bfloat16 tensor input");
+  // TORCH_CHECK(mkldnn_tensor.scalar_type() == ScalarType::Float ||
+  //             mkldnn_tensor.scalar_type() == ScalarType::BFloat16,
+  //             "mkldnn_to_dense expects float or bfloat16 tensor input");
   ideep::tensor& stensor = itensor_from_mkldnn(mkldnn_tensor);
+
+  std::cout<<"---- inside ideep tensor: "<<float(*((float*)stensor.get_data_handle()))<<std::endl;
+
   auto dims = stensor.get_dims();
   auto data_type = dtype.has_value() ? dtype.value() : mkldnn_tensor.scalar_type();
-  TORCH_CHECK(data_type == ScalarType::Float || data_type == ScalarType::BFloat16,
-              "mkldnn tensor only can be converted to be a float or bfloat16 cpu tensor")
+  // TORCH_CHECK(data_type == ScalarType::Float || data_type == ScalarType::BFloat16,
+  //             "mkldnn tensor only can be converted to be a float or bfloat16 cpu tensor")
   // NOTE: int32_t dims from ideep::tensor but sizes needs int64_t
   Tensor cpu_tensor = at::empty(
     std::vector<int64_t>(dims.begin(), dims.end()),
@@ -41,8 +44,13 @@ Tensor mkldnn_to_dense(const Tensor& mkldnn_tensor, c10::optional<ScalarType> dt
       data_type == ScalarType::Float
       ? stensor.to_public(cpu_tensor.template data_ptr<float>(),
                           ideep::tensor::data_type::f32)
-      : stensor.to_public(cpu_tensor.template data_ptr<BFloat16>(),
-                         ideep::tensor::data_type::bf16);
+      : (
+        data_type == at::ScalarType::BFloat16
+        ? stensor.to_public(cpu_tensor.template data_ptr<BFloat16>(),
+                         ideep::tensor::data_type::bf16)
+        : stensor.to_public(cpu_tensor.template data_ptr<int8_t>(),
+                         ideep::tensor::data_type::s8)
+      );
   cpu_tensor.as_strided_(dims, pub_tensor.get_strides());
   return cpu_tensor.contiguous();
 }

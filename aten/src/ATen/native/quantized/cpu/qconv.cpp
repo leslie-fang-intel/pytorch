@@ -32,6 +32,10 @@
 #include <ATen/ops/quantize_per_channel_native.h>
 #include <ATen/ops/quantize_per_tensor_native.h>
 #include <ATen/ops/zeros.h>
+#include <ATen/ops/convolution.h>
+#include <ATen/ops/_to_dense_native.h>
+#include <ATen/ops/_make_per_channel_quantized_tensor_native.h>
+#include <ATen/ops/dequantize.h>
 #endif
 
 #include <c10/util/irange.h>
@@ -1956,8 +1960,110 @@ class ConvBinary final {
   }
 };
 
+class ConvPrepackWeight final {
+ public:
+  static Tensor run_with_packed_weight_bias(
+      Tensor x, // contains quantized values but not QTensor
+      Tensor w, // Original fp32 weight, for comparing only
+      c10::optional<Tensor> bias,
+      Tensor qw,
+      Tensor weight_scales,
+      Tensor weight_zero_point,
+      int64_t w_axis,
+      c10::optional<Tensor> q_bias,
+      at::IntArrayRef stride,
+      at::IntArrayRef padding,
+      at::IntArrayRef dilation,
+      bool is_transposed,
+      at::IntArrayRef out_padding,
+      int64_t groups,
+      Tensor input_scale,
+      Tensor input_zero_point) { // Used to check only
+#if AT_MKLDNN_ENABLED()
+   
+   std::cout<<"w_axis is: "<<w_axis<<std::endl;
+
+    double output_scale = 1.0;
+    int64_t output_zero_point = 0;
+    ideep::scale_t weights_scales(weight_scales.numel());
+    if (weight_scales.ndimension() == 0) {
+      // Weight is quant per tensor, then weight_scales will be a scalar Tensor
+      TORCH_CHECK(
+          weight_scales.numel() == 1,
+          "Weight is quant per tensor, weight scale expects 1 element but got ", weight_scales.numel(), " elements.");
+      weights_scales[0] = 1.0 / weight_scales.item().toDouble(); // Scales of ONEDNN and PyTorch are reciprocal
+    } else {
+      // Weight is quant per channel
+      for (int i = 0; i < weight_scales.numel(); ++i) {
+        weights_scales[i] = 1.0 / weight_scales[i].item().toDouble();
+
+        std::cout<<"i : "<<i<<" weights_scales[i]: "<<weights_scales[i]<<std::endl;
+      }
+    }
+    ideep::scale_t bias_scales, op_scales;
+    std::tie(bias_scales, op_scales) = ideep::utils::compute_scales(
+        1.0/input_scale.item().toDouble(), output_scale, weights_scales);
+    int scale_size = weights_scales.size();
+
+
+    // std::cout<<"x is: "<<x<<std::endl;
+    // std::cout<<(x == x)<<std::endl;
+    std::cout<<"w is: "<<w<<std::endl;
+    // std::cout<<"w_int8 is: "<<int8_weight_before_prepack<<std::endl;
+
+    auto expected_int8_weight_ideep_tensor = at::native::itensor_from_mkldnn(qw);
+    std::cout<<"Inside prepack ideep tensor expected_int8_weight_ideep_tensor first element is: "<<int32_t(*((int8_t*)expected_int8_weight_ideep_tensor.get_data_handle()))<<std::endl;
+
+    auto unpack_weight = at::native::mkldnn_to_dense(qw);
+
+    std::cout<<"unpack_weight is: "<<unpack_weight<<std::endl;
+
+    auto unpack_weight2 = at::native::make_per_channel_quantized_tensor_cpu(unpack_weight, weight_scales, weight_zero_point, w_axis);
+    // auto unpack_weight2 = torch.quantize_per_channel(float_tensor, scale, zero_point, dtype)
+    // set_quantizer_(unpack_weight2, at::make_per_channel_affine_quantizer(
+    //   weight_scales, weight_zero_point, w_axis, unpack_weight.scalar_type()));
+
+    auto dequant_unpack_weight = at::dequantize(unpack_weight2);
+
+    std::cout<<"dequant_unpack_weight is: "<<dequant_unpack_weight<<std::endl;
+
+
+    //auto unpack_bias = bias.has_value() ? c10::nullopt : at::Tensor();
+    if (bias.has_value()) {
+      std::cout<<"bias is: "<<bias.value()<<std::endl;
+      std::vector<float> bias_scales2(scale_size);
+      for (int i = 0; i < scale_size; i++) {
+        bias_scales2[i] = 1.0 / bias_scales[i];
+        // std::cout<<"i : "<<i<<" bias_scales2[i]: "<<bias_scales2[i]<<std::endl;
+      }
+
+      auto bias_desc = ideep::tensor::desc(bias.value().sizes().vec(), dnnl::memory::data_type::f32);
+      ideep::attr_t bias_attr2 =
+          {ideep::utils::tensor_scale_mask(scale_size, false), bias_scales2};
+
+      auto expected_bias = at::native::itensor_from_mkldnn(q_bias.value());
+
+      // std::cout<<"expected_bias  is: "<<float(*((float*)expected_bias.get_data_handle()))<<std::endl;
+
+      auto expected_bias2 = expected_bias.reorder_if_differ_in(bias_desc, bias_attr2);
+      // std::cout<<"Inside prepack ideep tensor expected_bias2 first element is: "<<float(*((float*)expected_bias2.get_data_handle()))<<std::endl;
+
+      auto mkldnn_expected_bias2 = at::native::new_with_itensor_mkldnn(std::move(expected_bias2),
+        optTypeMetaToScalarType(q_bias.value().options().dtype_opt()),
+        q_bias.value().options().device_opt());
+      auto unpack_bias = at::native::mkldnn_to_dense(mkldnn_expected_bias2);
+      std::cout<<"Inside prepack ideep tensor unpack_bias is: "<<unpack_bias<<std::endl;
+      return at::convolution(x, dequant_unpack_weight, unpack_bias, stride, padding, dilation, is_transposed, out_padding, groups);
+    } else {
+      return at::convolution(x, dequant_unpack_weight, c10::nullopt, stride, padding, dilation, is_transposed, out_padding, groups);
+    }
+#endif
+    TORCH_CHECK(false, "Unimplemented of ConvBinary");
+  }
+};
 
 TORCH_LIBRARY_IMPL(quantized, MkldnnCPU, m) {
+  m.impl(TORCH_SELECTIVE_NAME("quantized::conv_prepacked_weight.tensor"),      ConvPrepackWeight::run_with_packed_weight_bias);
   m.impl(TORCH_SELECTIVE_NAME("quantized::conv_unary.tensor"),      ConvUnary::run_with_packed_weight_bias);
   m.impl(TORCH_SELECTIVE_NAME("quantized::conv_binary.tensor"),      ConvBinary::run_with_packed_weight_bias);
   m.impl(TORCH_SELECTIVE_NAME("quantized::conv_int8_packed_weight"),      ConvInt8CpuTensor<PostOp::None>::run_with_packed_weight_bias);
