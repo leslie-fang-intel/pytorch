@@ -516,6 +516,7 @@ def compile_fx(
             model_ = overrides.replace_fx(model_, example_inputs_)
             model_ = overrides.fuse_fx(model_, example_inputs_)
             model_ = overrides.fuse_quantization(model_, example_inputs_)
+            print("graph after fuse_quantization is:\n{}".format(model_), flush=True)
 
     if any(isinstance(x, (list, tuple, dict)) for x in example_inputs_):
         return flatten_graph_inputs(
@@ -535,6 +536,8 @@ def compile_fx(
 
     @dynamo_utils.dynamo_timed
     def fw_compiler_base(model: torch.fx.GraphModule, example_inputs, is_inference):
+        print("graph in fw_compiler_base is:\n{}".format(model), flush=True)
+
         fixed = len(example_inputs) - num_example_inputs
         # Why convert outplace op to inplace? Inductor can support inplace operations well and for custom
         # inplace ops which are lowered as ExternKernel, it is beneficial to performance when the inplace

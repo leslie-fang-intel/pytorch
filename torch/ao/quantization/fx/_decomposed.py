@@ -418,3 +418,52 @@ def dequantize_per_channel_meta(
     assert axis < input.dim(), f"Expecting axis to be < {input.dim()}"
     _quant_min_max_bounds_check(quant_min, quant_max, dtype)
     return torch.empty_like(input, dtype=torch.float32)
+
+from torch._meta_registrations import calc_conv_nd_return_shape
+
+quantized_decomposed_lib.define(
+    "conv_inductor.tensor(Tensor x,"
+    "Tensor w, Tensor? bias,"
+    "int[] stride, int[] padding, int[] dilation, bool is_transposed, int[] out_padding, int groups, Tensor packed_weight, Tensor? packed_bias)-> Tensor")
+
+@impl(quantized_decomposed_lib, "conv_inductor.tensor", "MkldnnCPU")
+def conv_unary_inductor_mkldnn(x, w, bias, stride, padding, dilation, is_transposed, out_padding, groups, packed_weight, packed_bias):
+    quantized = torch.ops.quantized
+
+    return torch.ops.aten.convolution.default(x, w, bias, stride, padding, dilation, is_transposed, out_padding, groups)
+
+
+# @impl(quantized_decomposed_lib, "conv_inductor.tensor", "CPU")
+# def conv_unary_inductor_mkldnn(x, w, bias, stride, padding, dilation, is_transposed, out_padding, groups):
+#     quantized = torch.ops.quantized
+
+#     return torch.ops.aten.convolution.default(x, w, bias, stride, padding, dilation, is_transposed, out_padding, groups)
+
+@impl(quantized_decomposed_lib, "conv_inductor.tensor", "Meta")
+def conv_unary_inductor_meta(x, w, bias, stride, padding, dilation, is_transposed, out_padding, groups, packed_weight, packed_bias):
+    if len(x.shape) == 3 and len(x.shape) == 4:
+        # For conv1d, x and w should both have rank 3
+        # But if weight is prepacked, it's rank is 4 by unsqueeze(2)
+        qw_squeezed = torch.squeeze(w, 2)
+    else:
+        qw_squeezed = w
+    shape_out = calc_conv_nd_return_shape(
+        x,
+        qw_squeezed,
+        stride,
+        padding,
+        dilation,
+        False,
+        groups,
+        None,
+    )
+    out_format = torch.channels_last
+    if len(shape_out) == 5:
+        out_format = torch.channels_last_3d
+    out = x.new_empty(shape_out)
+    if len(shape_out) == 3:
+        out = out.unsqueeze(2)
+    out = out.to(memory_format=out_format)
+    if len(shape_out) == 3:
+        out = out.squeeze(2)
+    return out

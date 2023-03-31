@@ -687,11 +687,110 @@ def _prepack_conv_weight(gm: torch.fx.GraphModule):
     gm.recompile()
     return gm
 
+def _new_prepack_conv_weight(gm: torch.fx.GraphModule):
+    # Do weight prepack
+    # from: fp32_conv <- dq -< int8_plain_weight
+    # to: fp32_conv <- dq <- to_dense <- int8_mkldnn_weight
+    quantized_decomposed = torch.ops.quantized_decomposed
+    dequantize_per_tensor = quantized_decomposed.dequantize_per_tensor
+    dequantize_per_channel = quantized_decomposed.dequantize_per_channel
+    aten = torch.ops.aten
+    for node in gm.graph.nodes:
+        if node.target == aten.convolution.default:
+            (
+                x_dq_per_tensor,
+                w_dq_per_channel,
+                bias_node,
+                stride,
+                padding,
+                dilation,
+                is_transposed,
+                out_padding,
+                groups,
+            ) = node.args
+            assert (
+                x_dq_per_tensor.target == dequantize_per_tensor
+            ), "input's node should be dequantize_per_tensor"
+            assert (
+                w_dq_per_channel.target == dequantize_per_channel
+            ), "weight's node should be dequantize_per_channel"
+            x_shape = node.args[0].meta.get("tensor_meta").shape
+            # print("x_shape is: {}".format(x_shape), flush=True)
+            (qx, x_scale, x_zp, x_quant_min, x_quant_max, x_dtype) = x_dq_per_tensor.args
+            (weight_node, w_scale, w_zp, w_axis, w_quant_min, w_quant_max, w_dtype) = w_dq_per_channel.args
+            weight_int8 = getattr(gm, weight_node.target)
+            bias = getattr(gm, bias_node.target) if bias_node is not None else None
+            w_scales = getattr(gm, w_scale.target)
+            x_scale = getattr(gm, x_scale.target)
+            x_zp = getattr(gm, x_zp.target)
+            packed_weight, packed_bias = torch.ops.quantized.conv_prepack_cpu_tensor(
+                weight_int8,
+                w_scales,
+                x_shape,
+                x_scale,
+                x_zp,
+                bias,
+                stride,
+                padding,
+                dilation,
+                groups,
+            )
+            w_attr_name = weight_node.target
+            w_packed_attr_name = w_attr_name + "_packed"
+            gm.graph.owning_module._buffers[w_packed_attr_name] = packed_weight
+            setattr(gm, w_packed_attr_name, gm.graph.owning_module._buffers[w_packed_attr_name])
+            # Insert new weight node
+            with gm.graph.inserting_before(node):
+                print("---- insert new weight node", flush=True)
+                packed_weight_node = gm.graph.get_attr(w_packed_attr_name)
+
+            if bias_node is not None:
+                b_attr_name = bias_node.target
+                b_pack_attr_name = b_attr_name + "_packed"
+                gm.graph.owning_module._buffers[b_pack_attr_name] = packed_bias
+                setattr(gm, b_pack_attr_name, gm.graph.owning_module._buffers[b_pack_attr_name])
+                # Insert new weight node
+                with gm.graph.inserting_before(node):
+                    packed_bias_node = gm.graph.get_attr(b_pack_attr_name)
+
+            # Insert new conv node which accept 2 extra input node of packed weight and packed bias
+            with gm.graph.inserting_after(node):
+                args = (
+                    x_dq_per_tensor,
+                    w_dq_per_channel,
+                    bias_node,
+                    stride,
+                    padding,
+                    dilation,
+                    is_transposed,
+                    out_padding,
+                    groups,
+                    packed_weight_node,
+                    packed_bias_node,
+                )
+                new_conv_node = gm.graph.call_function(
+                    quantized_decomposed.conv_inductor, args=args
+                )
+                # Copy node meta
+                new_conv_node.meta = copy.copy(node.meta)
+                node.replace_all_uses_with(new_conv_node)
+
+    #gm.recompile()
+    #print("check packed weight inserted graph is: {}".format(gm), flush=True)
+    gm.graph.eliminate_dead_code()
+    gm.graph.lint()
+    gm.recompile()
+    return gm
+
 
 def prepack_weight_in_graph(gm: torch.fx.GraphModule):
     gm = _prepack_conv_weight(gm)
     return gm
 
+def new_prepack_weight_in_graph(gm: torch.fx.GraphModule):
+    print("before  _new_prepack_conv_weight is: {}".format(gm), flush=True)
+    gm = _new_prepack_conv_weight(gm)
+    return gm
 
 def prepare_dequant_for_fusion(gm: torch.fx.GraphModule):
     # The pass decomposes the dequant node from:
@@ -757,17 +856,18 @@ def fuse_quantization(gm: torch.fx.GraphModule, example_inputs):
     # Fuse `quant_per_channel - weight` and replace the original fp32 weight with quantized one
     pre_quantize_weights(gm)
 
-    # To store input shapes on the graph
-    # Get shape by node.meta.get("tensor_meta").shape
+    # # To store input shapes on the graph
+    # # Get shape by node.meta.get("tensor_meta").shape
     fake_mode = fake_mode_from_tensors(example_inputs)
     ShapeProp(gm, fake_mode=fake_mode).propagate(*example_inputs)
 
-    # Fuse `dq - op (- post ops) - q` to quantized op
-    gm = fuse_reference_quantized_conv(gm)
+    # # Fuse `dq - op (- post ops) - q` to quantized op
+    # gm = fuse_reference_quantized_conv(gm)
 
-    # Reorder quantized weight to desired format for oneDNN kernel
-    # After that, weight is a MKLDNN tensor and it replaces the original one in graph
-    gm = prepack_weight_in_graph(gm)
+    # # Reorder quantized weight to desired format for oneDNN kernel
+    # # After that, weight is a MKLDNN tensor and it replaces the original one in graph
+    # gm = prepack_weight_in_graph(gm)
+    gm = new_prepack_weight_in_graph(gm)
 
     return gm
 
