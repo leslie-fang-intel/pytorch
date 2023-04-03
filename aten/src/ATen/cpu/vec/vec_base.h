@@ -64,6 +64,50 @@ namespace vec {
 // See Note [CPU_CAPABILITY namespace]
 inline namespace CPU_CAPABILITY {
 // at::Half and at::BFloat16 should be treated as floating point
+
+#if defined(CPU_CAPABILITY_AVX512) && !defined(_MSC_VER)
+template <typename T>
+__m512i pack_saturate_and_clamp(
+    __m512i first,
+    __m512i second,
+    T min_val,
+    T max_val);
+
+template <>
+inline __m512i pack_saturate_and_clamp<int32_t>(
+    __m512i first,
+    __m512i second,
+    int32_t min_val,
+    int32_t max_val) {
+  // This function is for linkage only, will not be used
+  AT_ERROR("pack_saturate_and_clamp<int32_t> is not supported");
+}
+
+template <>
+inline __m512i pack_saturate_and_clamp<int8_t>(
+    __m512i first,
+    __m512i second,
+    int8_t min_val,
+    int8_t max_val) {
+  __m512i packed_and_sat = _mm512_packs_epi16(first, second);
+  return _mm512_max_epi8(
+      _mm512_set1_epi8(min_val),
+      _mm512_min_epi8(packed_and_sat, _mm512_set1_epi8(max_val)));
+}
+
+template <>
+inline __m512i pack_saturate_and_clamp<uint8_t>(
+    __m512i first,
+    __m512i second,
+    uint8_t min_val,
+    uint8_t max_val) {
+  __m512i packed_and_sat = _mm512_packus_epi16(first, second);
+  return _mm512_max_epu8(
+      _mm512_set1_epi8(min_val),
+      _mm512_min_epu8(packed_and_sat, _mm512_set1_epi8(max_val)));
+}
+#endif // defined(CPU_CAPABILITY_AVX512) && !defined(MSVC)
+
 template <typename T>
 struct is_floating_point:
     std::integral_constant<bool,

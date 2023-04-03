@@ -7,6 +7,7 @@
 #include <ATen/cpu/vec/vec_base.h>
 #include <c10/macros/Macros.h>
 #include <c10/util/irange.h>
+#include <iostream>
 
 namespace at {
 namespace vec {
@@ -835,6 +836,118 @@ public:
   Vectorized<int8_t> le(const Vectorized<int8_t>& other) const;
 };
 
+template <typename T>
+inline void __attribute__((always_inline)) ConvertAvx512_new(
+    const float* src,
+    T* dst,
+    int len) {
+  constexpr int VLEN = 16;
+  constexpr auto min_val = std::numeric_limits<T>::min();
+  constexpr auto max_val = std::numeric_limits<T>::max();
+  const __m512i min_v = _mm512_set1_epi32(min_val);
+  const __m512i max_v = _mm512_set1_epi32(max_val);
+  // This is the largest int32 value < int32_max exactly representable in float
+  constexpr int32_t int32_float_max_val =
+      std::numeric_limits<int32_t>::max() - 127;
+  static const __m512i shuffle_mask_v = _mm512_set_epi8(
+      0xff, 0xff, 0xff, 0xff,
+      0xff, 0xff, 0xff, 0xff,
+      0xff, 0xff, 0xff, 0xff,
+      0x0c, 0x08, 0x04, 0x00,
+      0xff, 0xff, 0xff, 0xff,
+      0xff, 0xff, 0xff, 0xff,
+      0xff, 0xff, 0xff, 0xff,
+      0x0c, 0x08, 0x04, 0x00,
+      0xff, 0xff, 0xff, 0xff,
+      0xff, 0xff, 0xff, 0xff,
+      0xff, 0xff, 0xff, 0xff,
+      0x0c, 0x08, 0x04, 0x00,
+      0xff, 0xff, 0xff, 0xff,
+      0xff, 0xff, 0xff, 0xff,
+      0xff, 0xff, 0xff, 0xff,
+      0x0c, 0x08, 0x04, 0x00);
+  __m512i permute_mask_v =
+      _mm512_set_epi32(0x0f, 0x0b, 0x07, 0x03, 0x0e, 0x0a, 0x06, 0x02,
+                       0x0d, 0x09, 0x05, 0x01, 0x0c, 0x08, 0x04, 0x00);
+  __m512i permute_mask_l8_v =
+      _mm512_set_epi32(0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x0c, 0x08,
+                       0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x04, 0x00);
+  // Debug print of min and max val
+  // int32_t val[16];
+  // memcpy(val, &min_v, sizeof(val));
+  // printf("Min Numerical 10: %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d \n",
+  //         val[0], val[1], val[2], val[3], val[4], val[5],
+  //         val[6], val[7], val[8], val[9], val[10], val[11], val[12], val[13],
+  //         val[14], val[15]);
+  // memcpy(val, &max_v, sizeof(val));
+  // printf("Max Numerical 10: %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d \n",
+  //         val[0], val[1], val[2], val[3], val[4], val[5],
+  //         val[6], val[7], val[8], val[9], val[10], val[11], val[12], val[13],
+  //         val[14], val[15]);
+  int len_aligned = len / (VLEN * 4) * (VLEN * 4);
+  int i = 0;
+  for (; i < len_aligned; i += 4 * VLEN) {
+    __m512 x_vals = _mm512_load_ps(src + i);
+    // If the floating point value is greater than int32_max,
+    // _mm512_cvtps_epi32 converts them to -ve. Clip at int32_float_max_val to
+    // Clip at int32_float_max_val to avoid this.
+    __m512 x_transformed_v =
+        _mm512_min_ps(x_vals, _mm512_set1_ps(int32_float_max_val));
+    // Convert from float32 to int32
+    __m512i x_rounded_v = _mm512_cvtps_epi32(x_transformed_v);
+
+    __m512 y_vals = _mm512_load_ps(src + i + VLEN);
+    __m512 y_transformed_v =
+      _mm512_min_ps(y_vals, _mm512_set1_ps(int32_float_max_val));
+    __m512i y_rounded_v = _mm512_cvtps_epi32(y_transformed_v);
+
+    __m512 z_vals = _mm512_load_ps(src + i + 2 * VLEN);
+    __m512 z_transformed_v =
+      _mm512_min_ps(z_vals, _mm512_set1_ps(int32_float_max_val));
+    __m512i z_rounded_v = _mm512_cvtps_epi32(z_transformed_v);
+
+    __m512 w_vals = _mm512_load_ps(src + i + 3 * VLEN);
+    __m512 w_transformed_v =
+      _mm512_min_ps(w_vals, _mm512_set1_ps(int32_float_max_val));
+    __m512i w_rounded_v = _mm512_cvtps_epi32(w_transformed_v);
+
+    // Pack 2 m512(int32) into 1 m512(int16)
+    __m512i xy_packed_v = _mm512_packs_epi32(x_rounded_v, y_rounded_v);
+    __m512i zw_packed_v = _mm512_packs_epi32(z_rounded_v, w_rounded_v);
+
+    __m512i xyzw_clamped_v = pack_saturate_and_clamp<T>(
+        xy_packed_v, zw_packed_v, min_val, max_val);
+
+    xyzw_clamped_v =
+        _mm512_permutexvar_epi32(permute_mask_v, xyzw_clamped_v);
+    _mm512_storeu_si512(reinterpret_cast<__m512i*>(dst + i), xyzw_clamped_v);
+  }
+
+  // Additional 8-lane AVX512 version to take advantage when len is smaller
+  // based on fbgemm::QuantizeAvx2 (https://github.com/pytorch/FBGEMM)
+  for (; i < len / VLEN * VLEN; i += VLEN) {
+    __m512 x_vals = _mm512_load_ps(src + i);
+    __m512 x_transformed_v =
+        _mm512_min_ps(x_vals, _mm512_set1_ps(int32_float_max_val));
+    __m512i x_rounded_v = _mm512_cvtps_epi32(x_transformed_v);
+    __m512i x_clipped_v =
+        _mm512_max_epi32(min_v, _mm512_min_epi32(max_v, x_rounded_v));
+    x_clipped_v = _mm512_shuffle_epi8(x_clipped_v, shuffle_mask_v);
+    x_clipped_v = _mm512_permutexvar_epi32(permute_mask_l8_v, x_clipped_v);
+    _mm_storeu_si128(
+      reinterpret_cast<__m128i*>(dst + i),
+      _mm512_castsi512_si128(x_clipped_v));
+  }
+
+  // Tail case, scalar version
+  for (; i < len; ++i) {
+    float transformed = std::nearbyint(src[i]);
+    float clipped =
+        std::min(std::max(transformed, float(min_val)), float(max_val));
+    dst[i] = clipped;
+  }
+}
+
 template<>
 class Vectorized<uint8_t>: public Vectorized8<uint8_t> {
 public:
@@ -882,6 +995,15 @@ public:
   Vectorized<uint8_t> ge(const Vectorized<uint8_t>& other) const;
   Vectorized<uint8_t> lt(const Vectorized<uint8_t>& other) const;
   Vectorized<uint8_t> le(const Vectorized<uint8_t>& other) const;
+
+  static Vectorized<uint8_t> convert_from_float(const float* rhs_data) {
+    //uint8_t number_of_elements = 64;
+    uint8_t quantized_values[64];
+    std::cout<<"hit this path Vectorized<uint8_t> convert_from_float"<<std::endl;
+    ConvertAvx512_new<uint8_t>(
+        rhs_data, quantized_values, 64);
+    return Vectorized<uint8_t>::loadu(quantized_values);
+  }
 };
 
 template <>
