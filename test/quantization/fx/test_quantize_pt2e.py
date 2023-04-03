@@ -379,7 +379,7 @@ class TestQuantizePT2E(QuantizationTestCase):
 class TestQuantizePT2EX86Inductor(QuantizationTestCase):
     @skipIfNoX86
     @xfailIfPython311
-    @unittest.skip("doesn't work due to dynamo tracing problems")
+    #@unittest.skip("doesn't work due to dynamo tracing problems")
     def test_inductor_backend_config_conv(self):
         class M(torch.nn.Module):
             def __init__(self, use_relu: bool = False, inplace_relu: bool = False):
@@ -453,6 +453,9 @@ class TestQuantizePT2EX86Inductor(QuantizationTestCase):
                     after_prepare_result_fx = m_prepare_fx(*example_inputs)
                     m_convert_fx = convert_fx(m_prepare_fx, backend_config=backend_config_1_x)
                     ref_result = m_convert_fx(*example_inputs)
+
+
+                    convert_module = make_fx(convert_module, decomposition_table=quant_decomp)(*copy.deepcopy(example_inputs))
 
                     # Step2: Start to lowering into Inductor
                     run = compile_fx(convert_module, example_inputs)
