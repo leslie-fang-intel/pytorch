@@ -177,6 +177,8 @@ def core_aten_decompositions() -> Dict[OpOverload, Callable]:
     aten = torch.ops.aten
     return get_decompositions(
         [
+            torch.ops.quantized_decomposed.quantize_per_tensor,
+            torch.ops.quantized_decomposed.dequantize_per_tensor,
             aten._adaptive_avg_pool2d_backward,
             aten.addcdiv,
             aten.addcdiv_,
