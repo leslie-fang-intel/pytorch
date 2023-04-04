@@ -887,6 +887,7 @@ inline void __attribute__((always_inline)) ConvertAvx512_new(
   int len_aligned = len / (VLEN * 4) * (VLEN * 4);
   int i = 0;
   for (; i < len_aligned; i += 4 * VLEN) {
+    std::cout<<"Hit the 64 len"<<std::endl;
     __m512 x_vals = _mm512_load_ps(src + i);
     // If the floating point value is greater than int32_max,
     // _mm512_cvtps_epi32 converts them to -ve. Clip at int32_float_max_val to
@@ -925,22 +926,58 @@ inline void __attribute__((always_inline)) ConvertAvx512_new(
 
   // Additional 8-lane AVX512 version to take advantage when len is smaller
   // based on fbgemm::QuantizeAvx2 (https://github.com/pytorch/FBGEMM)
+  // for (; i < len / VLEN * VLEN; i += VLEN) {
+  //   std::cout<<"Hit the 16 len, i: "<<i<<std::endl;
+  //   __m512 x_vals = _mm512_load_ps(src + i);
+  //   __m512 x_transformed_v =
+  //       _mm512_min_ps(x_vals, _mm512_set1_ps(int32_float_max_val));
+  //   __m512i x_rounded_v = _mm512_cvtps_epi32(x_transformed_v);
+  //   __m512i x_clipped_v =
+  //       _mm512_max_epi32(min_v, _mm512_min_epi32(max_v, x_rounded_v));
+  //   x_clipped_v = _mm512_shuffle_epi8(x_clipped_v, shuffle_mask_v);
+  //   x_clipped_v = _mm512_permutexvar_epi32(permute_mask_l8_v, x_clipped_v);
+  //   _mm_storeu_si128(
+  //     reinterpret_cast<__m128i*>(dst + i),
+  //     _mm512_castsi512_si128(x_clipped_v));
+  // }
+
   for (; i < len / VLEN * VLEN; i += VLEN) {
+    std::cout<<"Hit the 16 len, i: "<<i<<std::endl;
     __m512 x_vals = _mm512_load_ps(src + i);
     __m512 x_transformed_v =
         _mm512_min_ps(x_vals, _mm512_set1_ps(int32_float_max_val));
     __m512i x_rounded_v = _mm512_cvtps_epi32(x_transformed_v);
-    __m512i x_clipped_v =
-        _mm512_max_epi32(min_v, _mm512_min_epi32(max_v, x_rounded_v));
-    x_clipped_v = _mm512_shuffle_epi8(x_clipped_v, shuffle_mask_v);
-    x_clipped_v = _mm512_permutexvar_epi32(permute_mask_l8_v, x_clipped_v);
+
+
+    // std::cout<<"Hit the 16 len, solution2"<<std::endl;
+    // __m512i x_clipped_v =
+    //     _mm512_max_epi32(min_v, _mm512_min_epi32(max_v, x_rounded_v));
+    // x_clipped_v = _mm512_shuffle_epi8(x_clipped_v, shuffle_mask_v);
+    // x_clipped_v = _mm512_permutexvar_epi32(permute_mask_l8_v, x_clipped_v);
+    // _mm_storeu_si128(
+    //   reinterpret_cast<__m128i*>(dst + i),
+    //   _mm512_castsi512_si128(x_clipped_v));
+
+
+
+    std::cout<<"Hit the 16 len, solution1"<<std::endl;
+    __m512i xy_packed_v = _mm512_packs_epi32(x_rounded_v, x_rounded_v);
+    __m512i zw_packed_v = _mm512_packs_epi32(x_rounded_v, x_rounded_v);
+    __m512i xyzw_clamped_v = pack_saturate_and_clamp<T>(
+        xy_packed_v, zw_packed_v, min_val, max_val);
+    xyzw_clamped_v =
+        _mm512_permutexvar_epi32(permute_mask_v, xyzw_clamped_v);
+    //_mm512_storeu_si512(reinterpret_cast<__m512i*>(dst + i), xyzw_clamped_v);
     _mm_storeu_si128(
       reinterpret_cast<__m128i*>(dst + i),
-      _mm512_castsi512_si128(x_clipped_v));
+      _mm512_castsi512_si128(xyzw_clamped_v));
+  
+
   }
 
   // Tail case, scalar version
   for (; i < len; ++i) {
+    std::cout<<"Hit the last scalar"<<std::endl;
     float transformed = std::nearbyint(src[i]);
     float clipped =
         std::min(std::max(transformed, float(min_val)), float(max_val));
@@ -996,13 +1033,13 @@ public:
   Vectorized<uint8_t> lt(const Vectorized<uint8_t>& other) const;
   Vectorized<uint8_t> le(const Vectorized<uint8_t>& other) const;
 
-  static Vectorized<uint8_t> convert_from_float(const float* rhs_data) {
-    //uint8_t number_of_elements = 64;
-    uint8_t quantized_values[64];
+  static void convert_from_float(const float* src_data, uint8_t* dst_data) {
+    uint8_t number_of_elements = 16;
+    // uint8_t quantized_values[number_of_elements];
     std::cout<<"hit this path Vectorized<uint8_t> convert_from_float"<<std::endl;
     ConvertAvx512_new<uint8_t>(
-        rhs_data, quantized_values, 64);
-    return Vectorized<uint8_t>::loadu(quantized_values);
+        src_data, dst_data, number_of_elements);
+    // return Vectorized<uint8_t>::loadu(quantized_values);
   }
 };
 
