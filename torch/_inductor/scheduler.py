@@ -1183,7 +1183,10 @@ class Scheduler:
 
     @dynamo_timed
     def codegen(self):
+        print("type(self.nodes) is: {}".format(type(self.nodes)), flush=True)
+        print("self.nodes.len is: {}".format(self.nodes.__len__()), flush=True)
         for node in self.nodes:
+            print("node is: {}".format(node), flush=True)
             self.enter_context(node)
             self.buffer_names_no_longer_needed.update(node.last_usage)
 
@@ -1215,6 +1218,7 @@ class Scheduler:
             elif node.is_extern():
                 self.codegen_extern_call(node)
             elif isinstance(node, (FusedSchedulerNode, SchedulerNode)):
+                # import pdb;pdb.set_trace()
                 self.get_backend(device).codegen_nodes(node.get_nodes())
             else:
                 assert isinstance(node, NopKernelSchedulerNode)

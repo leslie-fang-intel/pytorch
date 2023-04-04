@@ -667,6 +667,7 @@ class GraphLowering(torch.fx.Interpreter):
         return mod
 
     def compile_to_fn(self):
+        print("self.aot_mode is: {}".format(self.aot_mode), flush=True)
         if self.aot_mode:
             from .codecache import AotCodeCache
 

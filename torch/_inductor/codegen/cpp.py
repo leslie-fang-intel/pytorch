@@ -1155,16 +1155,20 @@ class CppVecKernel(CppKernel):
         )
 
         if V.graph.get_dtype(name) in [torch.bool, torch.uint8]:
-            nelements = codecache.pick_vec_isa().nelements()
-            if var not in self.var_vec_buf_map:
-                self.var_vec_buf_map[var] = f"g_tmp_buffer_{var}"
+            if opt_ctx.is_load_uint8_as_float:
+                print("var_expr is: {}".format(var_expr), flush=True)
+                line = f"at::vec::Vectorized<uint8_t>::convert_to_float({var_expr})"
+            else:
+                nelements = codecache.pick_vec_isa().nelements()
+                if var not in self.var_vec_buf_map:
+                    self.var_vec_buf_map[var] = f"g_tmp_buffer_{var}"
+                    self.loads.writeline(
+                        f"float {self.var_vec_buf_map[var]}[{nelements}] = {{0}};"
+                    )
                 self.loads.writeline(
-                    f"float {self.var_vec_buf_map[var]}[{nelements}] = {{0}};"
+                    f"flag_to_float({var_expr}, {self.var_vec_buf_map[var]}, {nelements});"
                 )
-            self.loads.writeline(
-                f"flag_to_float({var_expr}, {self.var_vec_buf_map[var]}, {nelements});"
-            )
-            line = f"at::vec::Vectorized<float>::loadu({self.var_vec_buf_map[var]})"
+                line = f"at::vec::Vectorized<float>::loadu({self.var_vec_buf_map[var]})"
         elif V.graph.get_dtype(name) in [torch.bfloat16]:
             if opt_ctx.is_load_bf16_as_fp32:
                 line = f"load_bf16_as_float({var_expr})"
@@ -1556,19 +1560,50 @@ class CppVecKernelChecker(CppVecKernel):
 
         return False
 
+    def is_load_uint8_as_float(self, name: str, users: Dict[torch.fx.Node, None]):
+        """
+        Check:
+        1. load_type is torch.uint8
+        2. has 1 user node of target to_dtype
+        3. dtype of to_dtype is torch.float
+        """
+        print("name is: {}".format(name), flush=True)
+        for user in users:
+            print("user is: {}".format(user), flush=True)
+        load_type = V.graph.get_dtype(name)
+        if load_type is not torch.uint8:
+            return False
+        if len(users) == 1:
+            #(users[0].target is "to_dtype")
+            user = list(users)[0]
+            if (user.target == "to_dtype") and (user.args[-1] == torch.float):
+                return True
+            return False 
+        return False
+
     def load(self, name: str, index: sympy.Expr):
         with RecordOptimizationContext(__name__) as node_ctx:
             load_dtype = V.graph.get_dtype(name)
+
+            print("load_dtype is: {}".format(load_dtype), flush=True)
+
             opt_ctx: OptimizationContext = node_ctx.get_opt_ctx()
             assert opt_ctx
             opt_ctx.dtype = load_dtype
             opt_ctx.is_load_as_mask = self.is_mask(name, node_ctx.get_fx_node().users)
+            opt_ctx.is_load_uint8_as_float = self.is_load_uint8_as_float(name, node_ctx.get_fx_node().users)
+
+            print("opt_ctx.is_load_uint8_as_float is: {}".format(opt_ctx.is_load_uint8_as_float), flush=True)
 
             var = self.cse.newvar()
             self.load_results.append(var)
 
-            if load_dtype in [torch.bool, torch.uint8] and not opt_ctx.is_load_as_mask:
-                self.disable_vec(f"{load_dtype} not loaded as mask")
+            # import pdb;pdb.set_trace()
+            if load_dtype in [torch.bool, torch.uint8] and not (opt_ctx.is_load_as_mask or opt_ctx.is_load_uint8_as_float):
+                if not opt_ctx.is_load_as_mask:
+                    self.disable_vec(f"{load_dtype} not loaded as mask")
+                elif not opt_ctx.is_load_uint8_as_float:
+                    self.disable_vec(f"{load_dtype} not loaded as float")
                 return var
 
             if load_dtype not in self.load_supported_dtypes:
@@ -1927,6 +1962,7 @@ class CppVecKernelChecker(CppVecKernel):
 
             @staticmethod
             def to_dtype(x, dtype):
+                # import pdb;pdb.set_trace()
                 with RecordOptimizationContext(__name__) as node_ctx:
                     opt_ctx: OptimizationContext = node_ctx.get_opt_ctx()
                     assert opt_ctx
@@ -1947,6 +1983,10 @@ class CppVecKernelChecker(CppVecKernel):
                                 opt_ctx.is_load_bf16_as_fp32 = True
                             elif dtype == torch.float:
                                 pass
+                            elif (dtype == torch.uint8) and (input_value.target == "load"):
+                                # print("--- should hit this ----", flush=True)
+                                # import pdb;pdb.set_trace()
+                                opt_ctx.is_load_uint8_as_float = True
                             else:
                                 self.disable_vec(f"to_dtype: dtype {dtype}")
                     elif dtype == torch.bfloat16:
@@ -1970,6 +2010,7 @@ class CppVecKernelChecker(CppVecKernel):
                     elif dtype == torch.bool:
                         pass
                     else:
+                        print("???", flush=True)
                         self.disable_vec(f"to_dtype: dtype {dtype}")
                     return x
 
@@ -2080,8 +2121,10 @@ class CppKernelProxy(CppKernel):
                     node.meta[OptimizationContext.key] = opt_ctx
                 return bf16_mem_copy
 
+            print("sub_graph is: {}".format(sub_graph), flush=True)
             for node in sub_graph.nodes:
                 _node: torch.fx.Node = node
+                # print("node is: {}".format(node), flush=True)
                 if _node.target in ["load", "constant"]:
                     assert len(_node.args) == 3
                     if is_bf16_mem_copy(node):
@@ -2268,6 +2311,7 @@ class CppKernelProxy(CppKernel):
             ) as tile2d_checker:
                 run(tile2d_checker)
 
+            print("vec_checker.simd_vec is: {}".format(vec_checker.simd_vec), flush=True)
             if vec_checker.simd_vec:
                 main_loop, tail_loop = self.loop_nest.split_with_tiling(
                     inner_most_idx, factor=tiling_factor

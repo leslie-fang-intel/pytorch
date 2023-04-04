@@ -182,6 +182,7 @@ def compile_fx_inner(
         V.debug.fx_graph_transformed(gm, example_inputs)
 
     with V.set_fake_mode(fake_mode):
+        print("gm before creation of GraphLowering is: {}".format(gm), flush=True)
         graph = GraphLowering(
             gm,
             shape_env=shape_env,
@@ -189,6 +190,7 @@ def compile_fx_inner(
             graph_id=graph_id,
             aot_mode=aot_mode,
         )
+        print("gm after creation of GraphLowering is: {}".format(graph), flush=True)
         with V.set_graph_handler(graph):
             graph.run(*example_inputs)
             compiled_fn = graph.compile_to_fn()
@@ -539,6 +541,7 @@ def compile_fx(
         # inplace ops which are lowered as ExternKernel, it is beneficial to performance when the inplace
         # implementation is used if available.
         model = convert_outplace_to_inplace(model)
+        print("graph at start of fw_compiler_base is: {}".format(model), flush=True)
         return inner_compile(
             model,
             example_inputs,
