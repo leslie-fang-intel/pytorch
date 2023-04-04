@@ -1041,6 +1041,17 @@ public:
         src_data, dst_data, number_of_elements);
     // return Vectorized<uint8_t>::loadu(quantized_values);
   }
+
+  static Vectorized<float> convert_to_float(const uint8_t* src_data) {
+    Vectorized<uint8_t> input_vec_512 = loadu(src_data);
+    __m512i input_512 = input_vec_512.values;
+    __m128i input_128 = _mm512_castsi512_si128(input_512);
+    __m512i input_512_extended = _mm512_cvtepu8_epi32(input_128);
+    __m512 float_val0 = _mm512_cvtepi32_ps(input_512_extended);
+    Vectorized<float> res(float_val0);
+
+    return res;
+  }
 };
 
 template <>
