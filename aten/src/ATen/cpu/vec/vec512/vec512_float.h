@@ -9,6 +9,7 @@
 #if defined(CPU_CAPABILITY_AVX512) && !defined(_MSC_VER)
 #include <sleef.h>
 #endif
+#include <iostream>
 
 namespace at {
 namespace vec {
@@ -17,6 +18,81 @@ inline namespace CPU_CAPABILITY {
 
 #if defined(CPU_CAPABILITY_AVX512) && !defined(_MSC_VER)
 
+template <typename T>
+inline void __attribute__((always_inline)) ConvertAvx512_new_v3(
+    const __m512& x_vals,
+    T* dst,
+    int len) {
+  constexpr int VLEN = 16;
+  constexpr auto min_val = std::numeric_limits<T>::min();
+  constexpr auto max_val = std::numeric_limits<T>::max();
+  const __m512i min_v = _mm512_set1_epi32(min_val);
+  const __m512i max_v = _mm512_set1_epi32(max_val);
+  // This is the largest int32 value < int32_max exactly representable in float
+  constexpr int32_t int32_float_max_val =
+      std::numeric_limits<int32_t>::max() - 127;
+  static const __m512i shuffle_mask_v = _mm512_set_epi8(
+      0xff, 0xff, 0xff, 0xff,
+      0xff, 0xff, 0xff, 0xff,
+      0xff, 0xff, 0xff, 0xff,
+      0x0c, 0x08, 0x04, 0x00,
+      0xff, 0xff, 0xff, 0xff,
+      0xff, 0xff, 0xff, 0xff,
+      0xff, 0xff, 0xff, 0xff,
+      0x0c, 0x08, 0x04, 0x00,
+      0xff, 0xff, 0xff, 0xff,
+      0xff, 0xff, 0xff, 0xff,
+      0xff, 0xff, 0xff, 0xff,
+      0x0c, 0x08, 0x04, 0x00,
+      0xff, 0xff, 0xff, 0xff,
+      0xff, 0xff, 0xff, 0xff,
+      0xff, 0xff, 0xff, 0xff,
+      0x0c, 0x08, 0x04, 0x00);
+  __m512i permute_mask_v =
+      _mm512_set_epi32(0x0f, 0x0b, 0x07, 0x03, 0x0e, 0x0a, 0x06, 0x02,
+                       0x0d, 0x09, 0x05, 0x01, 0x0c, 0x08, 0x04, 0x00);
+  __m512i permute_mask_l8_v =
+      _mm512_set_epi32(0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x0c, 0x08,
+                       0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x04, 0x00);
+  // Debug print of min and max val
+  // int32_t val[16];
+  // memcpy(val, &min_v, sizeof(val));
+  // printf("Min Numerical 10: %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d \n",
+  //         val[0], val[1], val[2], val[3], val[4], val[5],
+  //         val[6], val[7], val[8], val[9], val[10], val[11], val[12], val[13],
+  //         val[14], val[15]);
+  // memcpy(val, &max_v, sizeof(val));
+  // printf("Max Numerical 10: %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d \n",
+  //         val[0], val[1], val[2], val[3], val[4], val[5],
+  //         val[6], val[7], val[8], val[9], val[10], val[11], val[12], val[13],
+  //         val[14], val[15]);
+  int len_aligned = len / (VLEN * 4) * (VLEN * 4);
+  int i = 0;
+
+  for (; i < len / VLEN * VLEN; i += VLEN) {
+    std::cout<<"Hit the 16 len, i: "<<i<<std::endl;
+    // __m512 x_vals = _mm512_load_ps(src + i);
+    
+    __m512 x_transformed_v =
+        _mm512_min_ps(x_vals, _mm512_set1_ps(int32_float_max_val));
+    __m512i x_rounded_v = _mm512_cvtps_epi32(x_transformed_v);
+
+
+
+    std::cout<<"Hit fp32 path of the 16 len, solution1"<<std::endl;
+    __m512i xy_packed_v = _mm512_packs_epi32(x_rounded_v, x_rounded_v);
+    __m512i zw_packed_v = _mm512_packs_epi32(x_rounded_v, x_rounded_v);
+    __m512i xyzw_clamped_v = pack_saturate_and_clamp<T>(
+        xy_packed_v, zw_packed_v, min_val, max_val);
+    xyzw_clamped_v =
+        _mm512_permutexvar_epi32(permute_mask_v, xyzw_clamped_v);
+    //_mm512_storeu_si512(reinterpret_cast<__m512i*>(dst + i), xyzw_clamped_v);
+    _mm_storeu_si128(
+      reinterpret_cast<__m128i*>(dst + i),
+      _mm512_castsi512_si128(xyzw_clamped_v));
+  
+  }
+}
 template <> class Vectorized<float> {
 private:
   static constexpr __m512i zero_vec {0, 0, 0, 0, 0, 0, 0, 0};
@@ -121,6 +197,25 @@ public:
       std::memcpy(ptr, tmp_values, count * sizeof(float));
     }
   }
+
+  static void store_to_uint8(const Vectorized<float>& src_data, uint8_t* dst_data) {
+    uint8_t number_of_elements = 16;
+    // uint8_t quantized_values[number_of_elements];
+    std::cout<<"hit this path Vectorized<uint8_t> convert_from_float"<<std::endl;
+    ConvertAvx512_new_v3<uint8_t>(
+        src_data, dst_data, number_of_elements);
+    // return Vectorized<uint8_t>::loadu(quantized_values);
+  }
+
+  void store_to_uint8_v2(uint8_t* dst_data) {
+    uint8_t number_of_elements = 16;
+    // uint8_t quantized_values[number_of_elements];
+    std::cout<<"hit this path Vectorized<float> store_to_uint8_v2"<<std::endl;
+    ConvertAvx512_new_v3<uint8_t>(
+        values, dst_data, number_of_elements);
+    // return Vectorized<uint8_t>::loadu(quantized_values);
+  }
+
   const float& operator[](int idx) const  = delete;
   float& operator[](int idx) = delete;
   int zero_mask() const {
