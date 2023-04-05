@@ -207,16 +207,8 @@ public:
     // return Vectorized<uint8_t>::loadu(quantized_values);
   }
 
-  void store_to_uint8_v2(uint8_t* dst_data) {
 
-    // SOluton1: 
-    // uint8_t number_of_elements = 16;
-    // std::cout<<"hit this path Vectorized<float> store_to_uint8_v2"<<std::endl;
-    // ConvertAvx512_new_v3<uint8_t>(
-    //     values, dst_data, number_of_elements);
-
-
-    // Solution2: Clean unnessary code
+  void solution2_satuate(uint8_t* dst_data) {
     std::cout<<"store_to_uint8_v2 Soluton2 new"<<std::endl;
     // Convert from float32 to int32
     __m512i x_values_int32 = _mm512_cvtps_epi32(values);
@@ -239,6 +231,38 @@ public:
     _mm_storeu_si128(
       reinterpret_cast<__m128i*>(dst_data), 
       _mm512_castsi512_si128(xyzw_clamped_v));
+  }
+
+  void solution3_directly_trunk(uint8_t* dst_data) {
+    // Solution3: Directly Trunk
+    std::cout<<"store_to_uint8_v2 Soluton3 new"<<std::endl;
+    // Convert float32 to uint32
+    __m512i x_values_uint32 =  _mm512_cvtps_epu32(values);
+    // Truncate16
+    __m256i x_values_uint16 = _mm512_cvtepi32_epi16(x_values_uint32);
+    // Truncate8
+    __m128i x_values_uint8 = _mm256_cvtepi16_epi8(x_values_uint16);
+    _mm_storeu_si128(
+      reinterpret_cast<__m128i*>(dst_data), x_values_uint8);
+  }
+
+
+
+  void store_to_uint8_v2(uint8_t* dst_data) {
+
+    // SOluton1: 
+    // uint8_t number_of_elements = 16;
+    // std::cout<<"hit this path Vectorized<float> store_to_uint8_v2"<<std::endl;
+    // ConvertAvx512_new_v3<uint8_t>(
+    //     values, dst_data, number_of_elements);
+
+
+    // Solution2: add the saturiaty check and convert
+    // solution2_satuate(dst_data);
+
+
+    // Solution3: Directly Trunk
+    solution3_directly_trunk(dst_data);
 
   }
 
