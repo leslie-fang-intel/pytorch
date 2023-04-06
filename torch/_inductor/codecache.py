@@ -424,6 +424,7 @@ def pick_vec_isa():
         return invalid_vec_isa
 
     # If the simdlen is None, it indicates determin the vectroization length automatically
+    print("_valid_vec_isa_list is: {}".format(_valid_vec_isa_list), flush=True)
     if config.cpp.simdlen is None:
         assert _valid_vec_isa_list
         return _valid_vec_isa_list[0]

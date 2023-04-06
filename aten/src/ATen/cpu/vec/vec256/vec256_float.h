@@ -9,6 +9,7 @@
 #if defined(CPU_CAPABILITY_AVX2) && !defined(_MSC_VER)
 #include <sleef.h>
 #endif
+#include <iostream>
 
 namespace at {
 namespace vec {
@@ -97,6 +98,44 @@ public:
       std::memcpy(ptr, tmp_values, count * sizeof(float));
     }
   }
+
+  void solution2_satuate(uint8_t* dst_data) {
+    std::cout<<"avx2 store_to_uint8_v2 Soluton2 new"<<std::endl;
+    // Convert from float32 to int32
+    __m256i x_values_int32 = _mm256_cvtps_epi32(values);
+
+    // Convert from int32 to int16 using signed saturation
+    __m256i xy_packed_v = _mm256_packs_epi32(x_values_int32, x_values_int32);
+  
+    constexpr auto min_val = std::numeric_limits<uint8_t>::min();
+    constexpr auto max_val = std::numeric_limits<uint8_t>::max();
+
+    // Convert from int16 to uint8 using unsigned saturation
+    __m256i xyzw_clamped_v = pack_saturate_and_clamp<uint8_t>(
+        xy_packed_v, xy_packed_v, min_val, max_val);
+    __m256i permute_mask_v =
+      _mm256_set_epi32(0x07, 0x03, 0x06, 0x02, 0x05, 0x01, 0x04, 0x00);
+    xyzw_clamped_v = _mm256_permutevar8x32_epi32(xyzw_clamped_v, permute_mask_v);
+
+    // Store to dst
+    _mm_storeu_si64(dst_data, _mm256_castsi256_si128(xyzw_clamped_v));
+  }
+
+  void store_to_uint8_v2(uint8_t* dst_data) {
+
+    // SOluton1: 
+    // uint8_t number_of_elements = 16;
+    // std::cout<<"hit this path Vectorized<float> store_to_uint8_v2"<<std::endl;
+    // ConvertAvx512_new_v3<uint8_t>(
+    //     values, dst_data, number_of_elements);
+
+
+    // Solution2: add the saturiaty check and convert
+    solution2_satuate(dst_data);
+
+
+  }
+
   const float& operator[](int idx) const  = delete;
   float& operator[](int idx) = delete;
   int zero_mask() const {
