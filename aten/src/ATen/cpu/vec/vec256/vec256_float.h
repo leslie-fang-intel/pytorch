@@ -121,6 +121,24 @@ public:
     _mm_storeu_si64(dst_data, _mm256_castsi256_si128(xyzw_clamped_v));
   }
 
+  void solution3_directly_trunk(uint8_t* dst_data) {
+    // Solution3: Directly Trunk
+    std::cout<<"store_to_uint8_v2 Soluton3 new"<<std::endl;
+    // Convert float32 to int32
+    __m256i x_values_int32 =  _mm256_cvtps_epi32(values);
+    // Limit the value of x_values_int32 to uint8 (0-255)
+    // But if we are sure the float data are already between uint8, maybe we can skip this.
+    constexpr auto min_val = static_cast<int32_t>(std::numeric_limits<uint8_t>::min());
+    constexpr auto max_val = static_cast<int32_t>(std::numeric_limits<uint8_t>::max());
+    __m256i x_values_uint32 = _mm256_max_epi32(
+        _mm256_set1_epi32(min_val),
+        _mm256_min_epi32(x_values_int32, _mm256_set1_epi32(max_val)));
+
+    // Directly Truncate8: AVX2 has no _mm256_cvtepi32_epi8, it's start from AVX512
+    __m128i x_values_uint8 = _mm256_cvtepi32_epi8(x_values_uint32);
+    _mm_storeu_si64(dst_data, x_values_uint8);
+  }
+
   void store_to_uint8_v2(uint8_t* dst_data) {
 
     // SOluton1: 
@@ -134,6 +152,8 @@ public:
     solution2_satuate(dst_data);
 
 
+    // // Solution3: Directly Trunk, Doesn't work because one of the instruction _mm256_cvtepi32_epi8 only available for AVX512
+    // solution3_directly_trunk(dst_data);
   }
 
   const float& operator[](int idx) const  = delete;
