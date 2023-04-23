@@ -15,6 +15,8 @@ from torch.ao.quantization._pt2e.quantizer import Quantizer
 from torch.ao.quantization.backend_config import BackendConfig
 
 from typing import Any, Tuple
+import torch
+from torch.fx import GraphModule, Node
 
 def prepare_pt2e(
     model: GraphModule,
@@ -79,6 +81,66 @@ def prepare_qat_pt2e_quantizer(
     # TODO: remove hack when we have better support for pattern matching
     # move around the observer for addmm
     _rearrange_weight_observer_for_decomposed_linear(model)
+
+    # Change zeros_like_default to None
+    convolution = torch.ops.aten.convolution.default
+    for node in model.graph.nodes:
+         if node.target is convolution:
+            (
+                x,
+                w,
+                bias,
+                stride,
+                padding,
+                dilation,
+                is_transposed,
+                out_padding,
+                groups,
+            ) = node.args
+            if bias is not None:
+                print("bias.target is: {}".format(bias.target), flush=True)
+                node.args = (
+                    x,
+                    w,
+                    None,
+                    stride,
+                    padding,
+                    dilation,
+                    is_transposed,
+                    out_padding,
+                    groups,     
+                )
+
+    for node in model.graph.nodes:
+         if node.target is torch.ops.aten._native_batch_norm_legit.default:
+            (
+                x,
+                *args,
+            ) = node.args
+            hit = False
+            used_node = None
+            if isinstance(x, Node) and x.target is torch.ops.aten.add.Tensor:
+                (
+                 arg0,
+                 arg1,
+                ) = x.args
+                used_node = arg0
+                if isinstance(arg1, Node) and arg1.target is  torch.ops.aten.view.default:
+                    (
+                    arg1_0,
+                    arg1_1,
+                    ) = arg1.args     
+                    if arg1_0 is None:
+                        hit = True   
+            if hit:
+                node.args = (
+                    used_node,
+                    *args
+                ) 
+
+    model.graph.eliminate_dead_code()
+    model.graph.lint()
+    model.recompile()
     return model
 
 def convert_pt2e(

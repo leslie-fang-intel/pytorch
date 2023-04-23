@@ -102,6 +102,7 @@ def _fuse_conv_bn_qat(m: GraphModule) -> GraphModule:
     for mr in match_and_replacement:
         # Find replacement conv and bn nodes by climbing upwards from anchor node
         assert len(mr.replacements) == 1, "expected only one replacement node"
+        print("mr is: {}".format(mr), flush=True)
         replacement_conv_node = None
         replacement_bn_node = None
         replacement_getitem_node = mr.replacements[0]
@@ -117,6 +118,8 @@ def _fuse_conv_bn_qat(m: GraphModule) -> GraphModule:
 
         # Copy over metadata for all three nodes in [conv - bn - getitem]
         for match_pattern_node, original_node in mr.nodes_map.items():
+            if not isinstance(original_node, Node):
+                continue
             if original_node.target == torch.ops.aten.convolution.default:
                 replacement_conv_node.meta = original_node.meta
             if original_node.target == torch.ops.aten._native_batch_norm_legit.default:

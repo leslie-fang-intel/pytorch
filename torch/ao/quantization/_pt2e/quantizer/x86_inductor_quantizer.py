@@ -1,5 +1,6 @@
 import torch
 import copy
+import operator
 from .quantizer import (
     OperatorConfig,
     OperatorPatternType,
@@ -81,7 +82,7 @@ def _get_bias_obs_or_fq_ctr(quantization_config: Optional[QuantizationConfig]):
     assert quantization_spec.dtype == torch.float, "Only float dtype for bias is supported for bias right now"
     return PlaceholderObserver.with_args(dtype=quantization_spec.dtype)
 
-def get_default_x86_inductor_quantization_config():
+def get_default_x86_inductor_quantization_config(is_qat: bool = False):
     # Copy from x86 default qconfig from torch/ao/quantization/qconfig.py
     act_quantization_spec = QuantizationSpec(
         dtype=torch.uint8,
@@ -100,7 +101,7 @@ def get_default_x86_inductor_quantization_config():
     )
     bias_quantization_spec = QuantizationSpec(dtype=torch.float)
     quantization_config = QuantizationConfig(
-        act_quantization_spec, weight_quantization_spec, bias_quantization_spec
+        act_quantization_spec, weight_quantization_spec, bias_quantization_spec, is_qat
     )
     return quantization_config
 
@@ -154,11 +155,62 @@ class X86InductorQuantizer(Quantizer):
         # and we will mark the matched node with "_annoated" so fusion operator pattern
         # can take precedence over single operator pattern in this way
         for node in reversed(model.graph.nodes):
-            self._annotate_conv2d_binary_unary(node, global_config)
-            self._annotate_conv2d_binary(node, global_config)
-            self._annotate_conv2d_unary(node, global_config)
-            self._annotate_conv2d(node, global_config)
+            self._annotate_conv2d_bn(node, global_config)
+            # self._annotate_conv2d_binary_unary(node, global_config)
+            # self._annotate_conv2d_binary(node, global_config)
+            # self._annotate_conv2d_unary(node, global_config)
+            # self._annotate_conv2d(node, global_config)
         return model
+
+    def _annotate_conv2d_bn(self, node: Node, quantization_config: Optional[QuantizationConfig]) -> None:
+        """
+        Match the following pattern:
+
+          ... -> conv -> bn -> getitem[0] - ...
+
+        Annotate it to get the following pattern after prepare:
+
+                weight -> obs1
+                           |
+          ...  -> obs0 -> conv -> bn -> getitem[0] -> obs2 -> ...
+
+        Note: This is only used for QAT. In PTQ, batchnorm should already be fused into the conv.
+        """
+        if node.op != "call_function" or node.target != operator.getitem or node.args[1] != 0:
+            return
+        getitem_node = node
+        bn_node = getitem_node.args[0]
+        assert isinstance(bn_node, Node)
+        if bn_node.op != "call_function" or bn_node.target != torch.ops.aten._native_batch_norm_legit.default:
+            return
+        conv_node = bn_node.args[0]
+        assert isinstance(conv_node, Node)
+        if conv_node.op != "call_function" or conv_node.target != torch.ops.aten.convolution.default:
+            return
+        if _is_annotated([getitem_node, bn_node, conv_node]):
+            return
+
+        conv_node.meta["target_dtype_info"] = {
+            "input_act_obs_or_fq_ctr": _get_act_obs_or_fq_ctr(quantization_config),
+            "weight_obs_or_fq_ctr": _get_weight_obs_or_fq_ctr(quantization_config),
+            "bias_obs_or_fq_ctr": _get_bias_obs_or_fq_ctr(quantization_config),
+            "output_act_obs_or_fq_ctr": _get_default_obs_or_fq_ctr(),
+            # TODO: validation of weight_index must be set if weight_obs_or_fq_ctr is set
+            "weight_index": 1,
+            # TODO: validation of bias_index must be set if bias_obs_or_fq_ctr is set
+            "bias_index": 2,
+            "_annotated": True,
+        }
+        bn_node.meta["target_dtype_info"] = {
+            "input_act_obs_or_fq_ctr": _get_default_obs_or_fq_ctr(),
+            "output_act_obs_or_fq_ctr": _get_default_obs_or_fq_ctr(),
+            "_annotated": True,
+        }
+        getitem_node.meta["target_dtype_info"] = {
+            "input_act_obs_or_fq_ctr": _get_default_obs_or_fq_ctr(),
+            "output_act_obs_or_fq_ctr": _get_act_obs_or_fq_ctr(quantization_config),
+            "_annotated": True,
+        }
 
     def _annotate_conv2d_binary_unary(self, node: Node, quantization_config: Optional[QuantizationConfig]) -> None:
         # Conv2d + add + unary op
@@ -235,7 +287,7 @@ class X86InductorQuantizer(Quantizer):
         ):
             conv_node_idx = 0
             extra_input_node_idx = 1
-        elif (binary_node.args[1].op == "call_function") and (
+        elif (isinstance(binary_node.args[1], Node) and binary_node.args[1].op == "call_function") and (
             binary_node.args[1].target == torch.ops.aten.convolution.default
         ):
             conv_node_idx = 1
