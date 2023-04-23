@@ -155,12 +155,272 @@ class X86InductorQuantizer(Quantizer):
         # and we will mark the matched node with "_annoated" so fusion operator pattern
         # can take precedence over single operator pattern in this way
         for node in reversed(model.graph.nodes):
+            self._annotate_conv2d_bn_add_relu(node, global_config)
+            self._annotate_conv2d_bn_add(node, global_config)
+            self._annotate_conv2d_bn_relu(node, global_config)
             self._annotate_conv2d_bn(node, global_config)
-            # self._annotate_conv2d_binary_unary(node, global_config)
-            # self._annotate_conv2d_binary(node, global_config)
-            # self._annotate_conv2d_unary(node, global_config)
-            # self._annotate_conv2d(node, global_config)
+            
+            self._annotate_conv2d_binary_unary(node, global_config)
+            self._annotate_conv2d_binary(node, global_config)
+            self._annotate_conv2d_unary(node, global_config)
+            self._annotate_conv2d(node, global_config)
         return model
+
+    def _annotate_conv2d_bn_add_relu(self, node: Node, quantization_config: Optional[QuantizationConfig]) -> None:
+        """
+        Match the following pattern:
+          ... -> conv -> bn -> getitem[0] -> relu -> ...
+        Annotate it to get the following pattern after prepare:
+               weight -> fq1
+                          |
+          ...  -> fq0 -> conv -> bn -> getitem[0] -> relu -> fq2 -> ...
+        Note: This is only used for QAT. In PTQ, batchnorm should already be fused into the conv.
+        """
+
+        if node.op != "call_function" or node.target not in [torch.ops.aten.relu_.default, torch.ops.aten.relu.default]:
+            return
+        unary_node = node
+
+        add_node = unary_node.args[0]
+
+        if add_node.op != "call_function" or add_node.target not in [
+            torch.ops.aten.add_.Tensor,
+            torch.ops.aten.add.Tensor,
+        ]:
+            return
+
+
+        conv_node_idx = None
+        extra_input_node_idx = None
+        if (isinstance(add_node.args[0], Node)) and (add_node.args[0].op == "call_function") and (
+            add_node.args[0].target == operator.getitem
+        ):
+            conv_node_idx = 0
+            extra_input_node_idx = 1
+        elif (isinstance(add_node.args[1], Node)) and  (add_node.args[1].op == "call_function") and (
+            add_node.args[1].target == operator.getitem
+        ):
+            conv_node_idx = 1
+            extra_input_node_idx = 0
+        if (conv_node_idx is None) or (extra_input_node_idx is None):
+            return
+
+
+        getitem_node = add_node.args[conv_node_idx]
+        assert isinstance(getitem_node, Node)
+        if (
+            getitem_node.op != "call_function"
+            or getitem_node.target != operator.getitem
+            or getitem_node.args[1] != 0
+        ):
+            return
+        bn_node = getitem_node.args[0]
+        assert isinstance(bn_node, Node)
+        if (
+            bn_node.op != "call_function"
+            or bn_node.target != torch.ops.aten._native_batch_norm_legit.default
+        ):
+            return
+        conv_node = bn_node.args[0]
+        assert isinstance(conv_node, Node)
+        if (
+            conv_node.op != "call_function"
+            or conv_node.target != torch.ops.aten.convolution.default
+        ):
+            return
+        if _is_annotated([unary_node, add_node, getitem_node, bn_node, conv_node]):
+            return
+
+        conv_node.meta["target_dtype_info"] = {
+            "input_act_obs_or_fq_ctr": _get_act_obs_or_fq_ctr(quantization_config),
+            "weight_obs_or_fq_ctr": _get_weight_obs_or_fq_ctr(quantization_config),
+            "bias_obs_or_fq_ctr": _get_bias_obs_or_fq_ctr(quantization_config),
+            # TODO: remove this after https://github.com/pytorch/pytorch/pull/99220 is landed
+            "output_act_obs_or_fq_ctr": _get_default_obs_or_fq_ctr(),
+            # TODO: validation of weight_index must be set if weight_obs_or_fq_ctr is set
+            "weight_index": 1,
+            # TODO: validation of bias_index must be set if bias_obs_or_fq_ctr is set
+            "bias_index": 2,
+            "_annotated": True,
+        }
+        bn_node.meta["target_dtype_info"] = {
+            "input_act_obs_or_fq_ctr": _get_default_obs_or_fq_ctr(),
+            "output_act_obs_or_fq_ctr": _get_default_obs_or_fq_ctr(),
+            "_annotated": True,
+        }
+        getitem_node.meta["target_dtype_info"] = {
+            "input_act_obs_or_fq_ctr": _get_default_obs_or_fq_ctr(),
+            "output_act_obs_or_fq_ctr": _get_default_obs_or_fq_ctr(),
+            "_annotated": True,
+        }
+        add_node.meta["target_dtype_info"] = {
+            "input_act_obs_or_fq_ctr":  _get_act_obs_or_fq_ctr(quantization_config),
+            "output_act_obs_or_fq_ctr": _get_default_obs_or_fq_ctr(),
+            "_annotated": True,
+            "args_act_index": [extra_input_node_idx],
+        }
+        unary_node.meta["target_dtype_info"] = {
+            "input_act_obs_or_fq_ctr": _get_default_obs_or_fq_ctr(),
+            "output_act_obs_or_fq_ctr": _get_act_obs_or_fq_ctr(quantization_config),
+            "_annotated": True,
+        }
+
+    def _annotate_conv2d_bn_add(self, node: Node, quantization_config: Optional[QuantizationConfig]) -> None:
+        """
+        Match the following pattern:
+          ... -> conv -> bn -> getitem[0] -> relu -> ...
+        Annotate it to get the following pattern after prepare:
+               weight -> fq1
+                          |
+          ...  -> fq0 -> conv -> bn -> getitem[0] -> relu -> fq2 -> ...
+        Note: This is only used for QAT. In PTQ, batchnorm should already be fused into the conv.
+        """
+        if node.op != "call_function" or node.target not in [
+            torch.ops.aten.add_.Tensor,
+            torch.ops.aten.add.Tensor,
+        ]:
+            return
+        add_node = node
+
+
+        conv_node_idx = None
+        extra_input_node_idx = None
+        if (isinstance(add_node.args[0], Node)) and (add_node.args[0].op == "call_function") and (
+            add_node.args[0].target == operator.getitem
+        ):
+            conv_node_idx = 0
+            extra_input_node_idx = 1
+        elif (isinstance(add_node.args[1], Node)) and  (add_node.args[1].op == "call_function") and (
+            add_node.args[1].target == operator.getitem
+        ):
+            conv_node_idx = 1
+            extra_input_node_idx = 0
+        if (conv_node_idx is None) or (extra_input_node_idx is None):
+            return
+
+
+        getitem_node = add_node.args[conv_node_idx]
+        assert isinstance(getitem_node, Node)
+        if (
+            getitem_node.op != "call_function"
+            or getitem_node.target != operator.getitem
+            or getitem_node.args[1] != 0
+        ):
+            return
+        bn_node = getitem_node.args[0]
+        assert isinstance(bn_node, Node)
+        if (
+            bn_node.op != "call_function"
+            or bn_node.target != torch.ops.aten._native_batch_norm_legit.default
+        ):
+            return
+        conv_node = bn_node.args[0]
+        assert isinstance(conv_node, Node)
+        if (
+            conv_node.op != "call_function"
+            or conv_node.target != torch.ops.aten.convolution.default
+        ):
+            return
+        if _is_annotated([add_node, getitem_node, bn_node, conv_node]):
+            return
+
+        conv_node.meta["target_dtype_info"] = {
+            "input_act_obs_or_fq_ctr": _get_act_obs_or_fq_ctr(quantization_config),
+            "weight_obs_or_fq_ctr": _get_weight_obs_or_fq_ctr(quantization_config),
+            "bias_obs_or_fq_ctr": _get_bias_obs_or_fq_ctr(quantization_config),
+            # TODO: remove this after https://github.com/pytorch/pytorch/pull/99220 is landed
+            "output_act_obs_or_fq_ctr": _get_default_obs_or_fq_ctr(),
+            # TODO: validation of weight_index must be set if weight_obs_or_fq_ctr is set
+            "weight_index": 1,
+            # TODO: validation of bias_index must be set if bias_obs_or_fq_ctr is set
+            "bias_index": 2,
+            "_annotated": True,
+        }
+        bn_node.meta["target_dtype_info"] = {
+            "input_act_obs_or_fq_ctr": _get_default_obs_or_fq_ctr(),
+            "output_act_obs_or_fq_ctr": _get_default_obs_or_fq_ctr(),
+            "_annotated": True,
+        }
+        getitem_node.meta["target_dtype_info"] = {
+            "input_act_obs_or_fq_ctr": _get_default_obs_or_fq_ctr(),
+            "output_act_obs_or_fq_ctr": _get_default_obs_or_fq_ctr(),
+            "_annotated": True,
+        }
+        add_node.meta["target_dtype_info"] = {
+            "input_act_obs_or_fq_ctr":  _get_act_obs_or_fq_ctr(quantization_config),
+            "output_act_obs_or_fq_ctr": _get_act_obs_or_fq_ctr(quantization_config),
+            "_annotated": True,
+            "args_act_index": [extra_input_node_idx],
+        }
+
+    def _annotate_conv2d_bn_relu(self, node: Node, quantization_config: Optional[QuantizationConfig]) -> None:
+        """
+        Match the following pattern:
+          ... -> conv -> bn -> getitem[0] -> relu -> ...
+        Annotate it to get the following pattern after prepare:
+               weight -> fq1
+                          |
+          ...  -> fq0 -> conv -> bn -> getitem[0] -> relu -> fq2 -> ...
+        Note: This is only used for QAT. In PTQ, batchnorm should already be fused into the conv.
+        """
+        if node.op != "call_function" or node.target not in [
+            torch.ops.aten.relu_.default,
+            torch.ops.aten.relu.default,
+        ]:
+            return
+        relu_node = node
+        getitem_node = relu_node.args[0]
+        assert isinstance(getitem_node, Node)
+        if (
+            getitem_node.op != "call_function"
+            or getitem_node.target != operator.getitem
+            or getitem_node.args[1] != 0
+        ):
+            return
+        bn_node = getitem_node.args[0]
+        assert isinstance(bn_node, Node)
+        if (
+            bn_node.op != "call_function"
+            or bn_node.target != torch.ops.aten._native_batch_norm_legit.default
+        ):
+            return
+        conv_node = bn_node.args[0]
+        assert isinstance(conv_node, Node)
+        if (
+            conv_node.op != "call_function"
+            or conv_node.target != torch.ops.aten.convolution.default
+        ):
+            return
+        if _is_annotated([relu_node, getitem_node, bn_node, conv_node]):
+            return
+
+        conv_node.meta["target_dtype_info"] = {
+            "input_act_obs_or_fq_ctr": _get_act_obs_or_fq_ctr(quantization_config),
+            "weight_obs_or_fq_ctr": _get_weight_obs_or_fq_ctr(quantization_config),
+            "bias_obs_or_fq_ctr": _get_bias_obs_or_fq_ctr(quantization_config),
+            # TODO: remove this after https://github.com/pytorch/pytorch/pull/99220 is landed
+            "output_act_obs_or_fq_ctr": _get_default_obs_or_fq_ctr(),
+            # TODO: validation of weight_index must be set if weight_obs_or_fq_ctr is set
+            "weight_index": 1,
+            # TODO: validation of bias_index must be set if bias_obs_or_fq_ctr is set
+            "bias_index": 2,
+            "_annotated": True,
+        }
+        bn_node.meta["target_dtype_info"] = {
+            "input_act_obs_or_fq_ctr": _get_default_obs_or_fq_ctr(),
+            "output_act_obs_or_fq_ctr": _get_default_obs_or_fq_ctr(),
+            "_annotated": True,
+        }
+        getitem_node.meta["target_dtype_info"] = {
+            "input_act_obs_or_fq_ctr": _get_default_obs_or_fq_ctr(),
+            "output_act_obs_or_fq_ctr": _get_default_obs_or_fq_ctr(),
+            "_annotated": True,
+        }
+        relu_node.meta["target_dtype_info"] = {
+            "input_act_obs_or_fq_ctr": _get_default_obs_or_fq_ctr(),
+            "output_act_obs_or_fq_ctr": _get_act_obs_or_fq_ctr(quantization_config),
+            "_annotated": True,
+        }
 
     def _annotate_conv2d_bn(self, node: Node, quantization_config: Optional[QuantizationConfig]) -> None:
         """
