@@ -51,7 +51,10 @@ def _get_act_obs_or_fq_ctr(quantization_config: Optional[QuantizationConfig]):
         )
     else:
         # TODO: extend this helper function to support dynamic quantization
-        raise Exception("Unsupported quantization_spec for activation: {}".format(quantization_spec))
+        # raise Exception("Unsupported quantization_spec for activation: {}".format(quantization_spec))
+        return PlaceholderObserver.with_args(
+            dtype=torch.quint8, quant_min=0, quant_max=255, is_dynamic=True,
+        )
 
 def _get_weight_obs_or_fq_ctr(quantization_config: Optional[QuantizationConfig]):
     if quantization_config is None:
@@ -81,14 +84,14 @@ def _get_bias_obs_or_fq_ctr(quantization_config: Optional[QuantizationConfig]):
     assert quantization_spec.dtype == torch.float, "Only float dtype for bias is supported for bias right now"
     return PlaceholderObserver.with_args(dtype=quantization_spec.dtype)
 
-def get_default_x86_inductor_quantization_config():
+def get_default_x86_inductor_quantization_config(is_dynamic: bool = False):
     # Copy from x86 default qconfig from torch/ao/quantization/qconfig.py
     act_quantization_spec = QuantizationSpec(
         dtype=torch.uint8,
         quant_min=0,
         quant_max=255,  # reduce_range=False
         qscheme=torch.per_tensor_affine,
-        is_dynamic=False,
+        is_dynamic=is_dynamic,
     )
     weight_quantization_spec = QuantizationSpec(
         dtype=torch.int8,
@@ -96,7 +99,7 @@ def get_default_x86_inductor_quantization_config():
         quant_max=127,
         qscheme=torch.per_channel_symmetric,
         ch_axis=0,  # 0 corresponding to weight shape = (oc, ic, kh, kw) of conv
-        is_dynamic=False,
+        is_dynamic=is_dynamic,
     )
     bias_quantization_spec = QuantizationSpec(dtype=torch.float)
     quantization_config = QuantizationConfig(

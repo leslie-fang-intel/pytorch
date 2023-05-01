@@ -609,6 +609,19 @@ def _maybe_insert_input_observer_for_arg_or_kwarg(
         arg_as_input_target_dtype = _get_arg_target_dtype_as_input_to_node(arg, node, named_modules)
         arg_as_input_target_is_dynamic = \
             _get_arg_target_is_dynamic_as_input_to_node(arg, node, named_modules)  # type: ignore[arg-type]
+
+        def check_insert_observer_for_dynamic_quant():
+            print("hit check", flush=True)
+            if arg is node.args[0]:
+                return True
+            if node.meta["target_dtype_info"].get("args_act_index", None):
+                for idx in node.meta["target_dtype_info"].get("args_act_index", None):
+                    if arg is node.args[idx]:
+                        return True
+                #print(node.meta["target_dtype_info"].get("args_act_index", None), flush=True)
+            return False
+
+
         needs_obs = \
             (
                 # the following code block is for static quantization
@@ -631,7 +644,7 @@ def _maybe_insert_input_observer_for_arg_or_kwarg(
                 # qconfig_dict and backend_config to support more general configurations
                 # of dynamic quantization, e.g. dynamically quantizing second input, third
                 # input etc.
-                arg_as_input_target_is_dynamic and arg is node.args[0]
+                arg_as_input_target_is_dynamic and check_insert_observer_for_dynamic_quant()
             )
         # if node.meta["target_dtype_info"]["weight_obs_or_fq_ctr"] == None
         # or node.meta["target_dtype_info"]["input_act_obs_or_fq_ctr"] == None
