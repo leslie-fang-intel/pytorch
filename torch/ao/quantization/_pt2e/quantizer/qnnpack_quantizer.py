@@ -77,6 +77,7 @@ def get_supported_symmetric_config_and_operators() -> List[OperatorConfig]:
         get_symmetric_quantization_config(is_qat=True),
         get_symmetric_quantization_config(is_per_channel=True),
         get_symmetric_quantization_config(is_per_channel=True, is_qat=True),
+        get_symmetric_quantization_config(is_per_channel=True, is_dynamic=True),
     ]:
         ops = supported_symmetric_quantized_operators()
         for op_string, pattern_list in ops.items():
@@ -90,13 +91,14 @@ def get_supported_symmetric_config_and_operators() -> List[OperatorConfig]:
 def get_symmetric_quantization_config(
     is_per_channel: bool = False,
     is_qat: bool = False,
+    is_dynamic: bool = False,
 ):
     act_quantization_spec = QuantizationSpec(
         dtype=torch.int8,
         quant_min=-128,
         quant_max=127,
         qscheme=torch.per_tensor_affine,
-        is_dynamic=False,
+        is_dynamic=is_dynamic,
     )
     qscheme = (
         torch.per_channel_symmetric if is_per_channel else torch.per_tensor_symmetric
@@ -107,7 +109,7 @@ def get_symmetric_quantization_config(
         quant_max=127,
         qscheme=qscheme,
         ch_axis=0,
-        is_dynamic=False,
+        is_dynamic=is_dynamic,
     )
     bias_quantization_spec = QuantizationSpec(dtype=torch.float)
     quantization_config = QuantizationConfig(
