@@ -7,6 +7,7 @@ from .quantizer import (
     QuantizationAnnotation,
     SharedQuantizationSpec,
 )
+from .x86_inductor_quantizer import X86InductorQuantizer
 
 __all__ = [
     "EdgeOrNode",
@@ -15,4 +16,5 @@ __all__ = [
     "QNNPackQuantizer",
     "QuantizationAnnotation",
     "SharedQuantizationSpec",
+    "X86InductorQuantizer",
 ]
