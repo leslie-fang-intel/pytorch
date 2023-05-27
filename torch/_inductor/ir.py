@@ -2496,7 +2496,10 @@ class InputsKernel(Buffer):
                 x = x.data
             if isinstance(x, BaseView) and not isinstance(x, ReinterpretView):
                 x = ExternKernel.realize_input(x)
-            # print("x is: {}".format(x))
+            print("x is: {}".format(x), flush=True)
+            if isinstance(x, Constant):
+                print("ExternKernel.realize_input(x).data.data is: {}".format(ExternKernel.realize_input(x).data.data))
+                x = ExternKernel.realize_input(x).data.data
             assert isinstance(x, (Buffer, ReinterpretView)), x
             inputs_new.append(x)
         return inputs_new
@@ -3965,8 +3968,8 @@ class QConv(ExternKernelAlloc):
         output_qparams,
         constant_args=(),
         dim=2,
-        packed_weight=None,
-        packed_bias=None,
+        packed_weight = None,
+        packed_bias = None,
     ):
         """
         Needs input/weight/output qparams
@@ -3981,26 +3984,15 @@ class QConv(ExternKernelAlloc):
         assert len(input_qparams) == 2  # scale, zero point
         assert len(weight_qparams) == 3  # scale, zero point, axis
         assert len(output_qparams) == 3  # scale, zero point, dtype
-        # inputs.extend(input_qparams + weight_qparams[:2] + output_qparams[:2])
-        # inputs.extend(weight_qparams[:2] + output_qparams[:2])
-        constant_args.extend([
-            inputs[1], # weight
-            inputs[2], # bias
-            input_qparams[0],
-            input_qparams[1],
-            weight_qparams[0],
-            weight_qparams[1],
-            weight_qparams[2],
-            output_qparams[0],
-            output_qparams[1],
-            output_qparams[2],
-            packed_weight,
-            packed_bias])
-        
-        inputs = [inputs[0]] # x, bias
+
+
+
+        inputs.extend(input_qparams + weight_qparams[:2] + output_qparams[:2])
+        constant_args.extend([weight_qparams[2], output_qparams[2]])
 
         print("inputs is: {}".format(inputs), flush=True)
         print("constant_args is: {}".format(constant_args), flush=True)
+
         super().__init__(layout, inputs, constant_args)
         self.dim = dim
         self.kernel = self.kernels[dim]
@@ -4008,19 +4000,14 @@ class QConv(ExternKernelAlloc):
     def codegen(self, wrapper):
         # args = [x, w, b?, x_scale, x_zp, w_scale, w_zp, o_scale, o_zp]
         args = [x.codegen_reference() for x in self.inputs]
-        # x_scale, x_zp = args[-6], args[-5]
-        # w_scale, w_zp = args[-4], args[-3]
-        # o_scale, o_zp = args[-2], args[-1]
+        x_scale, x_zp = args[-6], args[-5]
+        w_scale, w_zp = args[-4], args[-3]
+        o_scale, o_zp = args[-2], args[-1]
         # const args = [stride, padding, dilation, groups, w_axis, o_dtype]
         const_args = []
         const_args.extend(self.codegen_const_args())
-        packed_bias, packed_weight = const_args[-1], const_args[-2]
-        o_dtype, o_zp, o_scale = const_args[-3], const_args[-4], const_args[-5]
-        w_axis, w_zp, w_scale = const_args[-6], const_args[-7], const_args[-8]
-        x_zp, x_scale = const_args[-9], const_args[-10]
-
-        # o_dtype = const_args[-3]
-        #w_axis = const_args[-4]
+        o_dtype = const_args[-1]
+        w_axis = const_args[-2]
         input_qparams = [x_scale, x_zp]
         weight_qparams = [w_scale, w_zp, w_axis]
         output_qparams = [o_scale, o_zp, o_dtype]
@@ -4029,23 +4016,19 @@ class QConv(ExternKernelAlloc):
             f"{args[0]} = torch._make_per_tensor_quantized_tensor({args[0]}, {', '.join(input_qparams)})"
         )
         wrapper.writeline(
-            f"{const_args[-12]} = torch._make_per_channel_quantized_tensor({const_args[-12]}, {', '.join(weight_qparams)})"
+            f"{args[1]} = torch._make_per_channel_quantized_tensor({args[1]}, {', '.join(weight_qparams)})"
         )
         # Note: padding_mode is always 'zeros'
         padding_mode = "'zeros'"
         conv_args = (
-            ", ".join(args[0])
-            + ", ".join(const_args[-12])
-            + ", ".join(const_args[-11])
-            + ", ".join(const_args[0])
-            + ", ".join(const_args[1])
-            + ", ".join(const_args[2])
-            + ", ".join(const_args[3]) # groups
+            ", ".join(args[:-6])
+            + ", "
+            + ", ".join(const_args[:-2])
             + f", {padding_mode}, "
             + ", ".join(output_qparams)
         )
         # Do not need `.int_repr()` for output since its dtype is already uint8 instead of quint8
-        wrapper.writeline(f"{self.get_name()} = {self.kernel}({conv_args})")   
+        wrapper.writeline(f"{self.get_name()} = {self.kernel}({conv_args})")
         if isinstance(self.layout, Layout):
             self.codegen_size_asserts(wrapper)
 
@@ -4054,11 +4037,11 @@ class QConv(ExternKernelAlloc):
         cls,
         dim: int,
         x: "TensorBox",
-        x_scale: "TensorBox",
-        x_zp: "TensorBox",
+        x_scale,
+        x_zp,
         weight: "TensorBox",
-        w_scale: "TensorBox",
-        w_zp: "TensorBox",
+        w_scale,
+        w_zp,
         w_axis: int,
         bias: "TensorBox",
         stride_: List[int],
@@ -4090,6 +4073,9 @@ class QConv(ExternKernelAlloc):
             constant_args[1], constant_args[2] = constant_args[2], constant_args[1]
         else:
             constant_args[0], constant_args[1] = constant_args[1], constant_args[0]
+        
+        # print("x_scale is: {}".format(x_scale), flush=True)
+        # print("x_scale.realize() is: {}".format(x_scale.realize()), flush=True)
         input_qparams = [x_scale, x_zp]
         weight_qparams = [w_scale, w_zp, w_axis]
         output_qparams = [output_scale, output_zero_point, output_dtype]
@@ -4103,7 +4089,7 @@ class QConv(ExternKernelAlloc):
             dim=dim,
             packed_weight=packed_weight,
             packed_bias=packed_bias,
-        )
+        )        
 
 
 @dataclasses.dataclass

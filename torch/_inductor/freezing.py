@@ -143,6 +143,35 @@ def quantization_weight_prepack(gm):
     print(" inside quantization_weight_prepack gm is : {}".format(gm), flush=True)
     # Assume dq - conv (- relu) - q is already fused and `w - q` is replaced by qw
     decomposed = torch.ops.quantized_decomposed
+    quantized_graph = False
+    for node in gm.graph.nodes:
+        if node.target == decomposed.dequantize_per_channel.default:
+            quantized_graph = True
+    if not quantized_graph:
+        return
+    
+
+    # for node in gm.graph.nodes:
+    #     if node.target == aten.convolution.default:
+    #         conv_node = node
+    #         (
+    #             x,
+    #             w,
+    #             bias,
+    #             stride,
+    #             padding,
+    #             dilation,
+    #             is_transposed,
+    #             out_padding,
+    #             groups,
+    #         ) = conv_node.args
+    #         (qw, w_scale, w_zp, w_axis, w_quant_min, w_quant_max, w_dtype) = w.args
+    #         print("qw is: {}".format(getattr(gm, qw.target)), flush=True)
+    #         print("w_scale is: {}".format(getattr(gm, w_scale.target)), flush=True)
+    #         print("qw is: {}".format(isinstance(getattr(gm, qw.target), torch.nn.parameter.Parameter)), flush=True)
+
+    # return
+
     for node in gm.graph.nodes:
         print("node.target is: {}".format(node.target), flush=True)
         if node.target == aten.convolution.default:
@@ -192,6 +221,8 @@ def quantization_weight_prepack(gm):
             print("x_shape is: {}".format(x_shape), flush=True)
             
             weight_int8_tensor = getattr(gm, qw.target)
+            # print("bias is None: {}".format(bias is None), flush=True)
+            # print("bias is None: {}".format(getattr(gm, bias.target) is not None), flush=True)
             bias_tensor = getattr(gm, bias.target) if bias is not None else None
             w_scale_tensor = getattr(gm, w_scale.target)
             x_scale_tensor = getattr(gm, x_scale.target)
@@ -250,6 +281,7 @@ def quantization_weight_prepack(gm):
                 )
                 new_conv_node = gm.graph.call_function(
                     torch.ops.quantized.prepacked_dynamic_conv.tensor, args=new_args
+                    #aten.convolution.default, args=new_args
                 )
                 conv_node.replace_all_uses_with(new_conv_node)
                 new_conv_node.meta.update(conv_node.meta)

@@ -400,18 +400,19 @@ class GraphLowering(torch.fx.Interpreter):
         with no_dispatch():
             if value.shape == ():
                 return Constant(value.item(), value.dtype, value.device)
-            if len(value.shape) == 1 and value.shape[0] <= 8:
+            print("value is: {}".format(value), flush=True)
+            if len(value.shape) == 1 and value.shape[0] <= 4:
                 # tensor lowering has constant inlining logic
                 from .lowering import tensor
 
-                # print("value is: {}".format(value), flush=True)
+                #print("value is: {}".format(value), flush=True)
                 # print("value is: {}".format(value.is_mkldnn), flush=True)
                 # print("type value is: {}".format(type(value)), flush=True)
                 # print("value.tolist() is: {}".format(value.tolist()), flush=True)
                 # print("value.tolist() is: {}".format(tensor(value.tolist(), dtype=value.dtype, device=value.device)), flush=True)
 
                 return tensor(value.tolist(), dtype=value.dtype, device=value.device)
-
+        print("value is: {}".format(value), flush=True)
         return self.add_tensor_constant(value)
 
     def call_module(self, target, args, kwargs):
