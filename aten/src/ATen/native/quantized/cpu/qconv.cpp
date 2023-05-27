@@ -35,6 +35,7 @@
 #endif
 
 #include <c10/util/irange.h>
+#include <aten/src/ATen/ops/convolution.h>
 
 namespace {
 // To have a sanity check for maximum matrix size.
@@ -1811,7 +1812,49 @@ class ConvAddInt8CpuTensor final {
   }
 };
 
+class ConvUnary final {
+ public:
+  static Tensor prepacked_dynamic_conv(
+      Tensor x, // contains quantized values but not QTensor
+      Tensor w,
+      c10::optional<Tensor> bias,
+      at::IntArrayRef stride,
+      at::IntArrayRef padding,
+      at::IntArrayRef dilation,
+      bool transposed,
+      at::IntArrayRef output_padding,
+      int64_t groups,
+      Tensor prepacked_w,
+      c10::optional<Tensor> prepacked_b
+      ) { // c10::optional<Tensor> prepacked_b
+#if AT_MKLDNN_ENABLED()
+    return at::convolution(x, w, bias, stride, padding, dilation, transposed, output_padding, groups=groups);
+    // if ((unary_post_op == "relu") || (unary_post_op == "relu_")) {
+    //   return ConvInt8CpuTensor<PostOp::ReLU>::run_with_packed_weight_bias(
+    //     qx, input_scale.item().toDouble(), input_zero_point.item().toLong(),
+    //     qw, weight_scale, weight_zero_point, bias,
+    //     stride, padding, dilation, groups,
+    //     output_scale.item().toDouble(), output_zero_point.item().toLong()
+    //   );
+    // } else {
+    //   return ConvInt8CpuTensor<PostOp::None>::run_with_packed_weight_bias(
+    //     qx, input_scale.item().toDouble(), input_zero_point.item().toLong(),
+    //     qw, weight_scale, weight_zero_point, bias,
+    //     stride, padding, dilation, groups,
+    //     output_scale.item().toDouble(), output_zero_point.item().toLong()
+    //   );
+    // }
+#endif
+    TORCH_CHECK(false, "Unimplemented of ConvUnary");
+  }
+};
+
+TORCH_LIBRARY_IMPL(quantized, CPU, m) {
+  m.impl(TORCH_SELECTIVE_NAME("quantized::prepacked_dynamic_conv.tensor"),      ConvUnary::prepacked_dynamic_conv);
+}
+
 TORCH_LIBRARY_IMPL(quantized, MkldnnCPU, m) {
+  m.impl(TORCH_SELECTIVE_NAME("quantized::prepacked_dynamic_conv.tensor"),      ConvUnary::prepacked_dynamic_conv);
   m.impl(TORCH_SELECTIVE_NAME("quantized::conv_int8_packed_weight"),      ConvInt8CpuTensor<PostOp::None>::run_with_packed_weight_bias);
   m.impl(TORCH_SELECTIVE_NAME("quantized::conv_relu_int8_packed_weight"), ConvInt8CpuTensor<PostOp::ReLU>::run_with_packed_weight_bias);
   m.impl(TORCH_SELECTIVE_NAME("quantized::conv_add_int8_packed_weight"),  ConvAddInt8CpuTensor<PostOp::Add>::run_with_packed_weight_bias);

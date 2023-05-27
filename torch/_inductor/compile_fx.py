@@ -269,6 +269,8 @@ def compile_fx_inner(
     # on node.meta["val"]. if in the future we rely on these being
     # correct we will need to fix.
 
+
+    print("gm before fusion is: {}".format(gm), flush=True)
     with V.set_fake_mode(fake_mode):
         # has some issues with memory in training
         locality_reorder = is_inference and config.reordering
