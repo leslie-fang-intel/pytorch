@@ -393,12 +393,22 @@ class GraphLowering(torch.fx.Interpreter):
         if unsupported_output_tensor(value):
             return self.add_tensor_constant(value)
 
+        if value.is_mkldnn:
+            return self.add_tensor_constant(value)
+        
+
         with no_dispatch():
             if value.shape == ():
                 return Constant(value.item(), value.dtype, value.device)
             if len(value.shape) == 1 and value.shape[0] <= 8:
                 # tensor lowering has constant inlining logic
                 from .lowering import tensor
+
+                # print("value is: {}".format(value), flush=True)
+                # print("value is: {}".format(value.is_mkldnn), flush=True)
+                # print("type value is: {}".format(type(value)), flush=True)
+                # print("value.tolist() is: {}".format(value.tolist()), flush=True)
+                # print("value.tolist() is: {}".format(tensor(value.tolist(), dtype=value.dtype, device=value.device)), flush=True)
 
                 return tensor(value.tolist(), dtype=value.dtype, device=value.device)
 

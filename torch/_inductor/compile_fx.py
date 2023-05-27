@@ -277,6 +277,8 @@ def compile_fx_inner(
 
         post_grad_passes(gm, locality_reorder=locality_reorder)
         V.debug.fx_graph_transformed(gm, example_inputs)
+    
+    print("gm after fusion is: {}".format(gm), flush=True)
 
     with V.set_fake_mode(fake_mode):
         graph = GraphLowering(
@@ -719,6 +721,10 @@ def compile_fx(
                 aot_autograd_model,
                 example_inputs,
             )
+
+            from torch.fx.passes.graph_drawer import FxGraphDrawer
+            g = FxGraphDrawer(opt_model, "resnet50")
+            g.get_dot_graph().write_svg("//home/lesliefang/pytorch_1_7_1/inductor_quant/freeze_graph.svg")
 
             example_inputs = [example_inputs[ind] for ind in preserved_arg_indices]
             num_fixed = len(preserved_arg_indices) - num_example_inputs
