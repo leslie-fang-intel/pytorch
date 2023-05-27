@@ -288,7 +288,14 @@ class GraphLowering(torch.fx.Interpreter):
 
                 print("data.is_mkldnn, is: {}".format(data.is_mkldnn), flush=True)
                 print("value.is_mkldnn, is: {}".format(value.is_mkldnn), flush=True)
-                if (
+                if (data.is_mkldnn and value.is_mkldnn):
+                    if (data.size() == value.size()
+                        and data.stride() == value.stride()
+                        and data.dtype == value.dtype
+                        and data.device == value.device
+                        and torch.eq(data.to_dense(), value.to_dense()).all()):
+                        return name
+                elif (
                     data.size() == value.size()
                     and data.stride() == value.stride()
                     and data.dtype == value.dtype

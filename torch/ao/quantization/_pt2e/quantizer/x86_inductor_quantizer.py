@@ -194,9 +194,9 @@ class X86InductorQuantizer(Quantizer):
         for node in reversed(model.graph.nodes):
             # one improvement is to register node annotators for each
             # supported op type.
-            self._annotate_conv2d_binary_unary(node, config)
-            self._annotate_conv2d_binary(node, config)
-            self._annotate_conv2d_unary(node, config)
+            # self._annotate_conv2d_binary_unary(node, config)
+            # self._annotate_conv2d_binary(node, config)
+            # self._annotate_conv2d_unary(node, config)
             self._annotate_conv2d(node, config)
         return model
 
