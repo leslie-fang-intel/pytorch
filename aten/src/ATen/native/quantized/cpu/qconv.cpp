@@ -1767,6 +1767,7 @@ class ConvInt8CpuTensor final {
       double output_scale,
       int64_t output_zero_point) {
 #if AT_MKLDNN_ENABLED()
+    output_scale = 1.0 / output_scale;
     return packed_weights_conv_onednn<postOpFused>(
         act, act_scale, act_zero_point,
         c10::nullopt /*accum*/, 0.0 /*accum_scale*/, 0 /*accum_zero_point*/,
