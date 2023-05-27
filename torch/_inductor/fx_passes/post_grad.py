@@ -70,7 +70,9 @@ def lazy_init():
         from .mkldnn_fusion import _mkldnn_fusion_init
 
         _mkldnn_fusion_init()
+    from .quantization import register_quantization_lowerings
 
+    register_quantization_lowerings()
 
 def reorder_for_locality(graph: torch.fx.Graph):
     def visit(other_node):

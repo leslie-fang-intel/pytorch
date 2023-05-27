@@ -1519,8 +1519,26 @@ def make_channels_last_3d_strides_for(shape: ShapeType) -> Tuple[int, ...]:
     return tuple(strides)
 
 
+def make_channels_last_1d_strides_for(shape: ShapeType) -> Tuple[int, ...]:
+    check(
+        len(shape) == 3,
+        lambda: "Only tensors of rank 3 can use the channels_last_1d memory format",
+    )
+
+    multiplier = 1
+    strides = [0] * 3
+    for idx in (1, -1, 0):
+        # NOTE: intentionally divergence from make_contiguous_strides_for
+        # This is consistent with eager
+        strides[idx] = multiplier
+        multiplier *= shape[idx]
+
+    return tuple(strides)
+
 def make_channels_last_strides_for(shape: ShapeType) -> Tuple[int, ...]:
     ndim = len(shape) if isinstance(shape, Sequence) else 1
+    if ndim == 3:
+        return make_channels_last_1d_strides_for(shape)
     if ndim == 4:
         return make_channels_last_2d_strides_for(shape)
     elif ndim == 5:
