@@ -275,11 +275,25 @@ class GraphLowering(torch.fx.Interpreter):
     def add_tensor_constant(self, data):
         def allocate():
             for name, value in self.constants.items():
+                print(" ------ ", flush=True)
+                print("data.size(), is: {}".format(data.size()), flush=True)
+                print("value.size(), is: {}".format(value.size()), flush=True)
+                print("data.stride(), is: {}".format(data.stride()), flush=True)
+                print("value.stride(), is: {}".format(value.stride()), flush=True)
+            
+                print("data.dtype, is: {}".format(data.dtype), flush=True)
+                print("value.dtype, is: {}".format(value.dtype), flush=True)
+                print("data.device, is: {}".format(data.device), flush=True)
+                print("value.device, is: {}".format(value.device), flush=True)
+
+                print("data.is_mkldnn, is: {}".format(data.is_mkldnn), flush=True)
+                print("value.is_mkldnn, is: {}".format(value.is_mkldnn), flush=True)
                 if (
                     data.size() == value.size()
                     and data.stride() == value.stride()
                     and data.dtype == value.dtype
                     and data.device == value.device
+                    and data.is_mkldnn == value.is_mkldnn
                     and torch.eq(data, value).all()
                 ):
                     return name
@@ -394,6 +408,7 @@ class GraphLowering(torch.fx.Interpreter):
             return self.add_tensor_constant(value)
 
         if value.is_mkldnn:
+            print("value is: {}".format(value), flush=True)
             return self.add_tensor_constant(value)
         
 
