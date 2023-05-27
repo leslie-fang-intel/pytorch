@@ -15,6 +15,7 @@ from torch.ao.quantization._pt2e.utils import _fuse_conv_bn_
 from torch.fx.experimental.proxy_tensor import make_fx
 from . import config
 from .decomposition import select_decomp_table
+import torch.ao.quantization.fx._decomposed
 
 aten = torch.ops.aten
 
@@ -96,7 +97,13 @@ def constant_fold(gm):
             out = super().run_node(node)
 
             # TODO - remove constant from node_replacement when it has no uses
+
+            # print("node.target is: {}".format(node.target), flush=True)
+
             if node.op != "get_attr" and isinstance(out, torch.Tensor):
+                if node.target == torch.ops.quantized_decomposed.dequantize_per_channel.default:
+                # if isinstance(node.target, torch.ops.quantized_decomposed):
+                    return out
                 node_replacements[node] = out
 
             return out
