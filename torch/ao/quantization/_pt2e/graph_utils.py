@@ -20,9 +20,11 @@ _EQUIVALENT_TYPES: List[Set] = [
 ]
 
 
-def _create_equivalent_types_dict():
+def _create_equivalent_types_dict(equivalent_types = None):
+    if equivalent_types is None:
+        equivalent_types = _EQUIVALENT_TYPES
     _DICT = {}
-    for values in _EQUIVALENT_TYPES:
+    for values in equivalent_types:
         for v in values:
             _DICT[v] = list(values)
     return _DICT
@@ -42,17 +44,19 @@ def _partitions_sequential(partitions: List[SourcePartition]):
     return True
 
 
-def _get_matching_types(partition_type):
+def _get_matching_types(partition_type, equivalet_types_dict = None):
+    if equivalet_types_dict is None:
+        equivalet_types_dict = _EQUIVALET_TYPES_DICT
     matching_types = [partition_type]
-    if partition_type in _EQUIVALET_TYPES_DICT:
-        matching_types.extend(_EQUIVALET_TYPES_DICT[partition_type])
+    if partition_type in equivalet_types_dict:
+        matching_types.extend(equivalet_types_dict[partition_type])
     return matching_types
 
 
-def _valid_type_sequence(partition_types: List[Any]):
+def _valid_type_sequence(partition_types: List[Any], equivalet_types_dict = None):
     partition_types_set = set()  # type: ignore[var-annotated]
     for partition_type in partition_types:
-        matching_types = _get_matching_types(partition_type)
+        matching_types = _get_matching_types(partition_type, equivalet_types_dict)
         matching_types_set = set(matching_types)
         if len(partition_types_set & matching_types_set) > 0:
             return False
@@ -64,15 +68,16 @@ def find_sequential_partitions(
     gm: torch.fx.GraphModule,
     partition_types: List[Any],
     include_functional_equivalent=True,
+    equivalet_types_dict = None,
 ):
-    if not _valid_type_sequence(partition_types):
+    if not _valid_type_sequence(partition_types, equivalet_types_dict):
         raise ValueError(
             f"Invalid partition types: {partition_types}. Each type in the sequence must be unique"
         )
 
     typed_partitions: OrderedDict[Any, List[SourcePartition]] = OrderedDict()
     for partition_type in partition_types:
-        types_to_match = _get_matching_types(partition_type)
+        types_to_match = _get_matching_types(partition_type, equivalet_types_dict)
         partitions = get_source_partitions(gm.graph, types_to_match)
         typed_partitions[partition_type] = list(itertools.chain(*partitions.values()))
 
