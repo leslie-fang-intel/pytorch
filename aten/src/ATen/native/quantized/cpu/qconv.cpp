@@ -1150,6 +1150,16 @@ at::Tensor PackedConvWeightsOnednn<kSpatialDim>::apply_add_fp32_output(
 }
 
 template <int kSpatialDim>
+at::Tensor PackedConvWeightsOnednn<kSpatialDim>::apply_add_relu_fp32_output(
+    const at::Tensor& input,
+    const at::Tensor& accum,
+    double output_scale,
+    int64_t output_zero_point) {
+  TORCH_CHECK(kSpatialDim == 2, " Currently, only conv2d with add is supported.");
+  return apply_impl<true>(input, accum, output_scale, output_zero_point, true);
+}
+
+template <int kSpatialDim>
 at::Tensor PackedConvWeightsOnednn<kSpatialDim>::apply_add_relu(
     const at::Tensor& input,
     const at::Tensor& accum,
@@ -1551,12 +1561,8 @@ class QConvAddInt8OutputFP32 final {
 #if AT_MKLDNN_ENABLED()
     if (ctx.qEngine() == at::QEngine::ONEDNN) {
       if (kReluFused) {
-        // return dynamic_cast<PackedConvWeightsOnednn<kSpatialDim>*>(packed_weight.get())->apply_add_relu(
-        //   act, accum, output_scale, output_zero_point);
-        TORCH_CHECK(
-        false,
-        "Didn't find engine for operation quantized::conv2d_add_relu_fpre_output.",
-        toString(ctx.qEngine())); 
+        return dynamic_cast<PackedConvWeightsOnednn<kSpatialDim>*>(packed_weight.get())->apply_add_relu_fp32_output(
+          act, accum, output_scale, output_zero_point);
       } else {
         return dynamic_cast<PackedConvWeightsOnednn<kSpatialDim>*>(packed_weight.get())->apply_add_fp32_output(
           act, accum, output_scale, output_zero_point);
@@ -1639,6 +1645,7 @@ TORCH_LIBRARY_IMPL(quantized, QuantizedCPU, m) {
   m.impl(TORCH_SELECTIVE_NAME("quantized::conv2d_fp32_output"),      QConvInt8OutputFP32<2, false>::run);
   m.impl(TORCH_SELECTIVE_NAME("quantized::conv2d_relu_fp32_output"), QConvInt8OutputFP32<2, true>::run);
   m.impl(TORCH_SELECTIVE_NAME("quantized::conv2d_add_fp32_output"), QConvAddInt8OutputFP32<2, false>::run);
+  m.impl(TORCH_SELECTIVE_NAME("quantized::conv2d_add_relu_fp32_output"), QConvAddInt8OutputFP32<2, true>::run);
   
   // transpose
   m.impl(TORCH_SELECTIVE_NAME("quantized::conv_transpose1d"),  QConv1dInt8<false>::run);
