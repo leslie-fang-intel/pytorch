@@ -162,8 +162,9 @@ at::Tensor PackedConvWeightsOnednn<kSpatialDim>::apply_dynamic(
   at::Tensor q_input = at::quantize_per_tensor(
       input, q_params.scale, q_params.zero_point, c10::kQUInt8);
 
+  bool fp32_output = false;
   at::Tensor out =
-      apply_impl<false>(q_input, /*accum*/c10::nullopt, q_params.scale, q_params.zero_point);
+      apply_impl<false>(q_input, /*accum*/c10::nullopt, q_params.scale, q_params.zero_point, fp32_output);
 
   // TODO: Modify ideep to allow fp32 input & output
   // to avoid explicit `quantize - dequantize`

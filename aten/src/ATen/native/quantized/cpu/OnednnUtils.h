@@ -246,6 +246,11 @@ struct PackedConvWeightsOnednn : public ConvPackedParamsBase<kSpatialDim> {
       double output_scale,
       int64_t output_zero_point);
 
+  at::Tensor apply_fp32_output(
+      const at::Tensor& input,
+      double output_scale,
+      int64_t output_zero_point);
+
   std::tuple<at::Tensor, c10::optional<at::Tensor>> unpack() override;
 
   static c10::intrusive_ptr<ConvPackedParamsBase<kSpatialDim>> prepack(
@@ -292,7 +297,8 @@ struct PackedConvWeightsOnednn : public ConvPackedParamsBase<kSpatialDim> {
       const at::Tensor& input,
       const c10::optional<at::Tensor>& accum,
       double output_scale,
-      int64_t output_zero_point);
+      int64_t output_zero_point,
+      bool fp32_output);
 
   ConvPrimitiveCache& get_conv_cache() {
     assert(!transpose());

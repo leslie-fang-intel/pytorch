@@ -1102,7 +1102,15 @@ at::Tensor PackedConvWeightsOnednn<kSpatialDim>::apply(
     const at::Tensor& input,
     double output_scale,
     int64_t output_zero_point) {
-  return apply_impl<false>(input, c10::nullopt, output_scale, output_zero_point);
+  return apply_impl<false>(input, c10::nullopt, output_scale, output_zero_point, false);
+}
+
+template <int kSpatialDim>
+at::Tensor PackedConvWeightsOnednn<kSpatialDim>::apply_fp32_output(
+    const at::Tensor& input,
+    double output_scale,
+    int64_t output_zero_point) {
+  return apply_impl<false>(input, c10::nullopt, output_scale, output_zero_point, true);
 }
 
 template <int kSpatialDim>
@@ -1110,7 +1118,7 @@ at::Tensor PackedConvWeightsOnednn<kSpatialDim>::apply_relu(
     const at::Tensor& input,
     double output_scale,
     int64_t output_zero_point) {
-  return apply_impl<true>(input, c10::nullopt, output_scale, output_zero_point);
+  return apply_impl<true>(input, c10::nullopt, output_scale, output_zero_point, false);
 }
 
 template <int kSpatialDim>
@@ -1120,7 +1128,7 @@ at::Tensor PackedConvWeightsOnednn<kSpatialDim>::apply_add(
     double output_scale,
     int64_t output_zero_point) {
   TORCH_CHECK(kSpatialDim == 2, " Currently, only conv2d with add is supported.");
-  return apply_impl<false>(input, accum, output_scale, output_zero_point);
+  return apply_impl<false>(input, accum, output_scale, output_zero_point, false);
 }
 
 template <int kSpatialDim>
@@ -1130,7 +1138,7 @@ at::Tensor PackedConvWeightsOnednn<kSpatialDim>::apply_add_relu(
     double output_scale,
     int64_t output_zero_point) {
   TORCH_CHECK(kSpatialDim == 2, " Currently, only conv2d add relu is supported.");
-  return apply_impl<true>(input, accum, output_scale, output_zero_point);
+  return apply_impl<true>(input, accum, output_scale, output_zero_point, false);
 }
 
 template <int kSpatialDim>
@@ -1139,7 +1147,8 @@ at::Tensor PackedConvWeightsOnednn<kSpatialDim>::apply_impl(
     const at::Tensor& act,
     const c10::optional<at::Tensor>& accum,
     double output_scale,
-    int64_t output_zero_point) {
+    int64_t output_zero_point,
+    bool fp32_output) {
   std::string func_name = "quantized::conv";
   if (transpose()) {
     func_name += "_transpose";
@@ -1420,6 +1429,26 @@ class QConvInt8 final {
 };
 
 template <int kSpatialDim, bool kReluFused>
+class QConvInt8OutputFP32 final {
+ public:
+  static Tensor run(
+      Tensor act,
+      const c10::intrusive_ptr<ConvPackedParamsBase<kSpatialDim>>& packed_weight,
+      double output_scale,
+      int64_t output_zero_point) {
+    if (kReluFused) {
+        auto& ctx = at::globalContext();
+        TORCH_CHECK(
+        false,
+        "Didn't find engine for operation quantized::conv2d_fp32_output with relu fused.",
+        toString(ctx.qEngine()));
+    } else {
+      return dynamic_cast<PackedConvWeightsOnednn<kSpatialDim>*>(packed_weight.get())->apply_fp32_output(
+        act, output_scale, output_zero_point);
+    }
+  }
+};
+template <int kSpatialDim, bool kReluFused>
 class QConvAddInt8 final {
  public:
   static Tensor run(
@@ -1501,6 +1530,7 @@ TORCH_LIBRARY_IMPL(quantized, QuantizedCPU, m) {
   m.impl(TORCH_SELECTIVE_NAME("quantized::conv1d"),          QConv1dInt8<false>::run);
   m.impl(TORCH_SELECTIVE_NAME("quantized::conv1d_relu"),     QConv1dInt8<true>::run);
   m.impl(TORCH_SELECTIVE_NAME("quantized::conv2d.new"),      QConvInt8<2, false>::run);
+  m.impl(TORCH_SELECTIVE_NAME("quantized::conv2d_fp32_output"),      QConvInt8OutputFP32<2, false>::run);
   m.impl(TORCH_SELECTIVE_NAME("quantized::conv2d_relu.new"), QConvInt8<2, true>::run);
   m.impl(TORCH_SELECTIVE_NAME("quantized::conv2d_add"),      QConvAddInt8<2, false>::run);
   m.impl(TORCH_SELECTIVE_NAME("quantized::conv2d_add_relu"), QConvAddInt8<2, true>::run);
