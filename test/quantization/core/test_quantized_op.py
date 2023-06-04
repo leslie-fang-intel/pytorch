@@ -5081,6 +5081,76 @@ class TestQuantizedConv(TestCase):
                 dilations, X_scale, X_zero_point, W_scale, W_zero_point,
                 Y_scale, Y_zero_point, use_bias, "relu", use_channelwise, False, input_dtype=X_qdtype, output_dtype=X_qdtype)
 
+    # @skipIfNoONEDNN
+    # def test_qconv2d_fp32_output_relu(
+    #     self,
+    # ):
+    #     batch_size = 3
+    #     groups_list = [1, 10]
+    #     input_channels_per_group = 2
+    #     output_channels_per_group = 2
+    #     height = 10
+    #     width = 10
+    #     kernel_h = 3
+    #     kernel_w = 3
+    #     stride_h = 2
+    #     stride_w = 2
+    #     pad_h = 1
+    #     pad_w = 1
+    #     dilation = 1
+    #     X_scale = 1.5
+    #     X_zero_point = 2
+    #     W_scale = [1.5]
+    #     W_zero_point = [-3]
+    #     Y_scale = 4.2
+    #     Y_zero_point = 0
+    #     use_bias_list = [False, True]
+    #     use_channelwise_list = [False, True]
+    #     X2_scale = 1.2
+    #     X2_zero_point_list = [0, 4]
+    #     options = itertools.product(groups_list, use_bias_list, use_channelwise_list, X2_zero_point_list)
+    #     for groups, use_bias, use_channelwise, X2_zero_point in options:
+    #         input_channels = input_channels_per_group * groups
+    #         output_channels = output_channels_per_group * groups
+    #         kernels = (kernel_h, kernel_w)
+    #         strides = (stride_h, stride_w)
+    #         pads = (pad_h, pad_w)
+    #         dilations = (dilation, dilation)
+
+    #         qconv = torch.ops.quantized.conv2d_relu
+    #         qconv_fp32_output = torch.ops.quantized.conv2d_relu_fp32_output
+    #         qconv_prepack = torch.ops.quantized.conv2d_prepack
+    #         conv_op = torch.nn.Conv2d(
+    #             input_channels,
+    #             output_channels,
+    #             kernels,
+    #             strides,
+    #             pads,
+    #             dilations,
+    #             groups,
+    #         )
+
+    #         act_qdtypes = [torch.quint8]
+
+    #         for X_qdtype in act_qdtypes:                
+    #             print("---- first test step ----", flush=True)
+
+    #             self._test_qconv_impl(
+    #                 qconv, qconv_prepack, conv_op, batch_size,
+    #                 input_channels_per_group, (height, width),
+    #                 output_channels_per_group, groups, kernels, strides, pads, None,
+    #                 dilations, X_scale, X_zero_point, W_scale, W_zero_point,
+    #                 Y_scale, Y_zero_point, use_bias, "relu", use_channelwise, False, input_dtype=X_qdtype, output_dtype=X_qdtype)
+
+    #             print("---- second fp32 test step ----", flush=True)
+    #             self._test_qconv_impl(
+    #                 qconv_fp32_output, qconv_prepack, conv_op, batch_size,
+    #                 input_channels_per_group, (height, width),
+    #                 output_channels_per_group, groups, kernels, strides, pads, None,
+    #                 dilations, X_scale, X_zero_point, W_scale, W_zero_point,
+    #                 Y_scale, Y_zero_point, use_bias, "relu", use_channelwise, False, input_dtype=X_qdtype, output_dtype=X_qdtype,
+    #                 fp32_output=True)
+
     @skipIfNoONEDNN
     def test_qconv2d_add(self):
         batch_size = 3

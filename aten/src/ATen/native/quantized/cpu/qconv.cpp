@@ -1114,6 +1114,14 @@ at::Tensor PackedConvWeightsOnednn<kSpatialDim>::apply_fp32_output(
 }
 
 template <int kSpatialDim>
+at::Tensor PackedConvWeightsOnednn<kSpatialDim>::apply_relu_fp32_output(
+    const at::Tensor& input,
+    double output_scale,
+    int64_t output_zero_point) {
+  return apply_impl<true>(input, c10::nullopt, output_scale, output_zero_point, true);
+}
+
+template <int kSpatialDim>
 at::Tensor PackedConvWeightsOnednn<kSpatialDim>::apply_relu(
     const at::Tensor& input,
     double output_scale,
@@ -1300,11 +1308,6 @@ at::Tensor PackedConvWeightsOnednn<kSpatialDim>::apply_impl(
     dst.set_scale(accum_scale);
     dst.set_zero_point(accum_zero_points);
   } else if (kReluFused) {
-    if (fp32_output) {
-      TORCH_CHECK(
-      false,
-      "Didn't support fused relu with fp32 output for conv"); 
-    }
     op_attr = ideep::attr_t::fuse_relu();
   }
 
@@ -1368,13 +1371,11 @@ at::Tensor PackedConvWeightsOnednn<kSpatialDim>::apply_impl(
     });
     // If hit, use cached data. If miss, fall back to normal path.
     if (get_conv_cache().hit(cache_key)) {
+      std::cout<<"hit cache path"<<std::endl;
       auto& params = get_conv_cache().get_params();
       ideep::convolution_forward::compute<false, false>(params, src, weights, b, dst);
     } else {
-
-      TORCH_CHECK(
-      false,
-      "To enable the not hit cache path");
+      std::cout<<"un hit cache path"<<std::endl;
       ideep::convolution_forward::compute(
           src, weights, b, dst_dims, dst,
           strides, dilates, padding_l, padding_r, groups(),
@@ -1475,11 +1476,8 @@ class QConvInt8OutputFP32 final {
       double output_scale,
       int64_t output_zero_point) {
     if (kReluFused) {
-        auto& ctx = at::globalContext();
-        TORCH_CHECK(
-        false,
-        "Didn't find engine for operation quantized::conv2d_fp32_output with relu fused.",
-        toString(ctx.qEngine()));
+      return dynamic_cast<PackedConvWeightsOnednn<kSpatialDim>*>(packed_weight.get())->apply_relu_fp32_output(
+        act, output_scale, output_zero_point);
     } else {
       return dynamic_cast<PackedConvWeightsOnednn<kSpatialDim>*>(packed_weight.get())->apply_fp32_output(
         act, output_scale, output_zero_point);
@@ -1568,7 +1566,6 @@ TORCH_LIBRARY_IMPL(quantized, QuantizedCPU, m) {
   m.impl(TORCH_SELECTIVE_NAME("quantized::conv1d"),          QConv1dInt8<false>::run);
   m.impl(TORCH_SELECTIVE_NAME("quantized::conv1d_relu"),     QConv1dInt8<true>::run);
   m.impl(TORCH_SELECTIVE_NAME("quantized::conv2d.new"),      QConvInt8<2, false>::run);
-  m.impl(TORCH_SELECTIVE_NAME("quantized::conv2d_fp32_output"),      QConvInt8OutputFP32<2, false>::run);
   m.impl(TORCH_SELECTIVE_NAME("quantized::conv2d_relu.new"), QConvInt8<2, true>::run);
   m.impl(TORCH_SELECTIVE_NAME("quantized::conv2d_add"),      QConvAddInt8<2, false>::run);
   m.impl(TORCH_SELECTIVE_NAME("quantized::conv2d_add_relu"), QConvAddInt8<2, true>::run);
@@ -1580,6 +1577,10 @@ TORCH_LIBRARY_IMPL(quantized, QuantizedCPU, m) {
   m.impl(TORCH_SELECTIVE_NAME("quantized::conv3d"), QConvInt8ForBC<3, false>::run);
   m.impl(TORCH_SELECTIVE_NAME("quantized::conv3d_relu"), QConvInt8ForBC<3, true>::run);
 
+  // fp32 output
+  m.impl(TORCH_SELECTIVE_NAME("quantized::conv2d_fp32_output"),      QConvInt8OutputFP32<2, false>::run);
+  m.impl(TORCH_SELECTIVE_NAME("quantized::conv2d_relu_fp32_output"), QConvInt8OutputFP32<2, true>::run);
+  
   // transpose
   m.impl(TORCH_SELECTIVE_NAME("quantized::conv_transpose1d"),  QConv1dInt8<false>::run);
   m.impl(TORCH_SELECTIVE_NAME("quantized::conv_transpose2d"),  QConvInt8<2, false>::run);

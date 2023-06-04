@@ -251,6 +251,11 @@ struct PackedConvWeightsOnednn : public ConvPackedParamsBase<kSpatialDim> {
       double output_scale,
       int64_t output_zero_point);
 
+  at::Tensor apply_relu_fp32_output(
+      const at::Tensor& input,
+      double output_scale,
+      int64_t output_zero_point);
+
   std::tuple<at::Tensor, c10::optional<at::Tensor>> unpack() override;
 
   static c10::intrusive_ptr<ConvPackedParamsBase<kSpatialDim>> prepack(
