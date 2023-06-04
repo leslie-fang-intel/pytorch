@@ -1277,6 +1277,12 @@ at::Tensor PackedConvWeightsOnednn<kSpatialDim>::apply_impl(
   if (has_accum) {
     if (fp32_output) {
       std::cout<<"accum.is_quantized() is: "<<accum.value().is_quantized()<<std::endl;
+
+      // TODO Leslie
+      // IPEX的做法：在kernel 里面，当fp32_output， accum必须要是fp32的输入
+      // * Case1：如果accum上接了 q, dq, 不要到dq吃到qconv_add里面，所以accum会先dequant成fp32再进来
+      // * Case2：如果accum没有q，dq，意味着accum的输入节点一定是fp32输出的
+
       if (accum.value().is_quantized()) {
         // accum is int8
         // output is fp32
