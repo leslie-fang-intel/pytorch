@@ -4826,11 +4826,24 @@ class TestQuantizedConv(TestCase):
         # For example, the result of round(2.5) + 1 is 3 while
         # round(2.5 + 1) is 4 assuming the rounding mode is
         # round-to-nearest, ties-to-even.
-        np.testing.assert_array_almost_equal(
-            result_ref_q.int_repr().cpu().numpy(), Y_q.int_repr().cpu().numpy(), decimal=0,
-            err_msg=f'''X: {X_q}, W: {W_q}, b: {bias_float}, strides: {strides},
-            pads: {pads}, o_pads: {o_pads}, dilations: {dilations},
-            groups: {groups}, y_s: {Y_scale}, y_zp: {Y_zero_point}''')
+        if fp32_output:
+            print("fp32 ref output result_ref is: {}".format(result_ref), flush=True)
+            print("fp32 output Y_q is: {}".format(Y_q), flush=True)
+            Y_q = torch.quantize_per_tensor(
+                Y_q, scale=Y_scale, zero_point=Y_zero_point,
+                dtype=output_dtype)
+            print("Y_q after requant is: {}".format(Y_q.int_repr().cpu().numpy()), flush=True)
+            np.testing.assert_array_almost_equal(
+                result_ref_q.int_repr().cpu().numpy(), Y_q.int_repr().cpu().numpy(), decimal=0,
+                err_msg=f'''X: {X_q}, W: {W_q}, b: {bias_float}, strides: {strides},
+                pads: {pads}, o_pads: {o_pads}, dilations: {dilations},
+                groups: {groups}, y_s: {Y_scale}, y_zp: {Y_zero_point}''')
+        else:
+            np.testing.assert_array_almost_equal(
+                result_ref_q.int_repr().cpu().numpy(), Y_q.int_repr().cpu().numpy(), decimal=0,
+                err_msg=f'''X: {X_q}, W: {W_q}, b: {bias_float}, strides: {strides},
+                pads: {pads}, o_pads: {o_pads}, dilations: {dilations},
+                groups: {groups}, y_s: {Y_scale}, y_zp: {Y_zero_point}''')
 
         # Return the quantized data for later reuse
         return X_q, W_q, bias_float
@@ -4978,7 +4991,7 @@ class TestQuantizedConv(TestCase):
                         Y_scale, Y_zero_point, use_bias, "none", use_channelwise, False,
                         input_dtype=X_qdtype, output_dtype=X_qdtype)
 
-                    print("---- second test step ----", flush=True)
+                    print("---- second fp32 test step ----", flush=True)
                     self._test_qconv_impl(
                         qconv_fp32_output, qconv_prepack, conv_op, batch_size,
                         input_channels_per_group, (height, width),

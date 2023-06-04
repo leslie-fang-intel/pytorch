@@ -1217,22 +1217,41 @@ at::Tensor PackedConvWeightsOnednn<kSpatialDim>::apply_impl(
     output_sizes = at::native::conv_output_size(input_size, kernel_size, padding().vec(), stride().vec(), dilation().vec());
   }
   ideep::dims dst_dims = ideep::dims({output_sizes.cbegin(), output_sizes.cend()});
-  at::Tensor output = at::_empty_affine_quantized(
+
+  at::Tensor output;
+  if (fp32_output) {
+    output = at::empty(
       dst_dims,
       device(c10::kCPU)
-          .dtype(c10::kQUInt8)
-          .memory_format(kSpatialDim == 2 ?
-              c10::MemoryFormat::ChannelsLast :
-              c10::MemoryFormat::ChannelsLast3d),
-      output_scale,
-      output_zero_point,
+        .dtype(c10::kFloat)
+        .memory_format(kSpatialDim == 2 ?
+            c10::MemoryFormat::ChannelsLast :
+            c10::MemoryFormat::ChannelsLast3d),
       c10::nullopt);
+  } else {
+    output = at::_empty_affine_quantized(
+        dst_dims,
+        device(c10::kCPU)
+            .dtype(c10::kQUInt8)
+            .memory_format(kSpatialDim == 2 ?
+                c10::MemoryFormat::ChannelsLast :
+                c10::MemoryFormat::ChannelsLast3d),
+        output_scale,
+        output_zero_point,
+        c10::nullopt);
+  }
+
   if (output.numel() == 0) {
     return output;
   }
   ideep::tensor dst;
   at::Tensor accum_contig;
   if (has_accum) {
+    if (fp32_output) {
+      TORCH_CHECK(
+      false,
+      "Didn't support accum with fp32 output for conv"); 
+    }
     auto dst_desc = ideep::tensor::desc(dst_dims, src_data_type,
         kSpatialDim == 2 ? ideep::format_tag::nhwc : ideep::format_tag::ndhwc);
     accum_contig = accum.value().contiguous(kSpatialDim == 2 ? c10::MemoryFormat::ChannelsLast : c10::MemoryFormat::ChannelsLast3d);
@@ -1240,8 +1259,13 @@ at::Tensor PackedConvWeightsOnednn<kSpatialDim>::apply_impl(
     // When fused with sum, the dst tensor will share the data ptr as the accum tensor.
     dst.init(dst_desc, accum_contig.data_ptr());
   } else {
-    dst = ideep::tensor({dst_dims, ideep::tensor::data_type::u8, {output.strides().cbegin(), output.strides().cend()}},
-                      output.data_ptr());
+    if (fp32_output) {
+      dst = ideep::tensor({dst_dims, ideep::tensor::data_type::f32, {output.strides().cbegin(), output.strides().cend()}},
+                        output.data_ptr());
+    } else {
+      dst = ideep::tensor({dst_dims, ideep::tensor::data_type::u8, {output.strides().cbegin(), output.strides().cend()}},
+                        output.data_ptr());
+    }
   }
 
   // Parameters
@@ -1262,6 +1286,11 @@ at::Tensor PackedConvWeightsOnednn<kSpatialDim>::apply_impl(
   float sum_scale = has_accum ? accum.value().q_scale() : 1.0;
   int32_t sum_zero_point = has_accum ? accum.value().q_zero_point() : 0;
   if (has_accum) {
+    if (fp32_output) {
+      TORCH_CHECK(
+      false,
+      "Didn't support fused accum with fp32 output for conv"); 
+    }
     // Just tells we have these post op, the actual value such as scale and zero point will be setted later.
     op_attr = kReluFused ? ideep::attr_t::residual_with_sum_zero_point() : ideep::attr_t::fuse_sum();
     const ideep::scale_t accum_scale = ideep::scale_t(1, 1.0/sum_scale);
@@ -1271,6 +1300,11 @@ at::Tensor PackedConvWeightsOnednn<kSpatialDim>::apply_impl(
     dst.set_scale(accum_scale);
     dst.set_zero_point(accum_zero_points);
   } else if (kReluFused) {
+    if (fp32_output) {
+      TORCH_CHECK(
+      false,
+      "Didn't support fused relu with fp32 output for conv"); 
+    }
     op_attr = ideep::attr_t::fuse_relu();
   }
 
@@ -1337,6 +1371,10 @@ at::Tensor PackedConvWeightsOnednn<kSpatialDim>::apply_impl(
       auto& params = get_conv_cache().get_params();
       ideep::convolution_forward::compute<false, false>(params, src, weights, b, dst);
     } else {
+
+      TORCH_CHECK(
+      false,
+      "To enable the not hit cache path");
       ideep::convolution_forward::compute(
           src, weights, b, dst_dims, dst,
           strides, dilates, padding_l, padding_r, groups(),
