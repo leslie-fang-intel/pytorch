@@ -1266,16 +1266,29 @@ at::Tensor PackedConvWeightsOnednn<kSpatialDim>::apply_impl(
   at::Tensor accum_contig;
   if (has_accum) {
     if (fp32_output) {
-      TORCH_CHECK(
-      false,
-      "Didn't support accum with fp32 output for conv"); 
+      std::cout<<"accum.is_quantized() is: "<<accum.value().is_quantized()<<std::endl;
+      if (accum.value().is_quantized()) {
+        // accum is int8
+        // output is fp32
+        auto dst_desc = ideep::tensor::desc(dst_dims, ideep::tensor::data_type::f32,
+            kSpatialDim == 2 ? ideep::format_tag::nhwc : ideep::format_tag::ndhwc);
+        // **TODO** Optimize the memory copy here
+        accum_contig = accum.value().dequantize().contiguous(kSpatialDim == 2 ? c10::MemoryFormat::ChannelsLast : c10::MemoryFormat::ChannelsLast3d);
+        TORCH_CHECK(accum_contig.dtype() == output.dtype(), "The output tensor should have same dtype as the accum tensor.");
+        dst.init(dst_desc, accum_contig.data_ptr());
+      } else {
+        TORCH_CHECK(
+        false,
+        "Didn't support accum with fp32 data type and output of fp32 data type for conv");
+      }
+    } else {
+      auto dst_desc = ideep::tensor::desc(dst_dims, src_data_type,
+          kSpatialDim == 2 ? ideep::format_tag::nhwc : ideep::format_tag::ndhwc);
+      accum_contig = accum.value().contiguous(kSpatialDim == 2 ? c10::MemoryFormat::ChannelsLast : c10::MemoryFormat::ChannelsLast3d);
+      TORCH_CHECK(accum_contig.dtype() == output.dtype(), "The output tensor should have same dtype as the accum tensor.");
+      // When fused with sum, the dst tensor will share the data ptr as the accum tensor.
+      dst.init(dst_desc, accum_contig.data_ptr());
     }
-    auto dst_desc = ideep::tensor::desc(dst_dims, src_data_type,
-        kSpatialDim == 2 ? ideep::format_tag::nhwc : ideep::format_tag::ndhwc);
-    accum_contig = accum.value().contiguous(kSpatialDim == 2 ? c10::MemoryFormat::ChannelsLast : c10::MemoryFormat::ChannelsLast3d);
-    TORCH_CHECK(accum_contig.dtype() == output.dtype(), "The output tensor should have same dtype as the accum tensor.");
-    // When fused with sum, the dst tensor will share the data ptr as the accum tensor.
-    dst.init(dst_desc, accum_contig.data_ptr());
   } else {
     if (fp32_output) {
       dst = ideep::tensor({dst_dims, ideep::tensor::data_type::f32, {output.strides().cbegin(), output.strides().cend()}},
@@ -1305,18 +1318,17 @@ at::Tensor PackedConvWeightsOnednn<kSpatialDim>::apply_impl(
   int32_t sum_zero_point = has_accum ? accum.value().q_zero_point() : 0;
   if (has_accum) {
     if (fp32_output) {
-      TORCH_CHECK(
-      false,
-      "Didn't support fused accum with fp32 output for conv"); 
+      op_attr = kReluFused ? ideep::attr_t::residual_with_sum_zero_point() : ideep::attr_t::fuse_sum();
+    } else {
+      // Just tells we have these post op, the actual value such as scale and zero point will be setted later.
+      op_attr = kReluFused ? ideep::attr_t::residual_with_sum_zero_point() : ideep::attr_t::fuse_sum();
+      const ideep::scale_t accum_scale = ideep::scale_t(1, 1.0/sum_scale);
+      const ideep::zero_point_t accum_zero_points = ideep::zero_point_t(1, sum_zero_point);
+      // Set the dst scale and zero point with the value of accum.
+      // The true scale and zero point is stored in ideep::scale_t(scale_size, inv_output_scale) and dst_zero_points.
+      dst.set_scale(accum_scale);
+      dst.set_zero_point(accum_zero_points);
     }
-    // Just tells we have these post op, the actual value such as scale and zero point will be setted later.
-    op_attr = kReluFused ? ideep::attr_t::residual_with_sum_zero_point() : ideep::attr_t::fuse_sum();
-    const ideep::scale_t accum_scale = ideep::scale_t(1, 1.0/sum_scale);
-    const ideep::zero_point_t accum_zero_points = ideep::zero_point_t(1, sum_zero_point);
-    // Set the dst scale and zero point with the value of accum.
-    // The true scale and zero point is stored in ideep::scale_t(scale_size, inv_output_scale) and dst_zero_points.
-    dst.set_scale(accum_scale);
-    dst.set_zero_point(accum_zero_points);
   } else if (kReluFused) {
     op_attr = ideep::attr_t::fuse_relu();
   }
@@ -1399,9 +1411,13 @@ at::Tensor PackedConvWeightsOnednn<kSpatialDim>::apply_impl(
   if (has_accum) {
     // When fused with sum, the accum tensor share the data ptr as dst tensor as the output.
     // Reset output's scale and zero point into accum_contig.
-    set_quantizer_(accum_contig, at::make_per_tensor_affine_quantizer(
-        output_scale, output_zero_point, accum_contig.scalar_type()));
-    return accum_contig;
+    if (fp32_output) {
+      return accum_contig;
+    } else {
+      set_quantizer_(accum_contig, at::make_per_tensor_affine_quantizer(
+          output_scale, output_zero_point, accum_contig.scalar_type()));
+      return accum_contig;
+    }
   } else {
     return output;
   }
