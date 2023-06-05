@@ -1321,6 +1321,7 @@ at::Tensor PackedConvWeightsOnednn<kSpatialDim>::apply_impl(
         // dst.init(dst_desc, accum_contig.data_ptr());
 
         // Create int8 dst and share memory with output
+        accum_contig = accum.value().contiguous(kSpatialDim == 2 ? c10::MemoryFormat::ChannelsLast : c10::MemoryFormat::ChannelsLast3d);
         dst = ideep::tensor({dst_dims, ideep::tensor::data_type::u8, {output.strides().cbegin(), output.strides().cend()}},
                           output.data_ptr());
 
@@ -1376,7 +1377,7 @@ at::Tensor PackedConvWeightsOnednn<kSpatialDim>::apply_impl(
           // op_attr = kReluFused ? ideep::attr_t::residual_with_sum_zero_point()
           TORCH_CHECK(false, "To support: int8-fp32-in, int8-output, conv_add_relu.");
         } else {
-          accum_ideep_tensor = at::native::itensor_from_tensor(accum.value());
+          accum_ideep_tensor = at::native::itensor_from_tensor(accum_contig);
           auto accum_ideep_tensor_desc = accum_ideep_tensor.get_desc();
           op_attr = ideep::attr_t::fuse_binary(ideep::algorithm::binary_add, accum_ideep_tensor_desc);
         }
@@ -1467,14 +1468,25 @@ at::Tensor PackedConvWeightsOnednn<kSpatialDim>::apply_impl(
       }
     } else {
       std::cout<<"un hit cache path"<<std::endl;
-      ideep::convolution_forward::compute(
-          src, weights, b, dst_dims, dst,
-          strides, dilates, padding_l, padding_r, groups(),
-          src_scales, weights_scales, ideep::scale_t(1, inv_output_scale),
-          src_zero_points, dst_zero_points, op_attr,
-          dnnl::algorithm::convolution_direct,
-          dnnl::prop_kind::forward_inference,
-          ideep::u8s8, ideep::engine::cpu_engine());
+      if (has_accum && fp32_accum_input && !fp32_output) {
+        ideep::convolution_forward::compute_binary(
+            src, accum_ideep_tensor, weights, b, dst_dims, dst,
+            strides, dilates, padding_l, padding_r, groups(),
+            src_scales, weights_scales, ideep::scale_t(1, inv_output_scale),
+            src_zero_points, dst_zero_points, op_attr,
+            dnnl::algorithm::convolution_direct,
+            dnnl::prop_kind::forward_inference,
+            ideep::u8s8, ideep::engine::cpu_engine());      
+      } else {
+        ideep::convolution_forward::compute(
+            src, weights, b, dst_dims, dst,
+            strides, dilates, padding_l, padding_r, groups(),
+            src_scales, weights_scales, ideep::scale_t(1, inv_output_scale),
+            src_zero_points, dst_zero_points, op_attr,
+            dnnl::algorithm::convolution_direct,
+            dnnl::prop_kind::forward_inference,
+            ideep::u8s8, ideep::engine::cpu_engine());
+      }
     }
   }
   if (has_accum) {
