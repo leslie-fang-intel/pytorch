@@ -1469,14 +1469,18 @@ at::Tensor PackedConvWeightsOnednn<kSpatialDim>::apply_impl(
     } else {
       std::cout<<"un hit cache path"<<std::endl;
       if (has_accum && fp32_accum_input && !fp32_output) {
-        ideep::convolution_forward::compute_binary(
-            src, accum_ideep_tensor, weights, b, dst_dims, dst,
+        ConvParams uncache_params;
+        ideep::convolution_forward::prepare(
+            uncache_params, src, weights, b, dst_dims, dst,
             strides, dilates, padding_l, padding_r, groups(),
             src_scales, weights_scales, ideep::scale_t(1, inv_output_scale),
-            src_zero_points, dst_zero_points, op_attr,
-            dnnl::algorithm::convolution_direct,
+            src_zero_points, dst_zero_points,
+            op_attr, dnnl::algorithm::convolution_direct,
             dnnl::prop_kind::forward_inference,
-            ideep::u8s8, ideep::engine::cpu_engine());      
+            ideep::u8s8, ideep::engine::cpu_engine());
+        auto expected_weight_desc = ideep::tensor::desc(uncache_params.pd.weights_desc(), groups());
+        weights = weights.reorder_if_differ_in(expected_weight_desc);
+        ideep::convolution_forward::compute_binary<false, false>(uncache_params, src, accum_ideep_tensor, weights, b, dst);  
       } else {
         ideep::convolution_forward::compute(
             src, weights, b, dst_dims, dst,
