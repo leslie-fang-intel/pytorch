@@ -1247,7 +1247,8 @@ at::Tensor PackedConvWeightsOnednn<kSpatialDim>::apply_impl(
   ideep::dims dst_dims = ideep::dims({output_sizes.cbegin(), output_sizes.cend()});
 
   at::Tensor output;
-  if (fp32_output) {
+  bool fp32_accum_input = has_accum ? !accum.value().is_quantized() : false;
+  if (fp32_output || fp32_accum_input) {
     output = at::empty(
       dst_dims,
       device(c10::kCPU)
@@ -1275,7 +1276,7 @@ at::Tensor PackedConvWeightsOnednn<kSpatialDim>::apply_impl(
   ideep::tensor dst;
   at::Tensor accum_contig;
   if (has_accum) {
-    if (fp32_output) {
+    if (fp32_output || fp32_accum_input) {
       std::cout<<"accum.is_quantized() is: "<<accum.value().is_quantized()<<std::endl;
 
       // TODO Leslie
@@ -1283,7 +1284,9 @@ at::Tensor PackedConvWeightsOnednn<kSpatialDim>::apply_impl(
       // * Case1：如果accum上接了 q, dq, 不要到dq吃到qconv_add里面，所以accum会先dequant成fp32再进来
       // * Case2：如果accum没有q，dq，意味着accum的输入节点一定是fp32输出的
 
-      if (accum.value().is_quantized()) {
+      if (!fp32_accum_input) {
+        // 实际情况，这个case不应该被用到：当输出是fp32的时候，extra input node上的dequant不会被吃到fusion pattern里面
+        // 所以accum过一次dequant然后变成fp32 tensor，进来，走了下面的这条pass
         // accum is int8
         // output is fp32
         auto dst_desc = ideep::tensor::desc(dst_dims, ideep::tensor::data_type::f32,
@@ -1293,9 +1296,13 @@ at::Tensor PackedConvWeightsOnednn<kSpatialDim>::apply_impl(
         TORCH_CHECK(accum_contig.dtype() == output.dtype(), "The output tensor should have same dtype as the accum tensor.");
         dst.init(dst_desc, accum_contig.data_ptr());
       } else {
-        TORCH_CHECK(
-        false,
-        "Didn't support accum with fp32 data type and output of fp32 data type for conv");
+        // accum is fp32
+        // output is fp32
+        auto dst_desc = ideep::tensor::desc(dst_dims, ideep::tensor::data_type::f32,
+            kSpatialDim == 2 ? ideep::format_tag::nhwc : ideep::format_tag::ndhwc);
+        accum_contig = accum.value().contiguous(kSpatialDim == 2 ? c10::MemoryFormat::ChannelsLast : c10::MemoryFormat::ChannelsLast3d);
+        TORCH_CHECK(accum_contig.dtype() == output.dtype(), "The output tensor should have same dtype as the accum tensor.");
+        dst.init(dst_desc, accum_contig.data_ptr());
       }
     } else {
       auto dst_desc = ideep::tensor::desc(dst_dims, src_data_type,
@@ -1330,10 +1337,10 @@ at::Tensor PackedConvWeightsOnednn<kSpatialDim>::apply_impl(
   const ideep::zero_point_t dst_zero_points = ideep::zero_point_t(1, output_zero_point);
 
   ideep::attr_t op_attr;
-  float sum_scale = has_accum ? accum.value().q_scale() : 1.0;
-  int32_t sum_zero_point = has_accum ? accum.value().q_zero_point() : 0;
+  float sum_scale = (has_accum && !fp32_accum_input) ? accum.value().q_scale() : 1.0;
+  int32_t sum_zero_point = (has_accum && !fp32_accum_input) ? accum.value().q_zero_point() : 0;
   if (has_accum) {
-    if (fp32_output) {
+    if (fp32_output || fp32_accum_input) {
       op_attr = kReluFused ? ideep::attr_t::residual_with_sum_zero_point() : ideep::attr_t::fuse_sum();
     } else {
       // Just tells we have these post op, the actual value such as scale and zero point will be setted later.
@@ -1427,8 +1434,15 @@ at::Tensor PackedConvWeightsOnednn<kSpatialDim>::apply_impl(
   if (has_accum) {
     // When fused with sum, the accum tensor share the data ptr as dst tensor as the output.
     // Reset output's scale and zero point into accum_contig.
-    if (fp32_output) {
-      return accum_contig;
+    if (fp32_output || fp32_accum_input) {
+      if (fp32_output) {
+        return accum_contig;
+      } else {
+        // Case4: int8-fp32-in, int8-output
+        // requant the fp32 output to int8
+        std::cout<<"---- hit case4: int8-fp32-in, int8-output ---- "<<std::endl;
+        return at::native::quantize_per_tensor(accum_contig, output_scale, output_zero_point, act.scalar_type());
+      }
     } else {
       set_quantizer_(accum_contig, at::make_per_tensor_affine_quantizer(
           output_scale, output_zero_point, accum_contig.scalar_type()));

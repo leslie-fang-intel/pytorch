@@ -4734,6 +4734,7 @@ class TestQuantizedConv(TestCase):
         X2_scale=1.0,
         X2_zero_point=128,
         fp32_output=False,
+        fp32_accum=False,
     ):
         # ONEDNN only supports symmetric quantization of weight
         if qengine_is_onednn() and W_zero_point is not None:
@@ -4797,13 +4798,22 @@ class TestQuantizedConv(TestCase):
                 W_prepack = qconv_prepack_fn(
                     W_q, bias_float, strides, pads, dilations, groups)
             if post_op == 'add' or post_op == 'add_relu':
-                Y_q = qconv_fn(
-                    X_q,
-                    X2_q,
-                    W_prepack,
-                    Y_scale,
-                    Y_zero_point,
-                )
+                if fp32_accum:
+                    Y_q = qconv_fn(
+                        X_q,
+                        X2,
+                        W_prepack,
+                        Y_scale,
+                        Y_zero_point,
+                    )                
+                else:
+                    Y_q = qconv_fn(
+                        X_q,
+                        X2_q,
+                        W_prepack,
+                        Y_scale,
+                        Y_zero_point,
+                    )
             else:
                 Y_q = qconv_fn(
                     X_q,
@@ -5258,7 +5268,8 @@ class TestQuantizedConv(TestCase):
                 )
 
                 X_qdtype = torch.quint8
-                print("---- first conv2d_relu test step ----", flush=True)
+
+                print("---- Case1: int8-int8-in, int8-output ----", flush=True)
                 self._test_qconv_impl(
                     qconv, qconv_prepack, conv_op, batch_size,
                     input_channels_per_group, (height, width),
@@ -5267,7 +5278,8 @@ class TestQuantizedConv(TestCase):
                     Y_scale, Y_zero_point, use_bias, "add", use_channelwise, False,
                     input_dtype=X_qdtype, output_dtype=X_qdtype, X2_scale=X2_scale, X2_zero_point=X2_zero_point)
 
-                print("---- second conv2d_relu fp32 test step ----", flush=True)
+                print("---- Case2: int8-int8-in, fp32-output ----", flush=True)
+                # Case2 在真实model，不应该发生，因为fusion的时候会把dequant留在外面
                 self._test_qconv_impl(
                     qconv_fp32_output, qconv_prepack, conv_op, batch_size,
                     input_channels_per_group, (height, width),
@@ -5276,6 +5288,26 @@ class TestQuantizedConv(TestCase):
                     Y_scale, Y_zero_point, use_bias, "add", use_channelwise, False,
                     input_dtype=X_qdtype, output_dtype=X_qdtype, X2_scale=X2_scale, X2_zero_point=X2_zero_point,
                     fp32_output=True)
+
+                print("---- Case3: int8-fp32-in, fp32-output ----", flush=True)
+                self._test_qconv_impl(
+                    qconv_fp32_output, qconv_prepack, conv_op, batch_size,
+                    input_channels_per_group, (height, width),
+                    output_channels_per_group, groups, kernels, strides, pads, None,
+                    dilations, X_scale, X_zero_point, W_scale, W_zero_point,
+                    Y_scale, Y_zero_point, use_bias, "add", use_channelwise, False,
+                    input_dtype=X_qdtype, output_dtype=X_qdtype, X2_scale=X2_scale, X2_zero_point=X2_zero_point,
+                    fp32_output=True, fp32_accum=True)
+
+                print("---- Case4: int8-fp32-in, int8-output ----", flush=True)
+                self._test_qconv_impl(
+                    qconv, qconv_prepack, conv_op, batch_size,
+                    input_channels_per_group, (height, width),
+                    output_channels_per_group, groups, kernels, strides, pads, None,
+                    dilations, X_scale, X_zero_point, W_scale, W_zero_point,
+                    Y_scale, Y_zero_point, use_bias, "add", use_channelwise, False,
+                    input_dtype=X_qdtype, output_dtype=X_qdtype, X2_scale=X2_scale, X2_zero_point=X2_zero_point,
+                    fp32_output=False, fp32_accum=True)
 
     @skipIfNoONEDNN
     def test_qconv2d_add_relu(self):
@@ -5384,7 +5416,7 @@ class TestQuantizedConv(TestCase):
                 )
 
                 X_qdtype = torch.quint8
-                print("---- first conv2d_add_relu test step ----", flush=True)
+                print("---- Case1: conv2d_add_relu int8-int8-in, int8-output test step ----", flush=True)
                 self._test_qconv_impl(
                     qconv, qconv_prepack, conv_op, batch_size,
                     input_channels_per_group, (height, width),
@@ -5393,7 +5425,7 @@ class TestQuantizedConv(TestCase):
                     Y_scale, Y_zero_point, use_bias, "add_relu", use_channelwise, False,
                     input_dtype=X_qdtype, output_dtype=X_qdtype, X2_scale=X2_scale, X2_zero_point=X2_zero_point)
 
-                print("---- second conv2d_add_relu fp32 test step ----", flush=True)
+                print("---- Case2: conv2d_add_relu int8-int8-in, fp32-output test step ----", flush=True)
                 self._test_qconv_impl(
                     qconv_fp32_output, qconv_prepack, conv_op, batch_size,
                     input_channels_per_group, (height, width),
@@ -5402,6 +5434,26 @@ class TestQuantizedConv(TestCase):
                     Y_scale, Y_zero_point, use_bias, "add_relu", use_channelwise, False,
                     input_dtype=X_qdtype, output_dtype=X_qdtype, X2_scale=X2_scale, X2_zero_point=X2_zero_point,
                     fp32_output=True)
+
+                print("---- Case3: conv2d_add_relu int8-fp32-in, fp32-output test step ----", flush=True)
+                self._test_qconv_impl(
+                    qconv_fp32_output, qconv_prepack, conv_op, batch_size,
+                    input_channels_per_group, (height, width),
+                    output_channels_per_group, groups, kernels, strides, pads, None,
+                    dilations, X_scale, X_zero_point, W_scale, W_zero_point,
+                    Y_scale, Y_zero_point, use_bias, "add_relu", use_channelwise, False,
+                    input_dtype=X_qdtype, output_dtype=X_qdtype, X2_scale=X2_scale, X2_zero_point=X2_zero_point,
+                    fp32_output=True, fp32_accum=True)
+
+                print("---- Case4: conv2d_add_relu int8-fp32-in, int8-output test step ----", flush=True)
+                self._test_qconv_impl(
+                    qconv, qconv_prepack, conv_op, batch_size,
+                    input_channels_per_group, (height, width),
+                    output_channels_per_group, groups, kernels, strides, pads, None,
+                    dilations, X_scale, X_zero_point, W_scale, W_zero_point,
+                    Y_scale, Y_zero_point, use_bias, "add_relu", use_channelwise, False,
+                    input_dtype=X_qdtype, output_dtype=X_qdtype, X2_scale=X2_scale, X2_zero_point=X2_zero_point,
+                    fp32_output=False, fp32_accum=True)
 
     # TODO: merge this test with test_qconv2d when CUDNN runtime flags becomes available
     """Tests the correctness of quantized 2D convolution cudnn op."""
