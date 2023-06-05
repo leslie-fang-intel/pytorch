@@ -1314,12 +1314,6 @@ at::Tensor PackedConvWeightsOnednn<kSpatialDim>::apply_impl(
     } else {
       if (fp32_accum_input) {
         // Conv_add_(relu) Case4：int8-fp32-in, int8-output
-        // auto dst_desc = ideep::tensor::desc(dst_dims, ideep::tensor::data_type::f32,
-        //     kSpatialDim == 2 ? ideep::format_tag::nhwc : ideep::format_tag::ndhwc);
-        // accum_contig = accum.value().contiguous(kSpatialDim == 2 ? c10::MemoryFormat::ChannelsLast : c10::MemoryFormat::ChannelsLast3d);
-        // TORCH_CHECK(accum_contig.dtype() == output.dtype(), "The output tensor should have same dtype as the accum tensor.");
-        // dst.init(dst_desc, accum_contig.data_ptr());
-
         // Create int8 dst and share memory with output
         accum_contig = accum.value().contiguous(kSpatialDim == 2 ? c10::MemoryFormat::ChannelsLast : c10::MemoryFormat::ChannelsLast3d);
         dst = ideep::tensor({dst_dims, ideep::tensor::data_type::u8, {output.strides().cbegin(), output.strides().cend()}},
@@ -1373,12 +1367,17 @@ at::Tensor PackedConvWeightsOnednn<kSpatialDim>::apply_impl(
       if (fp32_accum_input) {
         // Case4
         // op_attr = kReluFused ? ideep::attr_t::residual_with_sum_zero_point() : ideep::attr_t::fuse_sum();
+        accum_ideep_tensor = at::native::itensor_from_tensor(accum_contig);
+        auto accum_ideep_tensor_desc = accum_ideep_tensor.get_desc();
+
         if (kReluFused) {
-          // op_attr = kReluFused ? ideep::attr_t::residual_with_sum_zero_point()
-          TORCH_CHECK(false, "To support: int8-fp32-in, int8-output, conv_add_relu.");
+          // attr_t attr;
+          ideep::post_ops po;
+          po.append_binary(ideep::algorithm::binary_add, accum_ideep_tensor_desc);
+          po.append_eltwise(ideep::algorithm::eltwise_relu, 0.f, 0.f);
+          op_attr.set_post_ops(po);
+          // op_attr = attr;
         } else {
-          accum_ideep_tensor = at::native::itensor_from_tensor(accum_contig);
-          auto accum_ideep_tensor_desc = accum_ideep_tensor.get_desc();
           op_attr = ideep::attr_t::fuse_binary(ideep::algorithm::binary_add, accum_ideep_tensor_desc);
         }
       } else {
