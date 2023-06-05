@@ -1285,6 +1285,7 @@ at::Tensor PackedConvWeightsOnednn<kSpatialDim>::apply_impl(
       // * Case2：如果accum没有q，dq，意味着accum的输入节点一定是fp32输出的
 
       if (!fp32_accum_input) {
+        // Conv_add_(relu) Case2：int8-int8-in, fp32-output
         // 实际情况，这个case不应该被用到：当输出是fp32的时候，extra input node上的dequant不会被吃到fusion pattern里面
         // 所以accum过一次dequant然后变成fp32 tensor，进来，走了下面的这条pass
         // accum is int8
@@ -1296,6 +1297,8 @@ at::Tensor PackedConvWeightsOnednn<kSpatialDim>::apply_impl(
         TORCH_CHECK(accum_contig.dtype() == output.dtype(), "The output tensor should have same dtype as the accum tensor.");
         dst.init(dst_desc, accum_contig.data_ptr());
       } else {
+        // Conv_add_(relu) Case3：int8-fp32-in, fp32-output
+        // Conv_add_(relu) Case4：int8-fp32-in, int8-output
         // accum is fp32
         // output is fp32
         auto dst_desc = ideep::tensor::desc(dst_dims, ideep::tensor::data_type::f32,
@@ -1305,6 +1308,7 @@ at::Tensor PackedConvWeightsOnednn<kSpatialDim>::apply_impl(
         dst.init(dst_desc, accum_contig.data_ptr());
       }
     } else {
+      // Conv_add_(relu) Case1：int8-int8-in, int8-output
       auto dst_desc = ideep::tensor::desc(dst_dims, src_data_type,
           kSpatialDim == 2 ? ideep::format_tag::nhwc : ideep::format_tag::ndhwc);
       accum_contig = accum.value().contiguous(kSpatialDim == 2 ? c10::MemoryFormat::ChannelsLast : c10::MemoryFormat::ChannelsLast3d);
@@ -1314,9 +1318,11 @@ at::Tensor PackedConvWeightsOnednn<kSpatialDim>::apply_impl(
     }
   } else {
     if (fp32_output) {
+      // Conv without add: Case2: int8-in, fp32-output
       dst = ideep::tensor({dst_dims, ideep::tensor::data_type::f32, {output.strides().cbegin(), output.strides().cend()}},
                         output.data_ptr());
     } else {
+      // Conv without add: Case1: int8-in, int8-output
       dst = ideep::tensor({dst_dims, ideep::tensor::data_type::u8, {output.strides().cbegin(), output.strides().cend()}},
                         output.data_ptr());
     }
@@ -1341,8 +1347,10 @@ at::Tensor PackedConvWeightsOnednn<kSpatialDim>::apply_impl(
   int32_t sum_zero_point = (has_accum && !fp32_accum_input) ? accum.value().q_zero_point() : 0;
   if (has_accum) {
     if (fp32_output || fp32_accum_input) {
+      // Case2, 3, 4
       op_attr = kReluFused ? ideep::attr_t::residual_with_sum_zero_point() : ideep::attr_t::fuse_sum();
     } else {
+      // Case1
       // Just tells we have these post op, the actual value such as scale and zero point will be setted later.
       op_attr = kReluFused ? ideep::attr_t::residual_with_sum_zero_point() : ideep::attr_t::fuse_sum();
       const ideep::scale_t accum_scale = ideep::scale_t(1, 1.0/sum_scale);
@@ -1436,6 +1444,7 @@ at::Tensor PackedConvWeightsOnednn<kSpatialDim>::apply_impl(
     // Reset output's scale and zero point into accum_contig.
     if (fp32_output || fp32_accum_input) {
       if (fp32_output) {
+        // Conv_Add_(relu) Case2, 3
         return accum_contig;
       } else {
         // Case4: int8-fp32-in, int8-output
@@ -1444,6 +1453,7 @@ at::Tensor PackedConvWeightsOnednn<kSpatialDim>::apply_impl(
         return at::native::quantize_per_tensor(accum_contig, output_scale, output_zero_point, act.scalar_type());
       }
     } else {
+      // Conv_Add_(relu) Case1
       set_quantizer_(accum_contig, at::make_per_tensor_affine_quantizer(
           output_scale, output_zero_point, accum_contig.scalar_type()));
       return accum_contig;
