@@ -1107,7 +1107,7 @@ at::Tensor PackedConvWeightsOnednn<kSpatialDim>::apply(
     const at::Tensor& input,
     double output_scale,
     int64_t output_zero_point) {
-  return apply_impl<false>(input, c10::nullopt, output_scale, output_zero_point, false);
+  return apply_impl<PostOp::None>(input, c10::nullopt, output_scale, output_zero_point, false);
 }
 
 template <int kSpatialDim>
@@ -1115,15 +1115,7 @@ at::Tensor PackedConvWeightsOnednn<kSpatialDim>::apply_fp32_output(
     const at::Tensor& input,
     double output_scale,
     int64_t output_zero_point) {
-  return apply_impl<false>(input, c10::nullopt, output_scale, output_zero_point, true);
-}
-
-template <int kSpatialDim>
-at::Tensor PackedConvWeightsOnednn<kSpatialDim>::apply_relu_fp32_output(
-    const at::Tensor& input,
-    double output_scale,
-    int64_t output_zero_point) {
-  return apply_impl<true>(input, c10::nullopt, output_scale, output_zero_point, true);
+  return apply_impl<PostOp::None>(input, c10::nullopt, output_scale, output_zero_point, true);
 }
 
 template <int kSpatialDim>
@@ -1131,7 +1123,15 @@ at::Tensor PackedConvWeightsOnednn<kSpatialDim>::apply_relu(
     const at::Tensor& input,
     double output_scale,
     int64_t output_zero_point) {
-  return apply_impl<true>(input, c10::nullopt, output_scale, output_zero_point, false);
+  return apply_impl<PostOp::ReLU>(input, c10::nullopt, output_scale, output_zero_point, false);
+}
+
+template <int kSpatialDim>
+at::Tensor PackedConvWeightsOnednn<kSpatialDim>::apply_relu_fp32_output(
+    const at::Tensor& input,
+    double output_scale,
+    int64_t output_zero_point) {
+  return apply_impl<PostOp::ReLU>(input, c10::nullopt, output_scale, output_zero_point, true);
 }
 
 template <int kSpatialDim>
@@ -1141,7 +1141,7 @@ at::Tensor PackedConvWeightsOnednn<kSpatialDim>::apply_add(
     double output_scale,
     int64_t output_zero_point) {
   TORCH_CHECK(kSpatialDim == 2, " Currently, only conv2d with add is supported.");
-  return apply_impl<false>(input, accum, output_scale, output_zero_point, false);
+  return apply_impl<PostOp::Add>(input, accum, output_scale, output_zero_point, false);
 }
 
 template <int kSpatialDim>
@@ -1151,17 +1151,7 @@ at::Tensor PackedConvWeightsOnednn<kSpatialDim>::apply_add_fp32_output(
     double output_scale,
     int64_t output_zero_point) {
   TORCH_CHECK(kSpatialDim == 2, " Currently, only conv2d with add is supported.");
-  return apply_impl<false>(input, accum, output_scale, output_zero_point, true);
-}
-
-template <int kSpatialDim>
-at::Tensor PackedConvWeightsOnednn<kSpatialDim>::apply_add_relu_fp32_output(
-    const at::Tensor& input,
-    const at::Tensor& accum,
-    double output_scale,
-    int64_t output_zero_point) {
-  TORCH_CHECK(kSpatialDim == 2, " Currently, only conv2d with add is supported.");
-  return apply_impl<true>(input, accum, output_scale, output_zero_point, true);
+  return apply_impl<PostOp::Add>(input, accum, output_scale, output_zero_point, true);
 }
 
 template <int kSpatialDim>
@@ -1171,17 +1161,52 @@ at::Tensor PackedConvWeightsOnednn<kSpatialDim>::apply_add_relu(
     double output_scale,
     int64_t output_zero_point) {
   TORCH_CHECK(kSpatialDim == 2, " Currently, only conv2d add relu is supported.");
-  return apply_impl<true>(input, accum, output_scale, output_zero_point, false);
+  return apply_impl<PostOp::AddReLU>(input, accum, output_scale, output_zero_point, false);
 }
 
 template <int kSpatialDim>
-template <bool kReluFused>
+at::Tensor PackedConvWeightsOnednn<kSpatialDim>::apply_add_relu_fp32_output(
+    const at::Tensor& input,
+    const at::Tensor& accum,
+    double output_scale,
+    int64_t output_zero_point) {
+  TORCH_CHECK(kSpatialDim == 2, " Currently, only conv2d with add is supported.");
+  return apply_impl<PostOp::AddReLU>(input, accum, output_scale, output_zero_point, true);
+}
+
+template <int kSpatialDim>
+at::Tensor PackedConvWeightsOnednn<kSpatialDim>::apply_sigmoid_mul(
+    const at::Tensor& input,
+    double output_scale,
+    int64_t output_zero_point) {
+  return apply_impl<PostOp::SigmoidMul>(input, c10::nullopt, output_scale, output_zero_point, false);
+}
+
+template <int kSpatialDim>
+at::Tensor PackedConvWeightsOnednn<kSpatialDim>::apply_sigmoid_mul_fp32_output(
+    const at::Tensor& input,
+    double output_scale,
+    int64_t output_zero_point) {
+  return apply_impl<PostOp::SigmoidMul>(input, c10::nullopt, output_scale, output_zero_point, true);
+}
+
+template <int kSpatialDim>
+template <PostOp post_op>
 at::Tensor PackedConvWeightsOnednn<kSpatialDim>::apply_impl(
     const at::Tensor& act,
     const c10::optional<at::Tensor>& accum,
     double output_scale,
     int64_t output_zero_point,
     bool fp32_output) {
+  
+  bool kReluFused = false;
+  if (post_op == PostOp::ReLU || post_op == PostOp::AddReLU) {
+    kReluFused = true;
+  }
+  bool kSigmoidMulFused = false;
+  if (post_op == PostOp::SigmoidMul) {
+    kSigmoidMulFused = true;
+  }
   std::string func_name = "quantized::conv";
   if (transpose()) {
     func_name += "_transpose";
@@ -1202,6 +1227,11 @@ at::Tensor PackedConvWeightsOnednn<kSpatialDim>::apply_impl(
   if (kReluFused) {
     func_name += "_relu";
   }
+
+  if (kSigmoidMulFused) {
+    func_name += "_sigmoid_mul";
+  }
+
   ConvDimChecks<kSpatialDim>(
       act.ndimension(), stride().size(), padding().size(),
       output_padding().size(), dilation().size(), func_name, transpose());
@@ -1394,6 +1424,14 @@ at::Tensor PackedConvWeightsOnednn<kSpatialDim>::apply_impl(
     }
   } else if (kReluFused) {
     op_attr = ideep::attr_t::fuse_relu();
+  } else if (kSigmoidMulFused) {
+    // std::cout<<"---- append sigmoid mul post op ----"<<std::endl;
+    ideep::post_ops po;
+    // po.append_binary(ideep::algorithm::binary_add, accum_ideep_tensor_desc);
+    po.append_eltwise(ideep::algorithm::eltwise_swish, 1.f, 0.f);
+    // desc will use the dst tensor desc
+    // po.append_binary(ideep::algorithm::binary_mul, dst.get_desc());
+    op_attr.set_post_ops(po);
   }
 
   // Bias might be modified outside (e.g. by quantization bias correction).
@@ -1593,6 +1631,22 @@ class QConvInt8 final {
   }
 };
 
+template <int kSpatialDim, bool kFP32Output>
+class QConvInt8SigmoidMul final {
+ public:
+  static Tensor run(
+      Tensor act,
+      const c10::intrusive_ptr<ConvPackedParamsBase<kSpatialDim>>& packed_weight,
+      double output_scale,
+      int64_t output_zero_point) {
+      if (kFP32Output) {
+        return dynamic_cast<PackedConvWeightsOnednn<kSpatialDim>*>(packed_weight.get())->apply_sigmoid_mul_fp32_output(act, output_scale, output_zero_point);
+      } else {
+        return dynamic_cast<PackedConvWeightsOnednn<kSpatialDim>*>(packed_weight.get())->apply_sigmoid_mul(act, output_scale, output_zero_point);
+      }
+  }
+};
+
 template <int kSpatialDim, bool kReluFused>
 class QConvInt8OutputFP32 final {
  public:
@@ -1725,6 +1779,10 @@ TORCH_LIBRARY_IMPL(quantized, QuantizedCPU, m) {
   m.impl(TORCH_SELECTIVE_NAME("quantized::conv2d_add_relu"), QConvAddInt8<2, true>::run);
   m.impl(TORCH_SELECTIVE_NAME("quantized::conv3d.new"),      QConvInt8<3, false>::run);
   m.impl(TORCH_SELECTIVE_NAME("quantized::conv3d_relu.new"), QConvInt8<3, true>::run);
+
+  m.impl(TORCH_SELECTIVE_NAME("quantized::conv2d_sigmoid_mul"), QConvInt8SigmoidMul<2, false>::run);
+  m.impl(TORCH_SELECTIVE_NAME("quantized::conv2d_sigmoid_mul_fp32_output"), QConvInt8SigmoidMul<2, true>::run);
+
   // for backward compatibility
   m.impl(TORCH_SELECTIVE_NAME("quantized::conv2d"), QConvInt8ForBC<2, false>::run);
   m.impl(TORCH_SELECTIVE_NAME("quantized::conv2d_relu"), QConvInt8ForBC<2, true>::run);

@@ -4784,6 +4784,10 @@ class TestQuantizedConv(TestCase):
             result_ref = result_ref + X2
             relu = torch.nn.ReLU()
             result_ref = relu(result_ref)
+        elif post_op == 'sigmoid_mul':
+            result_ref2 = torch.sigmoid(result_ref)
+            result_ref = result_ref2 * result_ref
+
         # Quantize reference results for comparison
         result_ref_q = torch.quantize_per_tensor(
             result_ref, scale=Y_scale, zero_point=Y_zero_point,
@@ -4837,19 +4841,39 @@ class TestQuantizedConv(TestCase):
         # For example, the result of round(2.5) + 1 is 3 while
         # round(2.5 + 1) is 4 assuming the rounding mode is
         # round-to-nearest, ties-to-even.
-        if fp32_output:
-            print("fp32 ref output result_ref is: {}".format(result_ref), flush=True)
-            print("fp32 output Y_q is: {}".format(Y_q), flush=True)
+        if post_op == 'sigmoid_mul':
+            if fp32_output:
+                Y_q = torch.quantize_per_tensor(
+                    Y_q, scale=Y_scale, zero_point=Y_zero_point,
+                    dtype=output_dtype)
+                np.testing.assert_array_almost_equal(
+                    result_ref_q.dequantize(), Y_q.dequantize(), decimal=2,
+                    err_msg=f'''X: {X_q}, W: {W_q}, b: {bias_float}, strides: {strides},
+                    pads: {pads}, o_pads: {o_pads}, dilations: {dilations},
+                    groups: {groups}, y_s: {Y_scale}, y_zp: {Y_zero_point}''') 
+            else:
+                # print("result_ref_q.dequantize() is: {}".format(result_ref_q.dequantize()), flush=True)
+                # print("Y_q.dequantize() is: {}".format(Y_q.dequantize()), flush=True)
+                np.testing.assert_array_almost_equal(
+                    result_ref_q.dequantize(), Y_q.dequantize(), decimal=2,
+                    err_msg=f'''X: {X_q}, W: {W_q}, b: {bias_float}, strides: {strides},
+                    pads: {pads}, o_pads: {o_pads}, dilations: {dilations},
+                    groups: {groups}, y_s: {Y_scale}, y_zp: {Y_zero_point}''')
+        elif fp32_output:
+            # print("fp32 ref output result_ref is: {}".format(result_ref), flush=True)
+            # print("fp32 output Y_q is: {}".format(Y_q), flush=True)
             Y_q = torch.quantize_per_tensor(
                 Y_q, scale=Y_scale, zero_point=Y_zero_point,
                 dtype=output_dtype)
-            print("Y_q after requant is: {}".format(Y_q.int_repr().cpu().numpy()), flush=True)
+            # print("Y_q after requant is: {}".format(Y_q.int_repr().cpu().numpy()), flush=True)
             np.testing.assert_array_almost_equal(
                 result_ref_q.int_repr().cpu().numpy(), Y_q.int_repr().cpu().numpy(), decimal=0,
                 err_msg=f'''X: {X_q}, W: {W_q}, b: {bias_float}, strides: {strides},
                 pads: {pads}, o_pads: {o_pads}, dilations: {dilations},
                 groups: {groups}, y_s: {Y_scale}, y_zp: {Y_zero_point}''')
         else:
+            # print("result_ref_q.int_repr().cpu().numpy() is: {}".format(result_ref_q.int_repr().cpu().numpy()), flush=True)
+            # print("Y_q.int_repr().cpu().numpy() is :{}".format(Y_q.int_repr().cpu().numpy()), flush=True)
             np.testing.assert_array_almost_equal(
                 result_ref_q.int_repr().cpu().numpy(), Y_q.int_repr().cpu().numpy(), decimal=0,
                 err_msg=f'''X: {X_q}, W: {W_q}, b: {bias_float}, strides: {strides},
@@ -5155,6 +5179,78 @@ class TestQuantizedConv(TestCase):
                         Y_scale, Y_zero_point, use_bias, "relu", use_channelwise, False, input_dtype=X_qdtype, output_dtype=X_qdtype)
 
                     print("---- second conv2d_relu fp32 test step ----", flush=True)
+                    self._test_qconv_impl(
+                        qconv_fp32_output, qconv_prepack, conv_op, batch_size,
+                        input_channels_per_group, (height, width),
+                        output_channels_per_group, groups, kernels, strides, pads, None,
+                        dilations, X_scale, X_zero_point, W_scale, W_zero_point,
+                        Y_scale, Y_zero_point, use_bias, "relu", use_channelwise, False, input_dtype=X_qdtype, output_dtype=X_qdtype,
+                        fp32_output=True)
+
+    @skipIfNoONEDNN
+    def test_qconv2d_sigmoid_mul(
+        self,
+    ):
+        batch_size = 3
+        # groups_list = [1, 10]
+        groups_list = [1,]
+        input_channels_per_group = 2
+        output_channels_per_group = 2
+        height = 10
+        width = 10
+        kernel_h = 3
+        kernel_w = 3
+        stride_h = 2
+        stride_w = 2
+        pad_h = 1
+        pad_w = 1
+        dilation = 1
+        X_scale = 0.2
+        X_zero_point = 2
+        W_scale = [1.5]
+        W_zero_point = [-3]
+        Y_scale = 2.1
+        Y_zero_point = 0
+        use_bias_list = [False, True]
+        use_channelwise_list = [False, True]
+        X2_scale = 1.2
+        X2_zero_point_list = [0, 4]
+        options = itertools.product(groups_list, use_bias_list, use_channelwise_list, X2_zero_point_list)
+        for groups, use_bias, use_channelwise, X2_zero_point in options:
+            with override_quantized_engine('onednn'):
+                input_channels = input_channels_per_group * groups
+                output_channels = output_channels_per_group * groups
+                kernels = (kernel_h, kernel_w)
+                strides = (stride_h, stride_w)
+                pads = (pad_h, pad_w)
+                dilations = (dilation, dilation)
+
+                qconv = torch.ops.quantized.conv2d_sigmoid_mul
+                qconv_fp32_output = torch.ops.quantized.conv2d_sigmoid_mul_fp32_output
+                qconv_prepack = torch.ops.quantized.conv2d_prepack
+                conv_op = torch.nn.Conv2d(
+                    input_channels,
+                    output_channels,
+                    kernels,
+                    strides,
+                    pads,
+                    dilations,
+                    groups,
+                )
+
+                act_qdtypes = [torch.quint8]
+
+                for X_qdtype in act_qdtypes:                
+                    print("---- first conv2d_sigmod_mul test step ----", flush=True)
+
+                    self._test_qconv_impl(
+                        qconv, qconv_prepack, conv_op, batch_size,
+                        input_channels_per_group, (height, width),
+                        output_channels_per_group, groups, kernels, strides, pads, None,
+                        dilations, X_scale, X_zero_point, W_scale, W_zero_point,
+                        Y_scale, Y_zero_point, use_bias, "sigmoid_mul", use_channelwise, False, input_dtype=X_qdtype, output_dtype=X_qdtype)
+
+                    print("---- second conv2d_sigmod_mul fp32 test step ----", flush=True)
                     self._test_qconv_impl(
                         qconv_fp32_output, qconv_prepack, conv_op, batch_size,
                         input_channels_per_group, (height, width),

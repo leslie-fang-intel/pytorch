@@ -183,6 +183,14 @@ struct PackedLinearWeightsOnednn : public LinearPackedParamsBase {
   }
 };
 
+enum PostOp : uint32_t {
+  None    = 0,
+  ReLU    = 1, // Fused Conv ReLU
+  Add     = 2, // Fused Conv Add
+  AddReLU = 3, // Fused Conv Add ReLU
+  SigmoidMul = 4, // Fused Conv Sigmoid Mul (swish)
+};
+
 template <int kSpatialDim = 2>
 struct PackedConvWeightsOnednn : public ConvPackedParamsBase<kSpatialDim> {
   PackedConvWeightsOnednn(
@@ -268,6 +276,16 @@ struct PackedConvWeightsOnednn : public ConvPackedParamsBase<kSpatialDim> {
       double output_scale,
       int64_t output_zero_point);
 
+  at::Tensor apply_sigmoid_mul(
+      const at::Tensor& input,
+      double output_scale,
+      int64_t output_zero_point);
+
+  at::Tensor apply_sigmoid_mul_fp32_output(
+      const at::Tensor& input,
+      double output_scale,
+      int64_t output_zero_point);
+
   std::tuple<at::Tensor, c10::optional<at::Tensor>> unpack() override;
 
   static c10::intrusive_ptr<ConvPackedParamsBase<kSpatialDim>> prepack(
@@ -309,7 +327,7 @@ struct PackedConvWeightsOnednn : public ConvPackedParamsBase<kSpatialDim> {
   DeconvPrimitiveCache deconv_prim_cache;
   std::unique_ptr<c10::once_flag> cache_initialized_flag;
 
-  template <bool ReluFused>
+  template <PostOp post_op>
   at::Tensor apply_impl(
       const at::Tensor& input,
       const c10::optional<at::Tensor>& accum,

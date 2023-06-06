@@ -56,7 +56,7 @@ at::Tensor PackedConvWeight<kSpatialDim>::apply_dynamic(
       input, q_params.scale, q_params.zero_point, c10::kQUInt8);
 
   at::Tensor out =
-      apply_impl<false>(q_input, q_params.scale, q_params.zero_point);
+      apply_impl<PostOp::None>(q_input, q_params.scale, q_params.zero_point);
 
   return at::dequantize(out); // TODO: optimized kernel that outputs fp32 so
                               // this step isn't necessary
@@ -113,7 +113,7 @@ at::Tensor PackedConvWeightsQnnp<kSpatialDim>::apply_dynamic(
       input, q_params.scale, q_params.zero_point, c10::kQUInt8);
 
   at::Tensor out =
-      apply_impl<false>(q_input, q_params.scale, q_params.zero_point);
+      apply_impl<PostOp::None>(q_input, q_params.scale, q_params.zero_point);
 
   return at::dequantize(out); // TODO: optimized kernel that outputs fp32 so
                               // this step isn't necessary
@@ -164,7 +164,7 @@ at::Tensor PackedConvWeightsOnednn<kSpatialDim>::apply_dynamic(
 
   bool fp32_output = false;
   at::Tensor out =
-      apply_impl<false>(q_input, /*accum*/c10::nullopt, q_params.scale, q_params.zero_point, fp32_output);
+      apply_impl<PostOp::None>(q_input, /*accum*/c10::nullopt, q_params.scale, q_params.zero_point, fp32_output);
 
   // TODO: Modify ideep to allow fp32 input & output
   // to avoid explicit `quantize - dequantize`
