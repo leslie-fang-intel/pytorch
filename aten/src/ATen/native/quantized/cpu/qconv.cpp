@@ -1239,6 +1239,14 @@ at::Tensor PackedConvWeightsOnednn<kSpatialDim>::apply_impl(
     bool fp32_output,
     const c10::optional<c10::ArrayRef<c10::IValue>>& post_op_args) {
   
+  if (fp32_output) {
+    // when fp32_output, if we set op_attr.set_zero_points, oneDNN will get wrong result
+    // When output_scale is 1.0, we will skip invoking of op_attr.set_scales in ideep
+    // When output_zero_point is 0, we will skip invoking of op_attr.set_zero_points in ideep
+    TORCH_CHECK(output_scale == 1.0,  " (ONEDNN): fp32 output, output_scale must be 1.0.");
+    TORCH_CHECK(output_zero_point == 0,  " (ONEDNN): fp32 output, output_zero_point must be 0");
+  }
+
   bool kReluFused = false;
   if (post_op == PostOp::ReLU || post_op == PostOp::AddReLU) {
     kReluFused = true;
