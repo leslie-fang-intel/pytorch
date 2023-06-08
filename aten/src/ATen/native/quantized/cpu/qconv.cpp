@@ -1342,7 +1342,6 @@ at::Tensor PackedConvWeightsOnednn<kSpatialDim>::apply_impl(
             c10::MemoryFormat::ChannelsLast :
             c10::MemoryFormat::ChannelsLast3d),
       c10::nullopt);
-    std::cout<<"output is: "<<output<<std::endl;
   } else {
     output = at::_empty_affine_quantized(
         dst_dims,

@@ -80,12 +80,12 @@ TORCH_LIBRARY(quantized, m) {
   m.def(TORCH_SELECTIVE_SCHEMA("quantized::conv2d_gelu(Tensor qx, __torch__.torch.classes.quantized.Conv2dPackedParamsBase packed_weight, float output_scale, int output_zero_point, str post_op_arg='none') -> Tensor"));
 
   // fp32 output
-  m.def(TORCH_SELECTIVE_SCHEMA("quantized::conv2d_fp32_output(Tensor qx, __torch__.torch.classes.quantized.Conv2dPackedParamsBase packed_weight, float output_scale, int output_zero_point) -> Tensor"));
-  m.def(TORCH_SELECTIVE_SCHEMA("quantized::conv2d_relu_fp32_output(Tensor qx, __torch__.torch.classes.quantized.Conv2dPackedParamsBase packed_weight, float output_scale, int output_zero_point) -> Tensor"));
-  m.def(TORCH_SELECTIVE_SCHEMA("quantized::conv2d_add_fp32_output(Tensor qx, Tensor qaccum, __torch__.torch.classes.quantized.Conv2dPackedParamsBase packed_weight, float output_scale, int output_zero_point) -> Tensor"));
-  m.def(TORCH_SELECTIVE_SCHEMA("quantized::conv2d_add_relu_fp32_output(Tensor qx, Tensor qaccum, __torch__.torch.classes.quantized.Conv2dPackedParamsBase packed_weight, float output_scale, int output_zero_point) -> Tensor"));
-  m.def(TORCH_SELECTIVE_SCHEMA("quantized::conv2d_sigmoid_mul_fp32_output(Tensor qx, __torch__.torch.classes.quantized.Conv2dPackedParamsBase packed_weight, float output_scale, int output_zero_point) -> Tensor"));
-  m.def(TORCH_SELECTIVE_SCHEMA("quantized::conv2d_gelu_fp32_output(Tensor qx, __torch__.torch.classes.quantized.Conv2dPackedParamsBase packed_weight, float output_scale, int output_zero_point, str post_op_arg='none') -> Tensor"));
+  m.def(TORCH_SELECTIVE_SCHEMA("quantized::conv2d_fp32_output(Tensor qx, __torch__.torch.classes.quantized.Conv2dPackedParamsBase packed_weight, float output_scale=1.0, int output_zero_point=0) -> Tensor"));
+  m.def(TORCH_SELECTIVE_SCHEMA("quantized::conv2d_relu_fp32_output(Tensor qx, __torch__.torch.classes.quantized.Conv2dPackedParamsBase packed_weight, float output_scale=1.0, int output_zero_point=0) -> Tensor"));
+  m.def(TORCH_SELECTIVE_SCHEMA("quantized::conv2d_add_fp32_output(Tensor qx, Tensor qaccum, __torch__.torch.classes.quantized.Conv2dPackedParamsBase packed_weight, float output_scale=1.0, int output_zero_point=0) -> Tensor"));
+  m.def(TORCH_SELECTIVE_SCHEMA("quantized::conv2d_add_relu_fp32_output(Tensor qx, Tensor qaccum, __torch__.torch.classes.quantized.Conv2dPackedParamsBase packed_weight, float output_scale=1.0, int output_zero_point=0) -> Tensor"));
+  m.def(TORCH_SELECTIVE_SCHEMA("quantized::conv2d_sigmoid_mul_fp32_output(Tensor qx, __torch__.torch.classes.quantized.Conv2dPackedParamsBase packed_weight, float output_scale=1.0, int output_zero_point=0) -> Tensor"));
+  m.def(TORCH_SELECTIVE_SCHEMA("quantized::conv2d_gelu_fp32_output(Tensor qx, __torch__.torch.classes.quantized.Conv2dPackedParamsBase packed_weight, float output_scale=1.0, int output_zero_point=0, str post_op_arg='none') -> Tensor"));
 
 
   // conv_prepack is deprecated, please use conv2d_prepack for 2D conv.
