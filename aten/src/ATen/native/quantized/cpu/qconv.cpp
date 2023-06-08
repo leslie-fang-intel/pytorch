@@ -1196,7 +1196,7 @@ at::Tensor PackedConvWeightsOnednn<kSpatialDim>::apply_gelu(
     const at::Tensor& input,
     double output_scale,
     int64_t output_zero_point,
-    std::string post_op_arg,
+    std::string& post_op_arg,
     const bool& fp32_output) {
   
   // c10::impl::GenericList post_op_args{std::move(c10::IValue(post_op_arg))};
@@ -1207,14 +1207,25 @@ at::Tensor PackedConvWeightsOnednn<kSpatialDim>::apply_gelu(
   // c10::optional<torch::List<at::IValue>> post_op_args = 
  
 
-  // Method1
-  c10::IValue tt = c10::IValue(post_op_arg);
-  c10::ArrayRef<c10::IValue> tt2(tt);
+  // // Method1: work
+  // c10::IValue tt = c10::IValue(post_op_arg);
+  // c10::ArrayRef<c10::IValue> tt2(tt);
 
-  // c10::ArrayRef<c10::IValue> tt2{c10::IValue(post_op_arg)};
-  
+  // // Method2: work
+  // c10::IValue tt = c10::IValue(post_op_arg);
+  // c10::ArrayRef<c10::IValue> tt2(std::move(tt));
+
+  // Method3: fail to build
+  // c10::ArrayRef<c10::IValue> tt2(c10::IValue{ post_op_arg });
+
+  // Method4: work
+  // c10::IValue tt = c10::IValue(post_op_arg);
+  std::vector<c10::IValue> input_args;
+  input_args.emplace_back(c10::IValue(post_op_arg));
+  c10::ArrayRef<c10::IValue> post_op_args(input_args);
+
   // return apply_impl<PostOp::GELU>(input, c10::nullopt, output_scale, output_zero_point, fp32_output);
-  return apply_impl<PostOp::GELU>(input, c10::nullopt, output_scale, output_zero_point, fp32_output, tt2);
+  return apply_impl<PostOp::GELU>(input, c10::nullopt, output_scale, output_zero_point, fp32_output, post_op_args);
   // return apply_impl<PostOp::GELU>(input, c10::nullopt, output_scale, output_zero_point, fp32_output, post_op_args);
 }
 
@@ -1331,6 +1342,7 @@ at::Tensor PackedConvWeightsOnednn<kSpatialDim>::apply_impl(
             c10::MemoryFormat::ChannelsLast :
             c10::MemoryFormat::ChannelsLast3d),
       c10::nullopt);
+    std::cout<<"output is: "<<output<<std::endl;
   } else {
     output = at::_empty_affine_quantized(
         dst_dims,
@@ -1479,9 +1491,12 @@ at::Tensor PackedConvWeightsOnednn<kSpatialDim>::apply_impl(
 
     if (post_op_arg == "none") {
       po.append_eltwise(ideep::algorithm::eltwise_gelu_erf, 0.f, 0.f);
-    } else {
+    } else if (post_op_arg == "tanh") {
       po.append_eltwise(ideep::algorithm::eltwise_gelu_tanh, 0.f, 0.f);
+    } else {
+      TORCH_CHECK(false, "unpoosrt approximate of gelu post op");
     }
+
     op_attr.set_post_ops(po);
   }
 
@@ -1707,11 +1722,7 @@ class QConvInt8General final {
       int64_t output_zero_point,
       std::string post_op_arg) {
       if (post_op == PostOp::GELU) {
-        if (kFP32Output) {
-          return dynamic_cast<PackedConvWeightsOnednn<kSpatialDim>*>(packed_weight.get())->apply_sigmoid_mul_fp32_output(act, output_scale, output_zero_point);
-        } else {
-          return dynamic_cast<PackedConvWeightsOnednn<kSpatialDim>*>(packed_weight.get())->apply_gelu(act, output_scale, output_zero_point, post_op_arg, /*fp32_output*/ false);
-        }
+        return dynamic_cast<PackedConvWeightsOnednn<kSpatialDim>*>(packed_weight.get())->apply_gelu(act, output_scale, output_zero_point, post_op_arg, /*fp32_output*/ kFP32Output);
       }
       TORCH_CHECK(false, "shouldn't hit here");
   }
@@ -1854,6 +1865,7 @@ TORCH_LIBRARY_IMPL(quantized, QuantizedCPU, m) {
   m.impl(TORCH_SELECTIVE_NAME("quantized::conv2d_sigmoid_mul_fp32_output"), QConvInt8General<2, true, PostOp::SigmoidMul>::run);
 
   m.impl(TORCH_SELECTIVE_NAME("quantized::conv2d_gelu"), QConvInt8General<2, false, PostOp::GELU>::run_gelu);
+  m.impl(TORCH_SELECTIVE_NAME("quantized::conv2d_gelu_fp32_output"), QConvInt8General<2, true, PostOp::GELU>::run_gelu);
 
   // for backward compatibility
   m.impl(TORCH_SELECTIVE_NAME("quantized::conv2d"), QConvInt8ForBC<2, false>::run);

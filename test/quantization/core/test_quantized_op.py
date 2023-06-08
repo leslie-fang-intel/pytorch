@@ -4788,7 +4788,12 @@ class TestQuantizedConv(TestCase):
             result_ref2 = torch.sigmoid(result_ref)
             result_ref = result_ref2 * result_ref
         elif post_op == 'gelu_default':
+            print("result_ref BEFORE GELU IS: {}".format(result_ref), flush=True)
+            print("doing the fp32 felu")
             result_ref = torch.nn.GELU()(result_ref)
+            print("result_ref after GELU IS: {}".format(result_ref), flush=True)
+        elif post_op == 'gelu_tanh':
+            result_ref = torch.nn.GELU(approximate='tanh')(result_ref)
 
         # Quantize reference results for comparison
         result_ref_q = torch.quantize_per_tensor(
@@ -4829,6 +4834,15 @@ class TestQuantizedConv(TestCase):
                     Y_zero_point,
                     "none"
                 )
+                print("Y_q after qconv computation is: {}".format(Y_q), flush=True)
+            elif post_op == 'gelu_tanh':
+                Y_q = qconv_fn(
+                    X_q,
+                    W_prepack,
+                    Y_scale,
+                    Y_zero_point,
+                    "tanh"
+                )                
             else:
                 Y_q = qconv_fn(
                     X_q,
@@ -4852,11 +4866,14 @@ class TestQuantizedConv(TestCase):
         # For example, the result of round(2.5) + 1 is 3 while
         # round(2.5 + 1) is 4 assuming the rounding mode is
         # round-to-nearest, ties-to-even.
-        if post_op == 'sigmoid_mul' or post_op == 'gelu_default':
+        if post_op == 'sigmoid_mul' or post_op == 'gelu_default' or post_op == 'gelu_tanh':
             if fp32_output:
+                
                 Y_q = torch.quantize_per_tensor(
                     Y_q, scale=Y_scale, zero_point=Y_zero_point,
                     dtype=output_dtype)
+                print("result_ref_q.dequantize() is: {}".format(result_ref_q.dequantize()), flush=True)
+                print("Y_q.dequantize() is: {}".format(Y_q.dequantize()), flush=True)
                 np.testing.assert_array_almost_equal(
                     result_ref_q.dequantize(), Y_q.dequantize(), decimal=2,
                     err_msg=f'''X: {X_q}, W: {W_q}, b: {bias_float}, strides: {strides},
@@ -5601,7 +5618,7 @@ class TestQuantizedConv(TestCase):
                 dilations = (dilation, dilation)
 
                 qconv = torch.ops.quantized.conv2d_gelu
-                # qconv_fp32_output = torch.ops.quantized.conv2d_sigmoid_mul_fp32_output
+                qconv_fp32_output = torch.ops.quantized.conv2d_gelu_fp32_output
                 qconv_prepack = torch.ops.quantized.conv2d_prepack
                 conv_op = torch.nn.Conv2d(
                     input_channels,
@@ -5616,23 +5633,33 @@ class TestQuantizedConv(TestCase):
                 act_qdtypes = [torch.quint8]
 
                 for X_qdtype in act_qdtypes:                
-                    print("---- first test_qconv2d_gelu_default test step ----", flush=True)
+                    # print("---- first test_qconv2d_gelu_default test step ----", flush=True)
 
-                    self._test_qconv_impl(
-                        qconv, qconv_prepack, conv_op, batch_size,
-                        input_channels_per_group, (height, width),
-                        output_channels_per_group, groups, kernels, strides, pads, None,
-                        dilations, X_scale, X_zero_point, W_scale, W_zero_point,
-                        Y_scale, Y_zero_point, use_bias, "gelu_default", use_channelwise, False, input_dtype=X_qdtype, output_dtype=X_qdtype)
-
-                    # print("---- second test_qconv2d_gelu fp32 test step ----", flush=True)
                     # self._test_qconv_impl(
-                    #     qconv_fp32_output, qconv_prepack, conv_op, batch_size,
+                    #     qconv, qconv_prepack, conv_op, batch_size,
                     #     input_channels_per_group, (height, width),
                     #     output_channels_per_group, groups, kernels, strides, pads, None,
                     #     dilations, X_scale, X_zero_point, W_scale, W_zero_point,
-                    #     Y_scale, Y_zero_point, use_bias, "relu", use_channelwise, False, input_dtype=X_qdtype, output_dtype=X_qdtype,
-                    #     fp32_output=True)
+                    #     Y_scale, Y_zero_point, use_bias, "gelu_default", use_channelwise, False, input_dtype=X_qdtype, output_dtype=X_qdtype)
+
+                    # print("---- second test_qconv2d_gelu_tanh test step ----", flush=True)
+
+                    # self._test_qconv_impl(
+                    #     qconv, qconv_prepack, conv_op, batch_size,
+                    #     input_channels_per_group, (height, width),
+                    #     output_channels_per_group, groups, kernels, strides, pads, None,
+                    #     dilations, X_scale, X_zero_point, W_scale, W_zero_point,
+                    #     Y_scale, Y_zero_point, use_bias, "gelu_tanh", use_channelwise, False, input_dtype=X_qdtype, output_dtype=X_qdtype)
+                    
+                    print("---- thrid test_qconv2d_gelu_default test step ----", flush=True)
+
+                    self._test_qconv_impl(
+                        qconv_fp32_output, qconv_prepack, conv_op, batch_size,
+                        input_channels_per_group, (height, width),
+                        output_channels_per_group, groups, kernels, strides, pads, None,
+                        dilations, X_scale, X_zero_point, W_scale, W_zero_point,
+                        Y_scale, Y_zero_point, use_bias, "gelu_default", use_channelwise, False, input_dtype=X_qdtype, output_dtype=X_qdtype,
+                        fp32_output=True)
 
     # TODO: merge this test with test_qconv2d when CUDNN runtime flags becomes available
     """Tests the correctness of quantized 2D convolution cudnn op."""

@@ -291,7 +291,7 @@ struct PackedConvWeightsOnednn : public ConvPackedParamsBase<kSpatialDim> {
       const at::Tensor& input,
       double output_scale,
       int64_t output_zero_point,
-      std::string post_op_args,
+      std::string& post_op_args,
       const bool& fp32_output);
 
   std::tuple<at::Tensor, c10::optional<at::Tensor>> unpack() override;
