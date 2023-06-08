@@ -189,6 +189,7 @@ enum PostOp : uint32_t {
   Add     = 2, // Fused Conv Add
   AddReLU = 3, // Fused Conv Add ReLU
   SigmoidMul = 4, // Fused Conv Sigmoid Mul (swish)
+  GELU = 5, // Fused Conv GELU
 };
 
 template <int kSpatialDim = 2>
@@ -286,6 +287,13 @@ struct PackedConvWeightsOnednn : public ConvPackedParamsBase<kSpatialDim> {
       double output_scale,
       int64_t output_zero_point);
 
+  at::Tensor apply_gelu(
+      const at::Tensor& input,
+      double output_scale,
+      int64_t output_zero_point,
+      std::string post_op_args,
+      const bool& fp32_output);
+
   std::tuple<at::Tensor, c10::optional<at::Tensor>> unpack() override;
 
   static c10::intrusive_ptr<ConvPackedParamsBase<kSpatialDim>> prepack(
@@ -333,7 +341,8 @@ struct PackedConvWeightsOnednn : public ConvPackedParamsBase<kSpatialDim> {
       const c10::optional<at::Tensor>& accum,
       double output_scale,
       int64_t output_zero_point,
-      bool fp32_output);
+      bool fp32_output,
+      const c10::optional<c10::ArrayRef<c10::IValue>>& post_op_args=c10::nullopt);
 
   ConvPrimitiveCache& get_conv_cache() {
     assert(!transpose());

@@ -39,6 +39,7 @@
 #endif
 
 #include <c10/util/irange.h>
+#include <torch/library.h>
 
 namespace {
 // To have a sanity check for maximum matrix size.
@@ -1191,13 +1192,41 @@ at::Tensor PackedConvWeightsOnednn<kSpatialDim>::apply_sigmoid_mul_fp32_output(
 }
 
 template <int kSpatialDim>
+at::Tensor PackedConvWeightsOnednn<kSpatialDim>::apply_gelu(
+    const at::Tensor& input,
+    double output_scale,
+    int64_t output_zero_point,
+    std::string post_op_arg,
+    const bool& fp32_output) {
+  
+  // c10::impl::GenericList post_op_args{std::move(c10::IValue(post_op_arg))};
+  // c10::impl::GenericList post_op_args{c10::IValue(post_op_arg)};
+  // c10::impl::GenericList post_op_args_v(c10::IValue(post_op_arg));
+  // c10::optional<c10::impl::GenericList> post_op_args(c10::IValue(post_op_arg));
+  // post_op_args.emplace_back(post_op_arg.toIValue());
+  // c10::optional<torch::List<at::IValue>> post_op_args = 
+ 
+
+  // Method1
+  c10::IValue tt = c10::IValue(post_op_arg);
+  c10::ArrayRef<c10::IValue> tt2(tt);
+
+  // c10::ArrayRef<c10::IValue> tt2{c10::IValue(post_op_arg)};
+  
+  // return apply_impl<PostOp::GELU>(input, c10::nullopt, output_scale, output_zero_point, fp32_output);
+  return apply_impl<PostOp::GELU>(input, c10::nullopt, output_scale, output_zero_point, fp32_output, tt2);
+  // return apply_impl<PostOp::GELU>(input, c10::nullopt, output_scale, output_zero_point, fp32_output, post_op_args);
+}
+
+template <int kSpatialDim>
 template <PostOp post_op>
 at::Tensor PackedConvWeightsOnednn<kSpatialDim>::apply_impl(
     const at::Tensor& act,
     const c10::optional<at::Tensor>& accum,
     double output_scale,
     int64_t output_zero_point,
-    bool fp32_output) {
+    bool fp32_output,
+    const c10::optional<c10::ArrayRef<c10::IValue>>& post_op_args) {
   
   bool kReluFused = false;
   if (post_op == PostOp::ReLU || post_op == PostOp::AddReLU) {
@@ -1207,6 +1236,12 @@ at::Tensor PackedConvWeightsOnednn<kSpatialDim>::apply_impl(
   if (post_op == PostOp::SigmoidMul) {
     kSigmoidMulFused = true;
   }
+
+  bool kGELUFused = false;
+  if (post_op == PostOp::GELU) {
+    kGELUFused = true;
+  }
+
   std::string func_name = "quantized::conv";
   if (transpose()) {
     func_name += "_transpose";
@@ -1230,6 +1265,10 @@ at::Tensor PackedConvWeightsOnednn<kSpatialDim>::apply_impl(
 
   if (kSigmoidMulFused) {
     func_name += "_sigmoid_mul";
+  }
+
+  if (kGELUFused) {
+    func_name += "_gelu";
   }
 
   ConvDimChecks<kSpatialDim>(
@@ -1432,6 +1471,18 @@ at::Tensor PackedConvWeightsOnednn<kSpatialDim>::apply_impl(
     // desc will use the dst tensor desc
     // po.append_binary(ideep::algorithm::binary_mul, dst.get_desc());
     op_attr.set_post_ops(po);
+  } else if (kGELUFused) {
+    ideep::post_ops po;
+    const c10::string_view post_op_arg = post_op_args.value()[0].toStringView();
+
+    std::cout<<"--- post_op_arg is: "<<post_op_arg<<std::endl;
+
+    if (post_op_arg == "none") {
+      po.append_eltwise(ideep::algorithm::eltwise_gelu_erf, 0.f, 0.f);
+    } else {
+      po.append_eltwise(ideep::algorithm::eltwise_gelu_tanh, 0.f, 0.f);
+    }
+    op_attr.set_post_ops(po);
   }
 
   // Bias might be modified outside (e.g. by quantization bias correction).
@@ -1631,19 +1682,38 @@ class QConvInt8 final {
   }
 };
 
-template <int kSpatialDim, bool kFP32Output>
-class QConvInt8SigmoidMul final {
+template <int kSpatialDim, bool kFP32Output, PostOp post_op>
+class QConvInt8General final {
  public:
   static Tensor run(
       Tensor act,
       const c10::intrusive_ptr<ConvPackedParamsBase<kSpatialDim>>& packed_weight,
       double output_scale,
       int64_t output_zero_point) {
-      if (kFP32Output) {
-        return dynamic_cast<PackedConvWeightsOnednn<kSpatialDim>*>(packed_weight.get())->apply_sigmoid_mul_fp32_output(act, output_scale, output_zero_point);
-      } else {
-        return dynamic_cast<PackedConvWeightsOnednn<kSpatialDim>*>(packed_weight.get())->apply_sigmoid_mul(act, output_scale, output_zero_point);
+      if (post_op == PostOp::SigmoidMul) {
+        if (kFP32Output) {
+          return dynamic_cast<PackedConvWeightsOnednn<kSpatialDim>*>(packed_weight.get())->apply_sigmoid_mul_fp32_output(act, output_scale, output_zero_point);
+        } else {
+          return dynamic_cast<PackedConvWeightsOnednn<kSpatialDim>*>(packed_weight.get())->apply_sigmoid_mul(act, output_scale, output_zero_point);
+        }
       }
+      TORCH_CHECK(false, "shouldn't hit here");
+  }
+
+  static Tensor run_gelu(
+      Tensor act,
+      const c10::intrusive_ptr<ConvPackedParamsBase<kSpatialDim>>& packed_weight,
+      double output_scale,
+      int64_t output_zero_point,
+      std::string post_op_arg) {
+      if (post_op == PostOp::GELU) {
+        if (kFP32Output) {
+          return dynamic_cast<PackedConvWeightsOnednn<kSpatialDim>*>(packed_weight.get())->apply_sigmoid_mul_fp32_output(act, output_scale, output_zero_point);
+        } else {
+          return dynamic_cast<PackedConvWeightsOnednn<kSpatialDim>*>(packed_weight.get())->apply_gelu(act, output_scale, output_zero_point, post_op_arg, /*fp32_output*/ false);
+        }
+      }
+      TORCH_CHECK(false, "shouldn't hit here");
   }
 };
 
@@ -1780,8 +1850,10 @@ TORCH_LIBRARY_IMPL(quantized, QuantizedCPU, m) {
   m.impl(TORCH_SELECTIVE_NAME("quantized::conv3d.new"),      QConvInt8<3, false>::run);
   m.impl(TORCH_SELECTIVE_NAME("quantized::conv3d_relu.new"), QConvInt8<3, true>::run);
 
-  m.impl(TORCH_SELECTIVE_NAME("quantized::conv2d_sigmoid_mul"), QConvInt8SigmoidMul<2, false>::run);
-  m.impl(TORCH_SELECTIVE_NAME("quantized::conv2d_sigmoid_mul_fp32_output"), QConvInt8SigmoidMul<2, true>::run);
+  m.impl(TORCH_SELECTIVE_NAME("quantized::conv2d_sigmoid_mul"), QConvInt8General<2, false, PostOp::SigmoidMul>::run);
+  m.impl(TORCH_SELECTIVE_NAME("quantized::conv2d_sigmoid_mul_fp32_output"), QConvInt8General<2, true, PostOp::SigmoidMul>::run);
+
+  m.impl(TORCH_SELECTIVE_NAME("quantized::conv2d_gelu"), QConvInt8General<2, false, PostOp::GELU>::run_gelu);
 
   // for backward compatibility
   m.impl(TORCH_SELECTIVE_NAME("quantized::conv2d"), QConvInt8ForBC<2, false>::run);
