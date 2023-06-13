@@ -1090,17 +1090,39 @@ class HistogramObserver(UniformQuantizationObserverBase):
         # hist_bin_width = (self.max_val - self.min_val) / (self.bins * upsample_rate)
         # Underflow happens if the numerator is close to the smallest positive subnormal number of FP32
         # Therefore, we avoid such division operation.
-        downsample_rate = int(
-            torch.ceil(
-                (combined_max - combined_min) * upsample_rate / (self.max_val - self.min_val)
-            ).item()
-        )
-        e = downsample_rate * (self.max_val - self.min_val) / upsample_rate - (combined_max - combined_min)
-        start_idx = int(
-            torch.round((self.min_val - combined_min) * self.bins * upsample_rate / (self.max_val - self.min_val)).item()
-        )
-        combined_max = combined_max + e
-        combined_min = combined_min
+        
+        print("(combined_max - combined_min) * upsample_rate is: {}".format((combined_max - combined_min) * upsample_rate))
+
+        res = (combined_max - combined_min) * upsample_rate
+        if res == torch.inf:
+            downsample_rate = int(
+                torch.ceil(
+                    (combined_max - combined_min) / (self.max_val - self.min_val) * upsample_rate
+                ).item()
+            )
+            print("downsample_rate is: {}".format(downsample_rate))
+            # e = downsample_rate * (self.max_val - self.min_val) / upsample_rate - (combined_max - combined_min)
+            e =  (self.max_val - self.min_val) / upsample_rate * downsample_rate - (combined_max - combined_min)
+            start_idx = int(
+                torch.round((self.min_val - combined_min) * self.bins * upsample_rate / (self.max_val - self.min_val)).item()
+            )
+            print("start_idx is: {}".format(start_idx), flush=True)
+            combined_max = combined_max + e
+            combined_min = combined_min
+
+        else:
+
+            downsample_rate = int(
+                torch.ceil(
+                    (combined_max - combined_min) * upsample_rate / (self.max_val - self.min_val)
+                ).item()
+            )
+            e = downsample_rate * (self.max_val - self.min_val) / upsample_rate - (combined_max - combined_min)
+            start_idx = int(
+                torch.round((self.min_val - combined_min) * self.bins * upsample_rate / (self.max_val - self.min_val)).item()
+            )
+            combined_max = combined_max + e
+            combined_min = combined_min
         return combined_min, combined_max, downsample_rate, start_idx
 
     def _combine_histograms(
