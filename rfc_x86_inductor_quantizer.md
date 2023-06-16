@@ -109,6 +109,8 @@ We plan to enable new quantized operators implementation for quantization 2.0 an
 * Previously, we have [quantized convolution operators](https://github.com/pytorch/pytorch/blob/e3ee5b00beff9401d69206b84b82323f7a63a048/aten/src/ATen/native/quantized/library.cpp#L66) which accepts quantized tensors of activation, weight as inputs. Quantized activation has the scale, zero_point information which are needed for the quantized convolution calculation. For quantization 2.0, we will only see the plain tensor of uint8/int8 data type, so the schema of new quantized convolution operator are subject to be changed for accepting extra input of scale, zero_point for activation, weight and output tensors.
 * Previously, the weight of convolution are encapsulated in a `Conv2dPackedParamsBase` object instead of a tensor. Also the qconv's implementation are encapsulated inside the `PackedConvWeight` class. Some runtime information for calculation can be fetched from the attr of `PackedConvWeight` object. For quantization 2.0, we will implement the new quantized convolution as functional invoking with only Tensor objects in inputs.
 
+Due to these differences in 1.X and 2.X path, we need to enable new quantized operators implementation.
+
 #### Weight prepack implementation
 OneDNN convolution needs prepacked weight to do calculation. The weight prepack can be done in the graph preparsion phase instead of the runtime to avoid runtime overhead. As we discuss [here](https://github.com/pytorch/pytorch/pull/101164#discussion_r1195953417), to do weight prepack we need the constant fold feature support in Inductor.
 
