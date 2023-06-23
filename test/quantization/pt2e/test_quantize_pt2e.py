@@ -1686,6 +1686,53 @@ class TestQuantizePT2E(PT2EQuantizationTestCase):
             M(), example_inputs, is_per_channel=True, verify_convert=True,
         )
 
+    def test_representation_add(self):
+        class M(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+
+            def forward(self, x, y):
+                return x + y
+
+        import torch.ao.quantization._pt2e.quantizer.qnnpack_quantizer as qq
+
+        quantizer = QNNPackQuantizer()
+        operator_config = qq.get_symmetric_quantization_config(is_per_channel=True)
+        quantizer.set_global(operator_config)
+        m_eager = M().eval()
+
+        example_inputs = (torch.randn(1, 3, 3, 3), torch.randn(1, 3, 3, 3),)
+        # program capture
+        m = m_eager
+        m, guards = torchdynamo.export(
+            m,
+            *copy.deepcopy(example_inputs),
+            aten_graph=True,
+        )
+
+        m = prepare_pt2e_quantizer(m, quantizer)
+        # Calibrate
+        m(*example_inputs)
+        m_ref = copy.deepcopy(m)
+        m_ref = convert_pt2e(m_ref, use_reference_representation=False)
+        m = convert_pt2e(m, use_reference_representation=True)
+        print("m:", m)
+        pt2_quant_output_ref = m_ref(*example_inputs)
+        pt2_quant_output = m(*example_inputs)
+
+        output_scale = None
+        idx = 0
+        for n in m_ref.graph.nodes:
+            if n.target == torch.ops.quantized_decomposed.quantize_per_tensor.default:
+                idx += 1
+                if idx == 3:
+                    output_scale = n.args[1]
+        assert output_scale is not None
+
+        # make sure the result is off by one at most in the quantized integer representation
+        self.assertTrue(
+            torch.max(torch.abs(pt2_quant_output_ref - pt2_quant_output)) <= (2 * output_scale + 1e-5)
+        )
 
 @skipIfNoQNNPACK
 class TestQuantizePT2EOps(QuantizationTestCase):
