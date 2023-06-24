@@ -10,10 +10,10 @@ __all__ = [
 ]
 
 _QUANTIZED_ADD_EXAMPLE_INPUTS = (
-    torch.randn(1, 3, 3, 3).to(torch.int8),
+    torch.randn(1, 3, 3, 3).to(torch.uint8),
     torch.randn(1).to(torch.float),
     torch.zeros(1).to(torch.int),
-    torch.randn(1, 3, 3, 3).to(torch.int8),
+    torch.randn(1, 3, 3, 3).to(torch.uint8),
     torch.randn(1).to(torch.float),
     torch.zeros(1).to(torch.int),
     torch.randn(1).to(torch.float),
@@ -21,12 +21,12 @@ _QUANTIZED_ADD_EXAMPLE_INPUTS = (
 )
 
 def _qdq_quantized_add(x_i8, x_scale, x_zero_point, y_i8, y_scale, y_zero_point, out_scale, out_zero_point):
-    quant_min = -128
-    quant_max = 127
-    x_fp32 = torch.ops.quantized_decomposed.dequantize_per_tensor(x_i8, x_scale, x_zero_point, quant_min, quant_max, torch.int8)
-    y_fp32 = torch.ops.quantized_decomposed.dequantize_per_tensor(y_i8, y_scale, y_zero_point, quant_min, quant_max, torch.int8)
+    quant_min = 0
+    quant_max = 255
+    x_fp32 = torch.ops.quantized_decomposed.dequantize_per_tensor(x_i8, x_scale, x_zero_point, quant_min, quant_max, torch.uint8)
+    y_fp32 = torch.ops.quantized_decomposed.dequantize_per_tensor(y_i8, y_scale, y_zero_point, quant_min, quant_max, torch.uint8)
     out_fp32 = x_fp32 + y_fp32
-    out_i8 = torch.ops.quantized_decomposed.quantize_per_tensor(out_fp32, out_scale, out_zero_point, quant_min, quant_max, torch.int8)
+    out_i8 = torch.ops.quantized_decomposed.quantize_per_tensor(out_fp32, out_scale, out_zero_point, quant_min, quant_max, torch.uint8)
     return out_i8
 
 def _reference_quantized_add(x_i8, x_scale, x_zero_point, y_i8, y_scale, y_zero_point, out_scale, out_zero_point):
@@ -53,9 +53,9 @@ out_i8 = out_f32 / out_scale + out_zero_point           (1)
     x_i32 = ((x_scale / out_scale) * (x_i32 - x_zero_point)).to(torch.int32)
     y_i32 = ((y_scale / out_scale) * (y_i32 - y_zero_point)).to(torch.int32)
     out_i32 = x_i32 + y_i32 + out_zero_point
-    quant_min = -128
-    quant_max = 127
-    out_i8 = torch.ops.aten.clamp(out_i32, quant_min, quant_max).to(torch.int8)
+    quant_min = 0
+    quant_max = 255
+    out_i8 = torch.ops.aten.clamp(out_i32, quant_min, quant_max).to(torch.uint8)
     return out_i8
 
 _EXAMPLE_INPUTS_PATTERN_AND_REPLACEMENTS = [

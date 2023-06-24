@@ -140,9 +140,9 @@ def get_symmetric_quantization_config(
             act_observer_or_fake_quant_ctr = HistogramObserver  # type: ignore[assignment]
 
     act_quantization_spec = QuantizationSpec(
-        dtype=torch.int8,
-        quant_min=-128,
-        quant_max=127,
+        dtype=torch.uint8,
+        quant_min=0,
+        quant_max=255,
         qscheme=torch.per_tensor_affine,
         is_dynamic=is_dynamic,
         observer_or_fake_quant_ctr=act_observer_or_fake_quant_ctr.with_args(

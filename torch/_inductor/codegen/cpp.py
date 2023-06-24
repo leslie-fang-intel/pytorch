@@ -650,6 +650,7 @@ class CppVecOverrides(OpOverrides):
             torch.float,
             torch.bfloat16,
             torch.uint8,
+            torch.int32,
         ], f"{__name__} does not support {dtype}"
         node: torch.fx.Node = V.interpreter.current_node
         assert node
@@ -671,6 +672,14 @@ class CppVecOverrides(OpOverrides):
             # * Pattern match of quantization op in the loop body.
             # * Skip the explicit saturation and clamp inside cvt_fp32_to_uint8.
             return f"cvt_fp32_to_uint8({x})"
+        if opt_ctx_x.dtype == torch.uint8 and dtype == torch.int32:
+            return f"cvt_uint8_to_int32_with_same_elem_num({x})"
+        if opt_ctx_x.dtype == torch.int32 and dtype == torch.uint8:
+            return f"cvt_int32_to_uint8({x})"
+        if opt_ctx_x.dtype == torch.float32 and dtype == torch.int32:
+            return f"cvt_float32_to_int32({x})"
+        if opt_ctx_x.dtype == torch.int32 and dtype == torch.float32:
+            return f"cvt_int32_to_float({x})"
         # TODO(jgong5): support conversion for other types
         # currently we only allow load/store torch.uint8 and handle conversion there
         return f"({x})"
@@ -1988,7 +1997,10 @@ class CppVecKernelChecker(CppVecKernel):
                     if opt_ctx.dtype not in supported_dtypes or (
                         opt_ctx.dtype == torch.int32
                         and not all(
-                            user.target in VecCheckerProxy.bin_cmp_ops
+                            (
+                                user.target in VecCheckerProxy.bin_cmp_ops
+                                or user.target in ["sub", "add", "maximum", "minimum"]
+                            )
                             for user in node_ctx.current_node.users
                         )
                     ):
@@ -2081,9 +2093,7 @@ class CppVecKernelChecker(CppVecKernel):
                                 if input_value.target == "load"
                                 else input_value.args[-1]
                             )
-                            if (dtype == torch.uint8) and (
-                                input_value.target == "load"
-                            ):
+                            if (dtype == torch.uint8):
                                 # 1. doing uint8 to float.
                                 # 2. the previous node of uint8 to float is load.
                                 pass
@@ -2122,8 +2132,22 @@ class CppVecKernelChecker(CppVecKernel):
                     elif dtype == torch.bool:
                         pass
                     elif dtype == torch.uint8:
-                        if not all(usr.target in ["store"] for usr in cur_node.users):
+                        pass
+                        # if not all(usr.target in ["store"] for usr in cur_node.users):
+                        #     self.disable_vec(f"to_dtype: dtype {dtype}")
+                    elif dtype == torch.int32:
+                        # support uint8 to int32
+                        node: torch.fx.Node = V.interpreter.current_node
+                        assert node
+                        opt_ctx_x = get_opt_ctx(node.args[1])
+                        print("opt_ctx_x.dtype is: {}".format(opt_ctx_x.dtype))
+                        # self.disable_vec(f"to_dtype: dtype {dtype}")
+                        if opt_ctx_x.dtype in [torch.uint8, torch.float, torch.float32]:
+                            # Support uint8/float32 to int32 convert
+                            pass
+                        else:
                             self.disable_vec(f"to_dtype: dtype {dtype}")
+
                     else:
                         self.disable_vec(f"to_dtype: dtype {dtype}")
                     return x

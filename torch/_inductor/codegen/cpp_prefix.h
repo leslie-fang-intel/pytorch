@@ -155,6 +155,30 @@ inline at::vec::Vectorized<float> cvt_uint8_to_fp32_with_same_elem_num(
   return at::vec::convert_uint8_to_float_with_same_elem_num(src);
 }
 
+inline at::vec::Vectorized<int32_t> cvt_uint8_to_int32_with_same_elem_num(
+    at::vec::Vectorized<uint8_t> src) {
+  // Note: this function only convert inputs number of elements equal to at::vec::Vectorized<float>.size()
+  return at::vec::_cvt_uint8_to_int32_with_same_elem_num(src);
+}
+
+inline at::vec::Vectorized<uint8_t> cvt_int32_to_uint8(
+    at::vec::Vectorized<int32_t> src) {
+  // Note: this function only convert inputs number of elements equal to at::vec::Vectorized<float>.size()
+  return at::vec::_cvt_int32_to_uint8(src);
+}
+
+inline at::vec::Vectorized<int32_t> cvt_float32_to_int32(
+    at::vec::Vectorized<float> src) {
+  // Note: this function only convert inputs number of elements equal to at::vec::Vectorized<float>.size()
+  return at::vec::_cvt_float32_to_int32(src);
+}
+
+inline at::vec::Vectorized<float> cvt_int32_to_float(
+    at::vec::Vectorized<int32_t> src) {
+  // Note: this function only convert inputs number of elements equal to at::vec::Vectorized<float>.size()
+  return at::vec::_cvt_int32_to_float(src);
+}
+
 inline at::vec::Vectorized<uint8_t> cvt_fp32_to_uint8(
     at::vec::Vectorized<float> src) {
   return at::vec::convert_float_to_uint8(src);

@@ -98,6 +98,37 @@ inline __m256i pack_saturate_and_clamp<uint8_t>(
       _mm256_min_epu8(packed_and_sat, _mm256_set1_epi8(max_val)));
 }
 
+inline Vectorized<int32_t> _cvt_uint8_to_int32_with_same_elem_num(at::vec::Vectorized<uint8_t> src) {
+  // Note: this function only convert inputs number of elements equal to at::vec::Vectorized<float>.size()
+  // Only handle first 64 bits
+  __m128i input_128 = _mm256_castsi256_si128(src);
+  // Convert from 8*uint8 to 8*int32
+  return _mm256_cvtepu8_epi32(input_128);
+}
+
+inline Vectorized<uint8_t> _cvt_int32_to_uint8(at::vec::Vectorized<int32_t> src) {
+  // Convert from int32 to int16 using signed saturation
+  __m256i xy_packed_v = _mm256_packs_epi32(src, src);
+
+  constexpr auto min_val = std::numeric_limits<uint8_t>::min();
+  constexpr auto max_val = std::numeric_limits<uint8_t>::max();
+
+  // Convert from int16 to uint8 using unsigned saturation
+  __m256i xyzw_clamped_v = pack_saturate_and_clamp<uint8_t>(
+      xy_packed_v, xy_packed_v, min_val, max_val);
+  __m256i permute_mask_v =
+    _mm256_set_epi32(0x07, 0x03, 0x06, 0x02, 0x05, 0x01, 0x04, 0x00);
+  return _mm256_permutevar8x32_epi32(xyzw_clamped_v, permute_mask_v);
+}
+
+inline Vectorized<int32_t> _cvt_float32_to_int32(at::vec::Vectorized<float> src) {
+  return _mm256_cvtps_epi32(src);
+}
+
+inline Vectorized<float> _cvt_int32_to_float(at::vec::Vectorized<int32_t> src) {
+  return _mm256_cvtepi32_ps(src);
+}
+
 inline Vectorized<float> convert_uint8_to_float_with_same_elem_num(at::vec::Vectorized<uint8_t> src) {
   // Note: this function only convert inputs number of elements equal to at::vec::Vectorized<float>.size()
   // Only handle first 64 bits
