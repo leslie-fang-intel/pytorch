@@ -114,6 +114,12 @@ class ConstantFolder(torch.fx.Interpreter):
 
         # TODO - remove constant from node_replacement when it has no uses
         if node.op != "get_attr" and isinstance(out, torch.Tensor):
+            if node.target == torch.ops.quantized_decomposed.dequantize_per_channel.default:
+                # For the pattern fp32_weight -> quantized_decomposed.quantize_per_channel.default
+                # -> quantized_decomposed.dequantize_per_channel.default
+                # We only folding fp32_weight -> quantized_decomposed.quantize_per_channel.default into
+                # int8_weight and leave quantized_decomposed.dequantize_per_channel.default in graph to be fused
+                return out
             self.node_replacements[node] = out
 
         return out
@@ -174,7 +180,14 @@ def freeze(
         aot_autograd_gm, params_flat, fw_metadata
     )
 
+    print("graph before constant folding is: {}".format(aot_autograd_gm), flush=True)
+
     constant_fold(aot_autograd_gm)
+
+    print("graph after constant folding is: {}".format(aot_autograd_gm), flush=True)
+    from torch.fx.passes.graph_drawer import FxGraphDrawer
+    g = FxGraphDrawer(aot_autograd_gm, "resnet50")
+    g.get_dot_graph().write_svg("/home/lesliefang/pytorch_1_7_1/quantization/graph_after_constant_folding.svg")    
 
     # invalidate nn Modules
     if config.freezing_discard_parameters:

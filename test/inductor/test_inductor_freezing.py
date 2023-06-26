@@ -13,6 +13,15 @@ import torch._dynamo
 from torch._inductor import config
 from torch._inductor.utils import run_and_get_code
 from torch.testing import FileCheck
+import torch._dynamo as torchdynamo
+import torch.ao.quantization._pt2e.quantizer.x86_inductor_quantizer as xiq
+import copy
+from torch.ao.quantization._pt2e.quantizer import X86InductorQuantizer
+from torch.ao.quantization._quantize_pt2e import (
+    convert_pt2e,
+    prepare_pt2e_quantizer,
+)
+from torch._inductor.compile_fx import compile_fx
 
 # Make the helper files in test/ importable
 pytorch_test_dir = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
@@ -86,7 +95,6 @@ class ConvBN(torch.nn.Module):
 
     def forward(self, x):
         return self.bn(self.conv(x))
-
 
 class OptimizeForInferenceTemplate(TestCase):
     def test_mutation(self):
@@ -250,6 +258,50 @@ if HAS_CUDA and not TEST_WITH_ASAN:
 
 
 del OptimizeForInferenceTemplate
+
+class OptimizeForInferenceQuantizationPT2E(TestCase):
+    def test_functional_quantization_convolution_weight_constant_folding(self):
+        m = ConvBN(3, 3, kernel_size=3, stride=2).eval().to("cpu")
+        example_inputs = (torch.randn(1, 3, 9, 9).to("cpu"),)
+        export_model, guards = torchdynamo.export(
+            m,
+            *copy.deepcopy(example_inputs),
+            aten_graph=True
+        )
+
+        quantizer = X86InductorQuantizer()
+        operator_config = xiq.get_default_x86_inductor_quantization_config()
+        quantizer.set_global(operator_config)
+        with torch.no_grad(), config.patch({"implicit_fallbacks": True}):
+            # TODO(leslie) Remove implicit_fallbacks=True after we enable the int8 fusion of
+            # int8_weight -> dequant_per_channel -> convolution
+
+            self.assertTrue(torch._inductor.config.freezing)
+
+            prepare_model = prepare_pt2e_quantizer(export_model, quantizer)
+            print("prepared model is: {}".format(prepare_model), flush=True)
+            prepare_model(*example_inputs)
+
+            convert_model = convert_pt2e(prepare_model)
+            print("converted model is: {}".format(convert_model), flush=True)
+
+            convert_model.eval()
+
+            compiler_model = compile_fx(convert_model, example_inputs)
+
+            print("start the first run", flush=True)
+            _ = compiler_model(*example_inputs)
+
+            print("start the second run", flush=True)
+            out_comp = compiler_model(*example_inputs)
+
+            _ = convert_model(*example_inputs)
+            out_eager = convert_model(*example_inputs)
+
+            # print("out_comp is: {}".format(out_comp), flush=True)
+            # print("out_eager is: {}".format(out_eager), flush=True)
+
+            self.assertEqual(out_eager[0], out_comp, atol=5e-2, rtol=5e-2)
 
 if __name__ == "__main__":
     from torch._dynamo.test_case import run_tests

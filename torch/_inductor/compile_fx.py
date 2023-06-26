@@ -729,6 +729,8 @@ def fw_compiler_freezing(
     graph_id,
     forward_device,
 ):
+    print("---- hit freeze forward -----", flush=True)
+
     from torch._inductor.freezing import freeze
 
     # partition_fn won't be called
