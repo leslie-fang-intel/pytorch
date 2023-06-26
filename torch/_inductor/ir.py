@@ -2523,6 +2523,8 @@ class InputsKernel(Buffer):
                 x = x.data
             if isinstance(x, BaseView) and not isinstance(x, ReinterpretView):
                 x = ExternKernel.realize_input(x)
+            # if isinstance(x, Constant):
+            #     x = ExternKernel.realize_input(x).data.data
             assert isinstance(x, (Buffer, ReinterpretView)), x
             inputs_new.append(x)
         return inputs_new
@@ -4230,6 +4232,209 @@ class QConv(ExternKernelAlloc):
             dim=dim,
         )
 
+class IPEXQConv(ExternKernelAlloc):
+    kernels = {
+        1: "torch.ao.nn.quantized.functional.conv1d",
+        2: "torch.ao.nn.quantized.functional.conv2d",
+        3: "torch.ao.nn.quantized.functional.conv3d",
+    }
+
+    def __init__(
+        self,
+        layout,
+        inputs,
+        input_qparams,
+        weight_qparams,
+        output_qparams,
+        constant_args=(),
+        dim=2,
+        packed_weight = None,
+        packed_bias = None,
+    ):
+        """
+        Needs input/weight/output qparams
+        - inputs = [x, w, b]
+        - const_args = [stride, padding, dilation, groups]
+        - input_qparams = [scale, zp], assume per-tensor quantize to uint8
+        - weight_qparams = [scales, zp, axis], assume per-channel quantize to sint8
+        - output_qparams = [scale, zp, dtype], assume per-tensor quantize
+        Scales/zero points should be taken as inputs
+        Axis/dtypes are constants
+        """
+        assert len(input_qparams) == 2  # scale, zero point
+        assert len(weight_qparams) == 3  # scale, zero point, axis
+        assert len(output_qparams) == 3  # scale, zero point, dtype
+
+
+
+        inputs.extend(input_qparams + weight_qparams[:2] + output_qparams[:2])
+        self.non_bias = False
+        if packed_bias is None:
+            self.non_bias = True
+            inputs.extend([packed_weight,])
+            constant_args.extend([weight_qparams[2], output_qparams[2], packed_bias])
+        else:
+            inputs.extend([packed_weight, packed_bias])
+            constant_args.extend([weight_qparams[2], output_qparams[2]])         
+
+        print("inputs is: {}".format(inputs), flush=True)
+        print("constant_args is: {}".format(constant_args), flush=True)
+
+        super().__init__(layout, inputs, constant_args)
+        self.dim = dim
+        self.kernel = self.kernels[dim]
+
+    def codegen(self, wrapper):
+        # args = [x, w, b?, x_scale, x_zp, w_scale, w_zp, o_scale, o_zp]
+        if not self.non_bias:
+            args = [x.codegen_reference() for x in self.inputs]
+            x_scale, x_zp = args[-8], args[-7]
+            w_scale, w_zp = args[-6], args[-5]
+            o_inv_scale, o_zp = args[-4], args[-3]
+            # const args = [stride, padding, dilation, groups, w_axis, o_dtype]
+            const_args = []
+            const_args.extend(self.codegen_const_args())
+            packed_weight, packed_bias = args[-2], args[-1]
+            o_dtype = const_args[-1]
+            w_axis = const_args[-2]
+            input_qparams = [x_scale, x_zp]
+            weight_qparams = [w_scale, w_zp, w_axis]
+            output_qparams = [o_inv_scale, o_zp, o_dtype]
+            stride = const_args[0]
+            padding = const_args[1]
+            dilation = const_args[2]
+            groups = const_args[3]
+        else:
+            args = [x.codegen_reference() for x in self.inputs]
+            x_scale, x_zp = args[-7], args[-6]
+            w_scale, w_zp = args[-5], args[-4]
+            o_inv_scale, o_zp = args[-3], args[-2]
+            # const args = [stride, padding, dilation, groups, w_axis, o_dtype]
+            const_args = []
+            const_args.extend(self.codegen_const_args())
+            packed_weight = args[-1]
+            packed_bias = const_args[-1]
+            o_dtype = const_args[-2]
+            w_axis = const_args[-3]
+            input_qparams = [x_scale, x_zp]
+            weight_qparams = [w_scale, w_zp, w_axis]
+            output_qparams = [o_inv_scale, o_zp, o_dtype]
+            stride = const_args[1]
+            padding = const_args[2]
+            dilation = const_args[3]
+            groups = const_args[4]
+        # # Make x and w QTensors for functional conv ops
+        # wrapper.writeline(
+        #     f"{args[0]} = torch._make_per_tensor_quantized_tensor({args[0]}, {', '.join(input_qparams)})"
+        # )
+        # wrapper.writeline(
+        #     f"{args[1]} = torch._make_per_channel_quantized_tensor({args[1]}, {', '.join(weight_qparams)})"
+        # )
+        # # Note: padding_mode is always 'zeros'
+        # padding_mode = "'zeros'"
+        # conv_args = (
+        #     ", ".join(args[:-6])
+        #     + ", "
+        #     + ", ".join(const_args[:-4])
+        #     + f", {padding_mode}, "
+        #     + ", ".join(output_qparams)
+        # )
+        # # Do not need `.int_repr()` for output since its dtype is already uint8 instead of quint8
+        # wrapper.writeline(f"{self.get_name()} = {self.kernel}({conv_args})")
+
+        self.kernel = "torch.ops.torch_ipex.qconv2d_pt2e"
+        # conv_args = (
+        #     ", ".join(args[0])
+        #     + ", ".join(x_scale)
+        #     + ", ".join(x_zp)
+        #     + ", ".join(packed_weight)
+        #     + ", ".join(w_scale)
+        #     + ", ".join(w_zp)
+        #     + ", ".join(packed_bias)
+        #     + ", ".join(const_args[0])
+        #     + ", ".join(const_args[1])
+        #     + ", ".join(const_args[2])
+        #     + ", ".join(const_args[3])
+        #     + ", ".join(o_scale)
+        #     + ", ".join(o_zp)
+        # )
+        conv_args = (
+           "{}".format(args[0])
+           +  ", {}".format(x_scale)
+           +  ", {}".format(x_zp)
+           +  ", {}".format(packed_weight)
+           +  ", {}".format(w_scale)
+           +  ", {}".format(w_zp)
+           +  ", {}".format(packed_bias)
+           +  ", {}".format(stride)
+           +  ", {}".format(padding)
+           +  ", {}".format(dilation)
+           +  ", {}".format(groups)
+           +  ", {}".format(o_inv_scale)
+           +  ", {}".format(o_zp)
+        )
+        wrapper.writeline(f"{self.get_name()} = {self.kernel}({conv_args})")
+        if isinstance(self.layout, Layout):
+            self.codegen_size_asserts(wrapper)
+
+    @classmethod
+    def create(
+        cls,
+        dim: int,
+        x: "TensorBox",
+        x_scale,
+        x_zp,
+        weight: "TensorBox",
+        w_scale,
+        w_zp,
+        w_axis: int,
+        bias: "TensorBox",
+        stride_: List[int],
+        padding_: List[int],
+        dilation_: List[int],
+        groups: int,
+        o_inv_scale: "TensorBox",
+        output_zero_point: "TensorBox",
+        output_dtype,
+        packed_weight,
+        packed_bias,
+    ):
+        transposed = False
+        output_padding = None
+        (inputs, constant_args, kernel_layout, _) = _prepare_convolution_fusion_create(
+            cls,
+            x,
+            weight,
+            bias,
+            padding_,
+            stride_,
+            dilation_,
+            groups,
+            transposed,
+            output_padding,
+        )
+        # swap padding and stride to align with functional conv arg order
+        if bias is None:
+            constant_args[1], constant_args[2] = constant_args[2], constant_args[1]
+        else:
+            constant_args[0], constant_args[1] = constant_args[1], constant_args[0]
+
+        # print("x_scale is: {}".format(x_scale), flush=True)
+        # print("x_scale.realize() is: {}".format(x_scale.realize()), flush=True)
+        input_qparams = [x_scale, x_zp]
+        weight_qparams = [w_scale, w_zp, w_axis]
+        output_qparams = [o_inv_scale, output_zero_point, output_dtype]
+        return IPEXQConv(
+            layout=kernel_layout,
+            inputs=inputs,
+            input_qparams=input_qparams,
+            weight_qparams=weight_qparams,
+            output_qparams=output_qparams,
+            constant_args=constant_args,
+            dim=dim,
+            packed_weight=packed_weight,
+            packed_bias=packed_bias,
+        )
 
 @dataclasses.dataclass
 class MutableBox(IRNode):
