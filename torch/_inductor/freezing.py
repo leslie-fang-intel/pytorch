@@ -5,7 +5,7 @@ from typing import List, Optional, Tuple
 import torch
 import torch.utils._pytree as pytree
 from . import config
-
+import torch.ao.quantization.fx._decomposed
 
 def replace_node_with_constant(gm, node, constant):
     g = gm.graph
@@ -153,6 +153,131 @@ def constant_fold(gm):
     gm.graph.lint()
     gm.recompile()
 
+@torch.utils._python_dispatch._disable_current_modes()
+def quantization_weight_prepack(gm):
+    decomposed = torch.ops.quantized_decomposed
+    quantized_graph = False
+    for node in gm.graph.nodes:
+        if node.target == decomposed.dequantize_per_channel.default:
+            quantized_graph = True
+    if not quantized_graph:
+        return
+    aten = torch.ops.aten
+    for node in gm.graph.nodes:
+        print("node.target is: {}".format(node.target), flush=True)
+        if node.target == aten.convolution.default:
+            conv_node = node
+            (
+                x,
+                w,
+                bias,
+                stride,
+                padding,
+                dilation,
+                is_transposed,
+                out_padding,
+                groups,
+            ) = conv_node.args
+            assert (
+                w.target == decomposed.dequantize_per_channel.default
+            ), "weight's node should be dequantize_per_channel"
+            (qw, w_scale, w_zp, w_axis, w_quant_min, w_quant_max, w_dtype) = w.args
+            assert (
+                x.target == torch.ops.aten.mul.Tensor
+            ), "input's node should be dequantize_per_tensor"
+            mul = x
+            (
+                sub,
+                x_scale,
+            ) = mul.args       
+            assert (
+                sub.target == torch.ops.aten.sub.Tensor
+            ), "input's node should be dequantize_per_tensor"
+            (
+                to_fp32,
+                x_zp,
+            ) = sub.args
+            assert (
+                to_fp32.target == torch.ops.prims.convert_element_type.default
+            ), "input's node should be dequantize_per_tensor"
+            (
+                qx,
+                _,
+            ) = to_fp32.args
+            x_shape = qx.meta.get("tensor_meta").shape
+            print("x_shape is: {}".format(x_shape), flush=True)
+
+            weight_int8_tensor = getattr(gm, qw.target)
+            bias_tensor = getattr(gm, bias.target) if bias is not None else None
+            w_scale_tensor = getattr(gm, w_scale.target)
+            # x_scale_tensor = getattr(gm, x_scale.target)
+            # x_zp_tensor = getattr(gm, x_zp.target)
+            x_scale_tensor = x_scale
+            x_zp_tensor = x_zp
+
+            packed_weight, packed_bias = torch.ops.torch_ipex.qconv_prepack_pt2e(
+                weight_int8_tensor,
+                w_scale_tensor,
+                x_shape,
+                x_scale_tensor,
+                x_zp_tensor,
+                bias_tensor,
+                stride,
+                padding,
+                dilation,
+                groups,
+            )
+
+            w_attr_name = qw.target
+            w_packed_attr_name = w_attr_name + "_packed"
+            gm.graph.owning_module._buffers[w_packed_attr_name] = packed_weight
+            setattr(gm, w_packed_attr_name, gm.graph.owning_module._buffers[w_packed_attr_name])
+            with gm.graph.inserting_before(qw):
+                prepack_weight_node = gm.graph.get_attr(w_packed_attr_name)
+
+            if bias is not None:
+                b_attr_name = bias.target
+                b_pack_attr_name = b_attr_name + "_packed"
+                gm.graph.owning_module._buffers[b_pack_attr_name] = packed_bias
+                setattr(gm, b_pack_attr_name, gm.graph.owning_module._buffers[b_pack_attr_name])
+                with gm.graph.inserting_before(qw):
+                    prepack_bias_node = gm.graph.get_attr(b_pack_attr_name)
+            else:
+                prepack_bias_node = bias
+                # bias_node.target = b_pack_attr_name
+                # delattr(gm, b_attr_name)
+
+            # print("packed_weight is: {}".format(packed_weight), flush=True)
+            # print("packed_bias is: {}".format(packed_bias), flush=True)
+
+            with gm.graph.inserting_after(conv_node):
+                new_args = (
+                    x,
+                    w,
+                    bias,
+                    stride,
+                    padding,
+                    dilation,
+                    is_transposed,
+                    out_padding,
+                    groups,
+                    prepack_weight_node,
+                    prepack_bias_node,
+                )
+                new_conv_node = gm.graph.call_function(
+                    torch.ops.torch_ipex.prepacked_dynamic_conv.tensor, args=new_args
+                    #aten.convolution.default, args=new_args
+                )
+                conv_node.replace_all_uses_with(new_conv_node)
+                new_conv_node.meta.update(conv_node.meta)
+                gm.graph.erase_node(conv_node)
+            # conv_args = list(conv_node.args)
+            # conv_args[1] = qw
+    gm.graph.eliminate_dead_code()
+    gm.graph.lint()
+    gm.recompile()
+    return gm
+
 
 def freeze(
     dynamo_gm: torch.fx.GraphModule,
@@ -183,6 +308,8 @@ def freeze(
     print("graph before constant folding is: {}".format(aot_autograd_gm), flush=True)
 
     constant_fold(aot_autograd_gm)
+
+    quantization_weight_prepack(aot_autograd_gm)
 
     print("graph after constant folding is: {}".format(aot_autograd_gm), flush=True)
     from torch.fx.passes.graph_drawer import FxGraphDrawer
