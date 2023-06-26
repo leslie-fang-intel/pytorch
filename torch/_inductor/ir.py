@@ -4265,17 +4265,32 @@ class IPEXQConv(ExternKernelAlloc):
         assert len(weight_qparams) == 3  # scale, zero point, axis
         assert len(output_qparams) == 3  # scale, zero point, dtype
 
+        weight_qparams[0].realize()
+        weight_qparams[1].realize()
 
-
-        inputs.extend(input_qparams + weight_qparams[:2] + output_qparams[:2])
+        # output_qparams[:2]
+        inputs.extend(weight_qparams[:2])
         self.non_bias = False
         if packed_bias is None:
             self.non_bias = True
             inputs.extend([packed_weight,])
-            constant_args.extend([weight_qparams[2], output_qparams[2], packed_bias])
+            constant_args.extend([
+                input_qparams[0],
+                input_qparams[1],
+                weight_qparams[2],
+                output_qparams[0],
+                output_qparams[1],
+                output_qparams[2],
+                packed_bias])
         else:
             inputs.extend([packed_weight, packed_bias])
-            constant_args.extend([weight_qparams[2], output_qparams[2]])         
+            constant_args.extend([
+                input_qparams[0],
+                input_qparams[1],
+                weight_qparams[2],
+                output_qparams[0],
+                output_qparams[1],
+                output_qparams[2]])         
 
         print("inputs is: {}".format(inputs), flush=True)
         print("constant_args is: {}".format(constant_args), flush=True)
@@ -4288,15 +4303,17 @@ class IPEXQConv(ExternKernelAlloc):
         # args = [x, w, b?, x_scale, x_zp, w_scale, w_zp, o_scale, o_zp]
         if not self.non_bias:
             args = [x.codegen_reference() for x in self.inputs]
-            x_scale, x_zp = args[-8], args[-7]
-            w_scale, w_zp = args[-6], args[-5]
-            o_inv_scale, o_zp = args[-4], args[-3]
+            # x_scale, x_zp = args[-8], args[-7]
+            w_scale, w_zp = args[-4], args[-3]
+            # o_inv_scale, o_zp = args[-4], args[-3]
             # const args = [stride, padding, dilation, groups, w_axis, o_dtype]
             const_args = []
             const_args.extend(self.codegen_const_args())
             packed_weight, packed_bias = args[-2], args[-1]
             o_dtype = const_args[-1]
-            w_axis = const_args[-2]
+            o_inv_scale, o_zp = const_args[-3], const_args[-2]
+            w_axis = const_args[-4]
+            x_scale, x_zp = const_args[-6], const_args[-5]
             input_qparams = [x_scale, x_zp]
             weight_qparams = [w_scale, w_zp, w_axis]
             output_qparams = [o_inv_scale, o_zp, o_dtype]
@@ -4306,16 +4323,18 @@ class IPEXQConv(ExternKernelAlloc):
             groups = const_args[3]
         else:
             args = [x.codegen_reference() for x in self.inputs]
-            x_scale, x_zp = args[-7], args[-6]
-            w_scale, w_zp = args[-5], args[-4]
-            o_inv_scale, o_zp = args[-3], args[-2]
+            # x_scale, x_zp = args[-7], args[-6]
+            w_scale, w_zp = args[-3], args[-2]
+            # o_inv_scale, o_zp = args[-3], args[-2]
             # const args = [stride, padding, dilation, groups, w_axis, o_dtype]
             const_args = []
             const_args.extend(self.codegen_const_args())
             packed_weight = args[-1]
             packed_bias = const_args[-1]
             o_dtype = const_args[-2]
-            w_axis = const_args[-3]
+            o_inv_scale, o_zp = const_args[-4], const_args[-3]
+            w_axis = const_args[-5]
+            x_scale, x_zp = const_args[-7], const_args[-6]
             input_qparams = [x_scale, x_zp]
             weight_qparams = [w_scale, w_zp, w_axis]
             output_qparams = [o_inv_scale, o_zp, o_dtype]
@@ -4413,6 +4432,12 @@ class IPEXQConv(ExternKernelAlloc):
             transposed,
             output_padding,
         )
+
+        print("packed_weight is: {}".format(packed_weight), flush=True)
+        packed_weight.realize()
+        if bias is not None:
+            packed_bias.realize()
+
         # swap padding and stride to align with functional conv arg order
         if bias is None:
             constant_args[1], constant_args[2] = constant_args[2], constant_args[1]
