@@ -562,7 +562,7 @@ class GraphLowering(torch.fx.Interpreter):
         # this is a constant
         value = getattr(self.module, target)
 
-        if unsupported_output_tensor(value):
+        if unsupported_output_tensor(value) or value.is_mkldnn:
             return self.add_tensor_constant(value)
 
         with no_dispatch():
@@ -574,6 +574,7 @@ class GraphLowering(torch.fx.Interpreter):
 
                 return tensor(value.tolist(), dtype=value.dtype, device=value.device)
 
+        print("---- value.is_mkldnn is: {} ----".format(value.is_mkldnn), flush=True)
         return self.add_tensor_constant(value)
 
     def call_module(self, target, args, kwargs):

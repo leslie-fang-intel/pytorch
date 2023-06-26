@@ -4435,8 +4435,12 @@ class IPEXQConv(ExternKernelAlloc):
 
         print("packed_weight is: {}".format(packed_weight), flush=True)
         packed_weight.realize()
+        print("packed_weight is: {}".format(packed_weight), flush=True)
         if bias is not None:
+            print("packed_bias is: {}".format(packed_bias), flush=True)
+            bias.realize()
             packed_bias.realize()
+            print("packed_bias is: {}".format(packed_bias), flush=True)
 
         # swap padding and stride to align with functional conv arg order
         if bias is None:
