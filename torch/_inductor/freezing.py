@@ -15,6 +15,7 @@ from torch.ao.quantization._pt2e.utils import _fuse_conv_bn_
 from torch.fx.experimental.proxy_tensor import make_fx
 from . import config
 from .decomposition import select_decomp_table
+from typing import TYPE_CHECKING, Union, Callable, Any, Tuple
 
 aten = torch.ops.aten
 
@@ -297,6 +298,76 @@ def quantization_weight_prepack(gm):
     gm.recompile()
     return gm
 
+@torch.utils._python_dispatch._disable_current_modes()
+def duplicate_dequant_node(gm):
+    decomposed = torch.ops.quantized_decomposed
+    quantized_graph = False
+    for node in gm.graph.nodes:
+        if node.target == decomposed.dequantize_per_channel.default:
+            quantized_graph = True
+    if not quantized_graph:
+        return
+    aten = torch.ops.aten
+    # step1: find dequant pattern
+    # step2: if dequant pattern used by 2 nodes, duplicate these pattern
+    for node in gm.graph.nodes:
+        find_dequant_pattern = False
+        if node.target == torch.ops.prims.convert_element_type.default:
+            print("----- inside duplicate_dequant_node node is: {}".format(node), flush=True)
+            print(node.users)
+            to_fp32_node = node
+            if len(list(to_fp32_node.users)) == 1 and list(to_fp32_node.users)[0].target == torch.ops.aten.sub.Tensor:
+                sub_node = list(to_fp32_node.users)[0]
+                if len(list(sub_node.users)) == 1 and list(sub_node.users)[0].target == torch.ops.aten.mul.Tensor:
+                    mul_node = list(sub_node.users)[0]
+                    find_dequant_pattern = True
+                    if len(list(mul_node.users)) > 1:
+                        print("find_dequant_pattern is: {}".format(find_dequant_pattern), flush=True)
+                        for index in range(len(list(mul_node.users)) -1):
+                            user_node = list(mul_node.users)[index]
+                            with gm.graph.inserting_before(user_node):
+                                new_mul_node = gm.graph.call_function(
+                                    torch.ops.aten.mul.Tensor, args=mul_node.args
+                                )
+                                original_args = user_node.args
+                                new_args = []
+                                for arg in  original_args:
+                                    if arg == mul_node:
+                                        new_args.append(new_mul_node)
+                                    else:
+                                        new_args.append(arg)
+                                user_node.args = tuple(new_args)
+                                with gm.graph.inserting_before(new_mul_node):
+                                    new_sub_node = gm.graph.call_function(
+                                        torch.ops.aten.sub.Tensor, args=sub_node.args
+                                    )
+                                    original_args = new_mul_node.args
+                                    new_args = []
+                                    for arg in  original_args:
+                                        if arg == sub_node:
+                                            new_args.append(new_sub_node)
+                                        else:
+                                            new_args.append(arg)
+                                    new_mul_node.args = tuple(new_args)
+                                    with gm.graph.inserting_before(new_sub_node):
+                                        new_to_fp32_node = gm.graph.call_function(
+                                            torch.ops.prims.convert_element_type.default, args=to_fp32_node.args
+                                        )
+                                        original_args = new_sub_node.args
+                                        new_args = []
+                                        for arg in  original_args:
+                                            if arg == to_fp32_node:
+                                                new_args.append(new_to_fp32_node)
+                                            else:
+                                                new_args.append(arg)
+                                        new_sub_node.args = tuple(new_args)
+
+
+    gm.graph.eliminate_dead_code()
+    gm.graph.lint()
+    gm.recompile()
+    return gm
+
 def freeze(
     dynamo_gm: torch.fx.GraphModule,
     aot_autograd_gm: torch.fx.GraphModule,
@@ -347,6 +418,9 @@ def freeze(
     # TODO - apply legalization in pattern matcher
     torch.fx.passes.tools_common.legalize_graph(aot_autograd_gm)
     constant_fold(aot_autograd_gm)
+
+    ## Duplicate dequant node
+    # duplicate_dequant_node(aot_autograd_gm)
 
     # invalidate nn Modules
     if config.freezing_discard_parameters:
