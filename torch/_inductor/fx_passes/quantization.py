@@ -143,7 +143,13 @@ def _register_quantized_conv_lowering(pattern):
 ipex_aten_conv_pattern = CallFunction(
     torch.ops.torch_ipex.prepacked_dynamic_conv.tensor,
     dequantize_activation_pattern,
-    dequantize_weight_pattern,
+    KeywordArg("dynamic_x_scale"),  # x_scale
+    KeywordArg("dynamic_x_zp"),  # x_zp
+    #dequantize_weight_pattern,
+    KeywordArg("packed_weight"),  # packed_weight
+    KeywordArg("w_scale"),  # w_scale
+    KeywordArg("w_zp"),  # w_zp
+    KeywordArg("w_axis"),  # w_axis
     KeywordArg("b"),  # bias
     KeywordArg("stride"),
     KeywordArg("padding"),
@@ -151,7 +157,6 @@ ipex_aten_conv_pattern = CallFunction(
     KeywordArg("transposed"),
     KeywordArg("o_padding"),
     KeywordArg("groups"),
-    KeywordArg("packed_weight"),
 )
 
 quantize_ipex_conv_output_pattern = CallFunction(
@@ -184,12 +189,12 @@ def _register_ipex_quantized_conv_lowering(pattern):
     @register_lowering_pattern(pattern)
     def qconv(match: Match, *args, **kwargs):
         x, x_scale, x_zp = kwargs["x"], kwargs["x_scale"], kwargs["x_zp"]
-        w, w_scale, w_zp, w_axis = (
-            kwargs["w"],
-            kwargs["w_scale"],
-            kwargs["w_zp"],
-            kwargs["w_axis"],
-        )
+        # w, w_scale, w_zp, w_axis = (
+        #     kwargs["w"],
+        #     kwargs["w_scale"],
+        #     kwargs["w_zp"],
+        #     kwargs["w_axis"],
+        # )
         b, stride, padding, dilation = (
             kwargs["b"],
             kwargs["stride"],
@@ -203,20 +208,25 @@ def _register_ipex_quantized_conv_lowering(pattern):
             kwargs["o_dtype"],
         )
 
-        packed_weight = kwargs["packed_weight"]
-
+        # packed_weight = kwargs["packed_weight"]
+        packed_weight, w_scale, w_zp, w_axis = (
+            kwargs["packed_weight"],
+            kwargs["w_scale"],
+            kwargs["w_zp"],
+            kwargs["w_axis"],
+        )
         global pattern_match_count
         pattern_match_count += 1
         print("---- matched the pattern ----: {}".format(pattern_match_count), flush=True)
 
-        weight_shape = w.get_size()
+        weight_shape = packed_weight.get_size()
         dim = len(weight_shape) - 2
         return IPEXQConv.create(
             dim,
             x,
             x_scale,
             x_zp,
-            w,
+            packed_weight,
             w_scale,
             w_zp,
             w_axis,
@@ -228,7 +238,6 @@ def _register_ipex_quantized_conv_lowering(pattern):
             o_inv_scale,
             o_zero_point,
             o_dtype,
-            packed_weight,
         )
 
     return qconv

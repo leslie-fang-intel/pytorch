@@ -249,6 +249,9 @@ def quantization_weight_prepack(gm):
             weight_int8_tensor = getattr(gm, qw.target)
             bias_tensor = getattr(gm, bias.target) if bias is not None else None
             w_scale_tensor = getattr(gm, w_scale.target)
+            w_zp_tensor = getattr(gm, w_zp.target)
+            # w_axis = w_axis
+            # print("w_axis is: {}".format(w_axis), flush=True)
             # x_scale_tensor = getattr(gm, x_scale.target)
             # x_zp_tensor = getattr(gm, x_zp.target)
             x_scale_tensor = x_scale
@@ -276,7 +279,12 @@ def quantization_weight_prepack(gm):
             with gm.graph.inserting_after(conv_node):
                 new_args = (
                     x,
-                    w,
+                    x_scale,
+                    x_zp,
+                    prepack_weight_node,
+                    w_scale,
+                    w_zp,
+                    w_axis,
                     bias,
                     stride,
                     padding,
@@ -284,7 +292,6 @@ def quantization_weight_prepack(gm):
                     is_transposed,
                     out_padding,
                     groups,
-                    prepack_weight_node,
                 )
                 new_conv_node = gm.graph.call_function(
                     torch.ops.torch_ipex.prepacked_dynamic_conv.tensor, args=new_args

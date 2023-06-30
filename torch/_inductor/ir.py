@@ -4250,7 +4250,6 @@ class IPEXQConv(ExternKernelAlloc):
         output_qparams,
         constant_args=(),
         dim=2,
-        packed_weight = None,
         has_bias = False
     ):
         """
@@ -4280,7 +4279,7 @@ class IPEXQConv(ExternKernelAlloc):
         # output_qparams[:2]
         inputs.extend(weight_qparams[:2])
 
-        inputs.extend([packed_weight,])
+        # inputs.extend([packed_weight,])
         constant_args.extend([
             input_qparams[0],
             input_qparams[1],
@@ -4297,10 +4296,10 @@ class IPEXQConv(ExternKernelAlloc):
         if self.has_bias:
             # If bias is not None, bias will inputs[2]
             args = [x.codegen_reference() for x in self.inputs]
-            # args is: [x, weight, bias, w_scale, w_zp, packed_weight]
+            # args is: [x, weight, bias, w_scale, w_zp]
+            packed_weight = args[1]
             bias = args[2]
-            w_scale, w_zp = args[-3], args[-2]
-            packed_weight = args[-1]
+            w_scale, w_zp = args[-2], args[-1]
             
             const_args = []
             const_args.extend(self.codegen_const_args())
@@ -4316,9 +4315,9 @@ class IPEXQConv(ExternKernelAlloc):
         else:
             # If bias is None, bias will be the first element of const_args
             args = [x.codegen_reference() for x in self.inputs]
-            # args is: [x, weight, w_scale, w_zp, packed_weight]
-            w_scale, w_zp = args[-3], args[-2]
-            packed_weight = args[-1]
+            # args is: [x, weight, w_scale, w_zp]
+            packed_weight = args[1]
+            w_scale, w_zp = args[-2], args[-1]
             const_args = []
             const_args.extend(self.codegen_const_args())
             # const_args is: [bias, stride, padding, dilation, groups, x_scale, x_zp, w_axis, o_inv_scale, o_zp, o_dtype]
@@ -4359,7 +4358,7 @@ class IPEXQConv(ExternKernelAlloc):
         x: "TensorBox",
         x_scale,
         x_zp,
-        weight: "TensorBox",
+        weight: "TensorBox", # packed_weight
         w_scale,
         w_zp,
         w_axis: int,
@@ -4371,7 +4370,6 @@ class IPEXQConv(ExternKernelAlloc):
         o_inv_scale: "TensorBox",
         output_zero_point: "TensorBox",
         output_dtype,
-        packed_weight,
     ):
         transposed = False
         output_padding = None
@@ -4388,7 +4386,9 @@ class IPEXQConv(ExternKernelAlloc):
             output_padding,
         )
 
-        packed_weight.realize()
+        # packed_weight.realize()
+
+        # packed_weight = weight
 
         # swap padding and stride to align with functional conv arg order
         if bias is None:
@@ -4407,7 +4407,6 @@ class IPEXQConv(ExternKernelAlloc):
             output_qparams=output_qparams,
             constant_args=constant_args,
             dim=dim,
-            packed_weight=packed_weight,
             has_bias = (bias is not None)
         )
 
