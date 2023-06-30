@@ -45,8 +45,11 @@ def freezing_passes(gm: torch.fx.GraphModule):
 def lazy_init():
     if torch._C._has_mkldnn and config.cpp.weight_prepack:
         from .mkldnn_fusion import _mkldnn_weight_pack_init
+        from .quantization import _quantization_dequant_promotion_init
 
         _mkldnn_weight_pack_init()
+
+        _quantization_dequant_promotion_init()
 
     addmm_patterns_init()
 
