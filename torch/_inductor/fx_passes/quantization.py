@@ -244,6 +244,11 @@ def _register_ipex_quantized_conv_lowering(pattern):
 
     return qconv
 
+def register_quantization_lowerings():
+    _register_quantized_conv_lowering(quantize_conv_output_pattern)
+    _register_ipex_quantized_conv_lowering(quantize_ipex_conv_output_pattern)
+    #_register_dequant_promotion_pass(dequant_node_pattern)
+
 dequant_node_pattern = CallFunction(
     aten.mul.Tensor,
     CallFunction(
@@ -303,11 +308,120 @@ def _register_dequant_promotion_pass(pattern):
                             new_to_fp32_node.meta = copy.copy(to_fp32_node.meta)
                             new_sub_node.replace_input_with(to_fp32_node, new_to_fp32_node)
 
-def register_quantization_lowerings():
-    _register_quantized_conv_lowering(quantize_conv_output_pattern)
-    _register_ipex_quantized_conv_lowering(quantize_ipex_conv_output_pattern)
-    #_register_dequant_promotion_pass(dequant_node_pattern)
+dequant_per_channel_pattern = CallFunction(
+    quantized_decomposed.dequantize_per_channel.default, # dequant_per_channel node
+    KeywordArg("q_weight"),  # bias
+    KeywordArg("w_scale"),
+    KeywordArg("w_zp"),
+    KeywordArg("w_axis"),
+    KeywordArg("w_quant_min"),
+    KeywordArg("w_quant_max"),
+    KeywordArg("w_dtype"),
+)
+
+dequant_convolution_node_pattern = CallFunction(
+    aten.convolution.default,
+    dequantize_activation_pattern,
+    #quantized_decomposed.dequantize_per_channel.default, # dequant_per_channel node
+    dequant_per_channel_pattern,
+    KeywordArg("b"),  # bias
+    KeywordArg("stride"),
+    KeywordArg("padding"),
+    KeywordArg("dilation"),
+    KeywordArg("is_transposed"),
+    KeywordArg("out_padding"),
+    KeywordArg("groups"),
+)
+
+def _register_qconv_weight_prepack_pass(pattern):
+    @register_freezing_graph_pattern(pattern, pass_number=1) #pass_number=1, ensure it's behand dequant promotion pass
+    def qconv_weight_prepack(match: Match, *args, **kwargs):
+        to_fp32_node = match.nodes[0]
+        sub_node = match.nodes[1]
+        mul_node = match.nodes[2]
+        dequant_per_channel = match.nodes[3]
+        conv_node = match.nodes[4]
+        print("---- match dequant weight prepack pattern ----", flush=True)
+        print("conv_node is: {}".format(conv_node), flush=True)
+        print("to_fp32_node is: {}".format(to_fp32_node), flush=True)
+        print("sub_node is: {}".format(sub_node), flush=True)
+        print("mul_node is: {}".format(mul_node), flush=True)
+        print("dequant_per_channel is: {}".format(dequant_per_channel), flush=True)
+
+        # print("qw is: {}".format(kwargs), flush=True)
+
+        bias, stride, padding, dilation, is_transposed, out_padding, groups = (
+            kwargs["b"],
+            kwargs["stride"],
+            kwargs["padding"],
+            kwargs["dilation"],
+            kwargs["is_transposed"],
+            kwargs["out_padding"],
+            kwargs["groups"],
+        )
+
+        qx, x_dq_dtype, x_zp, x_scale = (
+            kwargs["x"],
+            kwargs["x_dq_dtype"],
+            kwargs["x_zp"],
+            kwargs["x_scale"],
+        )
+
+        qw, w_scale, w_zp, w_axis, w_quant_min, w_quant_max, w_dtype = (
+            kwargs["q_weight"],  # bias
+            kwargs["w_scale"],
+            kwargs["w_zp"],
+            kwargs["w_axis"],
+            kwargs["w_quant_min"],
+            kwargs["w_quant_max"],
+            kwargs["w_dtype"],
+        )
+
+        # Use as scale, zp from dequant node to do weight prepack and requant inside dynamic_qconv_op
+        x_shape = qx.meta.get("tensor_meta").shape
+        graph = match.graph
+        with graph.inserting_before(conv_node):
+
+            packed_weight_inputs = (
+                qw,
+                w_scale,
+                x_shape,
+                x_scale,
+                x_zp,
+                stride,
+                padding,
+                dilation,
+                groups,
+            )
+            packed_weight_op = torch.ops.torch_ipex.qconv_prepack_pt2e
+            prepack_weight_node = graph.call_function(
+                packed_weight_op, args=packed_weight_inputs
+            )
+
+            new_args = (
+                mul_node,
+                x_scale,
+                x_zp,
+                prepack_weight_node,
+                w_scale,
+                w_zp,
+                w_axis,
+                bias,
+                stride,
+                padding,
+                dilation,
+                is_transposed,
+                out_padding,
+                groups,
+            )
+            new_conv_node = graph.call_function(
+                torch.ops.torch_ipex.prepacked_dynamic_conv.tensor, args=new_args
+            )
+            conv_node.replace_all_uses_with(new_conv_node)
+            new_conv_node.meta.update(conv_node.meta)
+            graph.erase_node(conv_node)
 
 @functools.lru_cache(None)
 def _quantization_dequant_promotion_init():
     _register_dequant_promotion_pass(dequant_node_pattern)
+    _register_qconv_weight_prepack_pass(dequant_convolution_node_pattern)

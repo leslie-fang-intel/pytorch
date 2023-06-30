@@ -399,7 +399,7 @@ def freeze(
 
     fuse_conv_bn(aot_autograd_gm)
 
-    quantization_weight_prepack(aot_autograd_gm)
+    #quantization_weight_prepack(aot_autograd_gm)
 
     # now, decomp batch norm if we were unable to fuse it
     aot_autograd_gm = decompose_unfused_batchnorms(
