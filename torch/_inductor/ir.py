@@ -4384,6 +4384,237 @@ class QConvPointWisePT2E(ExternKernelAlloc):
         )
 
 
+class QConvPointWiseBinaryPT2E(ExternKernelAlloc):
+    def __init__(
+        self,
+        layout,
+        inputs,
+        input_qparams,
+        accum_qparams,
+        weight_qparams,
+        output_qparams,
+        constant_args=(),
+        dim=2,
+        has_bias=False,
+        fp32_output=False,
+        binary_attr="none",
+        alpha=1.0,
+        unary_attr="none",
+        unary_scalars=(),
+        unary_algorithm="",
+    ):
+        """
+        Needs input/weight/output qparams
+        if bias is not None
+            - inputs = [x, w, b]
+            - const_args = [stride, padding, dilation, groups]
+        else
+            - inputs = [x, w]
+            - const_args = [b, stride, padding, dilation, groups]
+        - input_qparams = [scale, zp], assume per-tensor quantize to uint8
+        - weight_qparams = [scales, zp, axis], assume per-channel quantize to sint8
+        - output_qparams = [scale, zp, dtype], assume per-tensor quantize
+        Scales/zero points should be taken as inputs
+        Axis/dtypes are constants
+        """
+        assert len(input_qparams) == 2  # scale, zero point
+        assert len(weight_qparams) == 3  # scale, zero point, axis
+        assert len(output_qparams) == 3  # scale, zero point, dtype
+
+        self.has_bias = has_bias
+
+        weight_qparams[0].realize()
+        weight_qparams[1].realize()
+
+        # output_qparams[:2]
+        inputs.extend(weight_qparams[:2])
+
+        # inputs.extend([packed_weight,])
+        constant_args.extend(
+            [
+                input_qparams[0],
+                input_qparams[1],
+                accum_qparams[0],
+                accum_qparams[1],
+                weight_qparams[2],
+                output_qparams[0],
+                output_qparams[1],
+                output_qparams[2],
+                fp32_output,
+                binary_attr,
+                alpha,
+                unary_attr,
+                unary_scalars,
+                unary_algorithm,
+            ]
+        )
+
+        super().__init__(layout, inputs, constant_args)
+        self.dim = dim
+
+    def codegen(self, wrapper):
+        if self.has_bias:
+            # If bias is not None, bias will inputs[2]
+            args = [x.codegen_reference() for x in self.inputs]
+            # args is: [x, weight, bias, accum, w_scale, w_zp]
+            packed_weight = args[1]
+            bias = args[2]
+            accum = args[3]
+            w_scale, w_zp = args[-2], args[-1]
+            const_args = []
+            const_args.extend(self.codegen_const_args())
+            # const_args is: [stride, padding, dilation, groups, x_scale, x_zp, accum_scale, accum_zp, w_axis, o_inv_scale, o_zp, o_dtype,
+            # fp32_output, binary_attr, aplha, unary_attr, unary_scalars, unary_algorithm]
+            stride = const_args[0]
+            padding = const_args[1]
+            dilation = const_args[2]
+            groups = const_args[3]
+            x_scale, x_zp = const_args[4], const_args[5]
+            accum_scale, accum_zp = const_args[6], const_args[7]
+            w_axis = const_args[8]
+            o_inv_scale, o_zp = const_args[9], const_args[10]
+            o_dtype = const_args[11]
+            fp32_output = const_args[12]
+            binary_attr = const_args[13]
+            alpha = const_args[14]
+            unary_attr, unary_scalars, unary_algorithm = (
+                const_args[15],
+                const_args[16],
+                const_args[17],
+            )
+        else:
+            # If bias is None, bias will be the first element of const_args
+            args = [x.codegen_reference() for x in self.inputs]
+            # args is: [x, weight, accum, w_scale, w_zp]
+            packed_weight = args[1]
+            accum = args[2]
+            w_scale, w_zp = args[-2], args[-1]
+            const_args = []
+            const_args.extend(self.codegen_const_args())
+            # const_args is: [bias, stride, padding, dilation, groups, x_scale, x_zp, accum_scale, accum_zp, w_axis, o_inv_scale, o_zp, o_dtype,
+            # fp32_output, binary_attr, aplha, unary_attr, unary_scalars, unary_algorithm]
+            bias = const_args[0]
+            stride = const_args[1]
+            padding = const_args[2]
+            dilation = const_args[3]
+            groups = const_args[4]
+            x_scale, x_zp = const_args[5], const_args[6]
+            accum_scale, accum_zp = const_args[7], const_args[8]
+            w_axis = const_args[9]
+            o_inv_scale, o_zp = const_args[10], const_args[11]
+            o_dtype = const_args[12]
+            fp32_output = const_args[13]
+            binary_attr = const_args[14]
+            alpha = const_args[15]
+            unary_attr, unary_scalars, unary_algorithm = (
+                const_args[16],
+                const_args[17],
+                const_args[18],
+            )
+
+        self.kernel = "torch.ops.quantized.qconv2d_pointwise_pt2e.binary"
+        conv_args = (
+            "{}".format(args[0])
+            + ", {}".format(x_scale)
+            + ", {}".format(x_zp)
+            + ", {}".format(accum)
+            + ", {}".format(accum_scale)
+            + ", {}".format(accum_zp)
+            + ", {}".format(packed_weight)
+            + ", {}".format(w_scale)
+            + ", {}".format(w_zp)
+            + ", {}".format(bias)
+            + ", {}".format(stride)
+            + ", {}".format(padding)
+            + ", {}".format(dilation)
+            + ", {}".format(groups)
+            + ", {}".format(o_inv_scale)
+            + ", {}".format(o_zp)
+            + ", {}".format(fp32_output)  # not fp32 output
+            + ", {}".format(binary_attr)  # binary_attr
+            + ", {}".format(alpha)  # alpha
+            + ", {}".format(unary_attr)  # no unary postop
+            + ", {}".format(unary_scalars)  # unary postop scalars
+            + ", {}".format(unary_algorithm)  # unary postop algorithm
+        )
+        wrapper.writeline(f"{self.get_name()} = {self.kernel}({conv_args})")
+        if isinstance(self.layout, Layout):
+            self.codegen_size_asserts(wrapper)
+
+    @classmethod
+    def create(
+        cls,
+        dim: int,
+        x: "TensorBox",
+        x_scale,
+        x_zp,
+        accum: "TensorBox",
+        accum_scale,
+        accum_zp,
+        weight: "TensorBox",  # packed_weight
+        w_scale,
+        w_zp,
+        w_axis: int,
+        bias: "TensorBox",
+        stride_: List[int],
+        padding_: List[int],
+        dilation_: List[int],
+        groups: int,
+        o_inv_scale: "TensorBox",
+        output_zero_point: "TensorBox",
+        output_dtype,
+        fp32_output,
+        binary_attr,
+        alpha,
+        unary_attr,
+        unary_scalars,
+        unary_algorithm,
+    ):
+        transposed = False
+        output_padding = None
+        (inputs, constant_args, kernel_layout, req_stride_order) = _prepare_convolution_fusion_create(
+            cls,
+            x,
+            weight,
+            bias,
+            padding_,
+            stride_,
+            dilation_,
+            groups,
+            transposed,
+            output_padding,
+        )
+
+        accum = cls.require_stride_order(accum, req_stride_order)
+        inputs.append(accum)
+
+        # swap padding and stride to align with functional conv arg order
+        if bias is None:
+            constant_args[1], constant_args[2] = constant_args[2], constant_args[1]
+        else:
+            constant_args[0], constant_args[1] = constant_args[1], constant_args[0]
+
+        input_qparams = [x_scale, x_zp]
+        weight_qparams = [w_scale, w_zp, w_axis]
+        output_qparams = [o_inv_scale, output_zero_point, output_dtype]
+        return QConvPointWiseBinaryPT2E(
+            layout=kernel_layout,
+            inputs=inputs,
+            input_qparams=input_qparams,
+            accum_qparams=[accum_scale, accum_zp],
+            weight_qparams=weight_qparams,
+            output_qparams=output_qparams,
+            constant_args=constant_args,
+            dim=dim,
+            has_bias=(bias is not None),
+            fp32_output=fp32_output,
+            binary_attr=binary_attr,
+            alpha=alpha,
+            unary_attr=unary_attr,
+            unary_scalars=unary_scalars,
+            unary_algorithm=unary_algorithm,
+        )
+
 @dataclasses.dataclass
 class MutableBox(IRNode):
     """
