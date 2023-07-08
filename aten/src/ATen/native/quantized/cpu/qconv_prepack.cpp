@@ -559,7 +559,7 @@ at::Tensor _qconv_prepack_pt2e(
       strides, padding_l, padding_r, dilates, groups,
       dnnl::algorithm::convolution_direct, dnnl::prop_kind::forward_inference,
       dnnl::memory::data_type::u8, x_dims, op_attr, /*is_channels_last=*/true);
-  weight_copy = weight.clone();
+  weight_copy = weight.is_contiguous() ? weight.clone() : weight.contiguous();
   if (with_groups) {
     w_tag = kSpatialDim == 2 ? ideep::tag::goihw : ideep::tag::goidhw;
   } else {
