@@ -251,7 +251,7 @@ class X86InductorQuantizer(Quantizer):
         # can take precedence over single operator pattern in this way
         config = self.global_config
         # self._annotate_conv2d_binary_unary(model, config)
-        # self._annotate_conv2d_binary(model, config)
+        self._annotate_conv2d_binary(model, config)
         self._annotate_conv2d_unary(model, config)
         self._annotate_conv2d(model, config)
         return model
