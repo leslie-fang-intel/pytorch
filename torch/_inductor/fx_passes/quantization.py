@@ -444,11 +444,107 @@ def _register_quantized_conv_add_lowering_pt2e(pattern):
 
     return qconv
 
+quantize_conv_add_relu_output_pattern_pt2e = CallFunction(
+    prims.convert_element_type.default,
+    CallFunction(
+        aten.clamp_max.default,
+        CallFunction(
+            aten.clamp_min.default,
+            CallFunction(
+                aten.add.Tensor,
+                CallFunction(
+                    aten.round.default,
+                    CallFunction(
+                        aten.mul.Tensor,
+                        CallFunction(
+                            aten.relu.default,
+                            CallFunction(
+                                aten.add.Tensor,
+                                aten_qconv_pt2e_pattern,  # output of conv
+                                dequantize_accum_pattern,
+                            ),
+                        ),
+                        KeywordArg("o_inv_scale"),
+                    ),
+                ),
+                KeywordArg("o_zp"),
+            ),
+            KeywordArg("o_qmin"),  # 0
+        ),
+        KeywordArg("o_qmax"),  # 127
+    ),
+    KeywordArg("o_dtype"),  # dtype=torch.uint8
+)
+
+def _register_quantized_conv_add_relu_lowering_pt2e(pattern):
+    @register_lowering_pattern(pattern)
+    def qconv(match: Match, *args, **kwargs):
+        x, x_scale, x_zp = kwargs["x"], kwargs["x_scale"], kwargs["x_zp"]
+        accum, accum_scale, accum_zp = kwargs["accum"], kwargs["accum_scale"], kwargs["accum_zp"]
+        b, stride, padding, dilation = (
+            kwargs["b"],
+            kwargs["stride"],
+            kwargs["padding"],
+            kwargs["dilation"],
+        )
+        groups, o_inv_scale, o_zero_point, o_dtype = (
+            kwargs["groups"],
+            kwargs["o_inv_scale"],
+            kwargs["o_zp"],
+            kwargs["o_dtype"],
+        )
+
+        # packed_weight = kwargs["packed_weight"]
+        packed_weight, w_scale, w_zp, w_axis = (
+            kwargs["packed_weight"],
+            kwargs["w_scale"],
+            kwargs["w_zp"],
+            kwargs["w_axis"],
+        )
+        global pattern_match_count
+        pattern_match_count += 1
+        print(
+            "---- matched the qconv_add_relu pattern ----: {}".format(pattern_match_count), flush=True
+        )
+
+        weight_shape = packed_weight.get_size()
+        dim = len(weight_shape) - 2
+        return TensorBox.create(QConvPointWiseBinaryPT2E.create(
+            dim,
+            x,
+            x_scale,
+            x_zp,
+            accum,
+            accum_scale,
+            accum_zp,
+            packed_weight,
+            w_scale,
+            w_zp,
+            w_axis,
+            b,
+            stride,
+            padding,
+            dilation,
+            groups,
+            o_inv_scale,
+            o_zero_point,
+            o_dtype,
+            False,  # fp32_output
+            "add",  # binary_attr
+            1.0,  # alpha
+            "relu",  # unary_attr
+            [],  # unary_scalars
+            "",  # unary_algorithm
+        ))
+
+    return qconv
+
 def register_quantization_lowerings():
     _register_quantized_conv_lowering(quantize_conv_output_pattern)
     _register_quantized_conv_lowering_pt2e(quantize_conv_output_pattern_pt2e)
     _register_quantized_conv_relu_lowering_pt2e(quantize_conv_relu_output_pattern_pt2e)
     _register_quantized_conv_add_lowering_pt2e(quantize_conv_add_output_pattern_pt2e)
+    _register_quantized_conv_add_relu_lowering_pt2e(quantize_conv_add_relu_output_pattern_pt2e)
 
 
 dequant_node_pattern = CallFunction(
