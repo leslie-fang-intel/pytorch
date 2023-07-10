@@ -1782,6 +1782,10 @@ class QConvPT2E final {
         attr,
         ".")
     }
+    // Because of constant folding, decomposed quant has inv_scale = 1.0 / scale
+    // we will only get inv_scale instead of scale
+    // TODO <Leslie> Fix it.
+    output_scale = 1.0 / output_scale;
     return _quantized_convolution_pt2e(
         act, act_scale, act_zero_point,
         weight, weight_scales, weight_zero_points,
