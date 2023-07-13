@@ -137,6 +137,50 @@ quantize_conv_relu_output_pattern_pt2e = CallFunction(
 pattern_match_count = 0
 
 
+dequantize_accum_pattern = CallFunction(
+    aten.mul.Tensor,
+    CallFunction(
+        aten.sub.Tensor,
+        CallFunction(
+            prims.convert_element_type.default,
+            KeywordArg("accum"),
+            KeywordArg("accum_dq_dtype"),
+        ),
+        KeywordArg("accum_zp"),
+    ),
+    KeywordArg("accum_scale"),
+)
+
+quantize_conv_add_output_pattern_pt2e = CallFunction(
+    prims.convert_element_type.default,
+    CallFunction(
+        aten.clamp_max.default,
+        CallFunction(
+            aten.clamp_min.default,
+            CallFunction(
+                aten.add.Tensor,
+                CallFunction(
+                    aten.round.default,
+                    CallFunction(
+                        aten.mul.Tensor,
+                        CallFunction(
+                            aten.add.Tensor,
+                            dequantize_qconv_pt2e_pattern,  # output of conv
+                            dequantize_accum_pattern,
+                        ),
+                        KeywordArg("o_inv_scale"),
+                    ),
+                ),
+                KeywordArg("o_zp"),
+            ),
+            KeywordArg("o_qmin"),  # 0
+        ),
+        KeywordArg("o_qmax"),  # 127
+    ),
+    KeywordArg("o_dtype"),  # dtype=torch.uint8
+)
+
+
 def _register_quantized_conv_lowering(pattern):
     @register_lowering_pattern(pattern)
     def qconv(match: Match, *args, **kwargs):
@@ -265,10 +309,74 @@ def _register_quantized_conv_lowering_v2(pattern, computation_op, post_op_attr):
         return L[computation_op](*computation_args)
     return qconv_v2
 
+def _register_quantized_conv_binary_lowering_pt2e(pattern, computation_op, binary_attr, unary_attr):
+    @register_lowering_pattern(pattern)
+    def qconv(match: Match, *args, **kwargs):
+        x, x_scale, x_zp = kwargs["x"], kwargs["x_scale"], kwargs["x_zp"]
+        accum, accum_scale, accum_zp = kwargs["accum"], kwargs["accum_scale"], kwargs["accum_zp"]
+        b, stride, padding, dilation = (
+            kwargs["b"],
+            kwargs["stride"],
+            kwargs["padding"],
+            kwargs["dilation"],
+        )
+        groups, o_inv_scale, o_zero_point, o_dtype = (
+            kwargs["groups"],
+            kwargs["o_inv_scale"],
+            kwargs["o_zp"],
+            kwargs["o_dtype"],
+        )
+
+        # packed_weight = kwargs["packed_weight"]
+        packed_weight, w_scale, w_zp = (
+            kwargs["packed_weight"],
+            kwargs["w_scale"],
+            kwargs["w_zp"],
+        )
+        global pattern_match_count
+        pattern_match_count += 1
+        print(
+            "---- matched the pattern v2 post op:{0}_{1} ----: {2}".format(binary_attr, unary_attr, pattern_match_count), flush=True
+        )
+
+        weight_shape = packed_weight.get_size()
+        dim = len(weight_shape) - 2
+
+        computation_args = (
+                dim,
+                x,
+                x_scale,
+                x_zp,
+                accum,
+                accum_scale,
+                accum_zp,
+                packed_weight,
+                w_scale,
+                w_zp,
+                -1,
+                b,
+                stride,
+                padding,
+                dilation,
+                groups,
+                o_inv_scale,
+                o_zero_point,
+                o_dtype,
+                False,  # fp32_output
+                binary_attr,  # binary_attr
+                1.0,  # alpha
+                unary_attr,  # unary_attr
+                [],  # unary_scalars
+                "",  # unary_algorithmm
+        )
+        return L[computation_op](*computation_args)
+    return qconv
+
 def register_quantization_lowerings():
     # _register_quantized_conv_lowering(quantize_conv_output_pattern_pt2e)
     _register_quantized_conv_lowering_v2(quantize_conv_output_pattern_pt2e, torch.ops.onednn.qconv2d_pointwise, "none")
     _register_quantized_conv_lowering_v2(quantize_conv_relu_output_pattern_pt2e, torch.ops.onednn.qconv2d_pointwise, "relu")
+    _register_quantized_conv_binary_lowering_pt2e(quantize_conv_add_output_pattern_pt2e, torch.ops.onednn.qconv2d_pointwise.binary, "add", "none")
     
 
 
