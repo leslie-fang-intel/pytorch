@@ -6,6 +6,7 @@ from ..ir import QConvPointWisePT2E, TensorBox
 from ..pattern_matcher import Arg, CallFunction, KeywordArg, Match
 from .freezing_patterns import register_freezing_graph_pattern
 from .post_grad import register_lowering_pattern
+from ..lowering import lowerings as L
 
 aten = torch.ops.aten
 prims = torch.ops.prims
@@ -174,8 +175,71 @@ def _register_quantized_conv_lowering(pattern):
     return qconv
 
 
+def _register_quantized_conv_lowering_v2(pattern, computation_op):
+    @register_lowering_pattern(pattern)
+    def qconv_v2(match: Match, *args, **kwargs):
+        x, x_scale, x_zp = kwargs["x"], kwargs["x_scale"], kwargs["x_zp"]
+        b, stride, padding, dilation = (
+            kwargs["b"],
+            kwargs["stride"],
+            kwargs["padding"],
+            kwargs["dilation"],
+        )
+        groups, o_inv_scale, o_zero_point, o_dtype = (
+            kwargs["groups"],
+            kwargs["o_inv_scale"],
+            kwargs["o_zp"],
+            kwargs["o_dtype"],
+        )
+
+        # packed_weight = kwargs["packed_weight"]
+        packed_weight, w_scale, w_zp = (
+            kwargs["packed_weight"],
+            kwargs["w_scale"],
+            kwargs["w_zp"],
+        )
+        global pattern_match_count
+        pattern_match_count += 1
+        print(
+            "---- matched the pattern v2 ----: {}".format(pattern_match_count), flush=True
+        )
+
+        assert (
+            kwargs["fp32_output"] is True
+        )  # Expected int8-in fp32-out qconv in weight prepack phase
+        assert (
+            kwargs["attr"] == "none"
+        )  # Expected no post op fused in weight prepack phase
+        weight_shape = packed_weight.get_size()
+        dim = len(weight_shape) - 2
+        computation_args = (
+                dim,
+                x,
+                x_scale,
+                x_zp,
+                packed_weight,
+                w_scale,
+                w_zp,
+                -1,  # w_axis delete it later
+                b,
+                stride,
+                padding,
+                dilation,
+                groups,
+                o_inv_scale,
+                o_zero_point,
+                o_dtype,
+                False,  # fp32_output
+                "none",  # unary_attr
+                [],  # unary_scalars
+                "",  # unary_algorithm
+        )
+        return L[computation_op](*computation_args)
+    return qconv_v2
+
 def register_quantization_lowerings():
-    _register_quantized_conv_lowering(quantize_conv_output_pattern_pt2e)
+    # _register_quantized_conv_lowering(quantize_conv_output_pattern_pt2e)
+    _register_quantized_conv_lowering_v2(quantize_conv_output_pattern_pt2e, torch.ops.onednn.qconv2d_pointwise)
 
 
 dequant_node_pattern = CallFunction(
