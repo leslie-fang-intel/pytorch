@@ -180,6 +180,38 @@ quantize_conv_add_output_pattern_pt2e = CallFunction(
     KeywordArg("o_dtype"),  # dtype=torch.uint8
 )
 
+quantize_conv_add_relu_output_pattern_pt2e = CallFunction(
+    prims.convert_element_type.default,
+    CallFunction(
+        aten.clamp_max.default,
+        CallFunction(
+            aten.clamp_min.default,
+            CallFunction(
+                aten.add.Tensor,
+                CallFunction(
+                    aten.round.default,
+                    CallFunction(
+                        aten.mul.Tensor,
+                        CallFunction(
+                            aten.relu.default,
+                            CallFunction(
+                                aten.add.Tensor,
+                                dequantize_qconv_pt2e_pattern,  # output of conv
+                                dequantize_accum_pattern,
+                            ),
+                        ),
+                        KeywordArg("o_inv_scale"),
+                    ),
+                ),
+                KeywordArg("o_zp"),
+            ),
+            KeywordArg("o_qmin"),  # 0
+        ),
+        KeywordArg("o_qmax"),  # 127
+    ),
+    KeywordArg("o_dtype"),  # dtype=torch.uint8
+)
+
 
 def _register_quantized_conv_lowering(pattern):
     @register_lowering_pattern(pattern)
@@ -377,6 +409,7 @@ def register_quantization_lowerings():
     _register_quantized_conv_lowering_v2(quantize_conv_output_pattern_pt2e, torch.ops.onednn.qconv2d_pointwise, "none")
     _register_quantized_conv_lowering_v2(quantize_conv_relu_output_pattern_pt2e, torch.ops.onednn.qconv2d_pointwise, "relu")
     _register_quantized_conv_binary_lowering_pt2e(quantize_conv_add_output_pattern_pt2e, torch.ops.onednn.qconv2d_pointwise.binary, "add", "none")
+    _register_quantized_conv_binary_lowering_pt2e(quantize_conv_add_relu_output_pattern_pt2e, torch.ops.onednn.qconv2d_pointwise.binary, "add", "relu")
     
 
 
