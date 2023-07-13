@@ -106,6 +106,34 @@ quantize_conv_output_pattern_pt2e = CallFunction(
     KeywordArg("o_dtype"),  # dtype=torch.uint8
 )
 
+quantize_conv_relu_output_pattern_pt2e = CallFunction(
+    prims.convert_element_type.default,
+    CallFunction(
+        aten.clamp_max.default,
+        CallFunction(
+            aten.clamp_min.default,
+            CallFunction(
+                aten.add.Tensor,
+                CallFunction(
+                    aten.round.default,
+                    CallFunction(
+                        aten.mul.Tensor,
+                        CallFunction(
+                            aten.relu.default,
+                            dequantize_qconv_pt2e_pattern,  # output of conv
+                        ),
+                        KeywordArg("o_inv_scale"),
+                    ),
+                ),
+                KeywordArg("o_zp"),
+            ),
+            KeywordArg("o_qmin"),  # 0
+        ),
+        KeywordArg("o_qmax"),  # 127
+    ),
+    KeywordArg("o_dtype"),  # dtype=torch.uint8
+)
+
 pattern_match_count = 0
 
 
@@ -175,7 +203,7 @@ def _register_quantized_conv_lowering(pattern):
     return qconv
 
 
-def _register_quantized_conv_lowering_v2(pattern, computation_op):
+def _register_quantized_conv_lowering_v2(pattern, computation_op, post_op_attr):
     @register_lowering_pattern(pattern)
     def qconv_v2(match: Match, *args, **kwargs):
         x, x_scale, x_zp = kwargs["x"], kwargs["x_scale"], kwargs["x_zp"]
@@ -201,7 +229,7 @@ def _register_quantized_conv_lowering_v2(pattern, computation_op):
         global pattern_match_count
         pattern_match_count += 1
         print(
-            "---- matched the pattern v2 ----: {}".format(pattern_match_count), flush=True
+            "---- matched the pattern v2 post op:{0} ----: {1}".format(post_op_attr, pattern_match_count), flush=True
         )
 
         assert (
@@ -230,7 +258,7 @@ def _register_quantized_conv_lowering_v2(pattern, computation_op):
                 o_zero_point,
                 o_dtype,
                 False,  # fp32_output
-                "none",  # unary_attr
+                post_op_attr,  # unary_attr
                 [],  # unary_scalars
                 "",  # unary_algorithm
         )
@@ -239,7 +267,9 @@ def _register_quantized_conv_lowering_v2(pattern, computation_op):
 
 def register_quantization_lowerings():
     # _register_quantized_conv_lowering(quantize_conv_output_pattern_pt2e)
-    _register_quantized_conv_lowering_v2(quantize_conv_output_pattern_pt2e, torch.ops.onednn.qconv2d_pointwise)
+    _register_quantized_conv_lowering_v2(quantize_conv_output_pattern_pt2e, torch.ops.onednn.qconv2d_pointwise, "none")
+    _register_quantized_conv_lowering_v2(quantize_conv_relu_output_pattern_pt2e, torch.ops.onednn.qconv2d_pointwise, "relu")
+    
 
 
 dequant_node_pattern = CallFunction(

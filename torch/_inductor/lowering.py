@@ -1276,10 +1276,10 @@ def register_onednn_fusion_ops():
                     o_inv_scale,
                     o_zero_point,
                     o_dtype,
-                    False,  # fp32_output
-                    "none",  # unary_attr
-                    [],  # unary_scalars
-                    "",  # unary_algorithm
+                    fp32_output,  # fp32_output
+                    attr,  # unary_attr
+                    scalars,  # unary_scalars
+                    algorithm,  # unary_algorithm
                 )
             )
 
