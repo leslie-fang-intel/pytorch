@@ -186,7 +186,7 @@ class X86InductorQuantizer(Quantizer):
             conv_node.meta["quantization_annotation"] = QuantizationAnnotation(
                 input_qspec_map=input_qspec_map,
                 # TODO<leslie> Remove the annotate of output when oneDNN qconv support fp32 out.
-                output_qspec=get_output_act_qspec(quantization_config),
+                # output_qspec=get_output_act_qspec(quantization_config),
                 _annotated=True
             )
         else:
