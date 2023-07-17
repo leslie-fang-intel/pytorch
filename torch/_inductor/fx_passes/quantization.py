@@ -295,13 +295,21 @@ def register_quantization_lowerings():
                 aten.add.Tensor, dequantize_qconv_pt2e_pattern, dequantize_accum_pattern
             )
         ),
+        BinaryUnaryAttr("add", 1.0, "relu", [], ""): generate_pattern_with_output_quant(
+            generate_pattern_with_unary(
+                generate_pattern_with_binary(
+                    aten.add.Tensor, dequantize_qconv_pt2e_pattern, dequantize_accum_pattern
+                ),
+                aten.relu.default,
+            )
+        ),
     }
 
     for binary_unary_attr, patterns in binary_replace_patterns.items():
         # Register qconv2d_binary_unary pattern for ExternKernel Lowering
         _register_quantized_conv_binary_lowering(
             patterns,
-            1,  # pass_number
+            0 if binary_unary_attr.unary_op_name != "none" else 1,  # pass_number
             torch.ops.onednn.qconv2d_pointwise.binary,  # computation_op
             False,  # fp32_output
             binary_unary_attr,  # binary_unary_attr
