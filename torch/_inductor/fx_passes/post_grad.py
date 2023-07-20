@@ -62,6 +62,7 @@ def post_grad_passes(gm: torch.fx.GraphModule, is_inference: bool):
     if config.pattern_matcher:
         lazy_init()
 
+        print("before post grad fusion pass gm is: {}".format(gm), flush=True)
         for patterns in pass_patterns:
             patterns.apply(gm.graph)
         if is_inference:

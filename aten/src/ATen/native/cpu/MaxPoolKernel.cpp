@@ -172,8 +172,17 @@ void cpu_max_pool_channels_last(
   // for the convience of vectorization, use integer of the same size of scalar_t,
   //   e.g. int32_t for float, int64_t for double
   // need to make sure doesn't overflow
-  TORCH_CHECK(input_height * input_width <= std::numeric_limits<integer_t>::max());
+  
+  
+  // std::cout<<"input_height is: "<<input_height<<std::endl;
+  // std::cout<<"input_width is: "<<input_width<<std::endl;
+  // std::cout<<"input_height * input_width is: "<<input_height * input_width<<std::endl;
+  // std::cout<<"std::numeric_limits<integer_t>::max() is: "<<std::numeric_limits<integer_t>::max()<<std::endl;
+  // std::cout<<"(input_height * input_width <= std::numeric_limits<integer_t>::max()) is: "<<(input_height * input_width <= std::numeric_limits<integer_t>::max())<<std::endl;
+  // // TORCH_CHECK(input_height * input_width <= std::numeric_limits<integer_t>::max());
+  // std::cout<<"---- pass here ----"<<std::endl;
 
+  // auto t1 = std::chrono::high_resolution_clock::now();
   // parallel on dim N, H, W
   at::parallel_for(0, nbatch * output_height * output_width, 0, [&](int64_t begin, int64_t end) {
     int64_t n = 0;
@@ -251,6 +260,9 @@ void cpu_max_pool_channels_last(
       data_index_step(n, nbatch, oh, output_height, ow, output_width);
     }
   });
+  // auto t2 = std::chrono::high_resolution_clock::now();
+  // std::chrono::duration<double, std::milli> ms_double = t2 - t1;
+  // std::cout << ms_double.count() << "ms\n";
 
   if (!output_.is_contiguous(memory_format)) {
     output_.copy_(output);

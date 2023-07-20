@@ -3587,6 +3587,7 @@ def _prepare_convolution_fusion_create(
 
         req_stride_order = [0] + list(reversed(range(1, len(stride) + 1)))
         req_stride_order = [len(req_stride_order)] + req_stride_order
+        # print("req_stride_order is: {}".format(req_stride_order), flush=True)
         output_stride = make_channels_last_strides_for(output_size)
 
     x = cls.require_stride_order(x, req_stride_order)
@@ -4437,6 +4438,90 @@ class QConvPointWiseBinaryPT2E(ExternKernelAlloc):
             constant_args=constant_args,
         )
 
+
+class QMaxpool2dPT2E(ExternKernelAlloc):
+    def __init__(
+        self,
+        layout,
+        inputs,
+        constant_args=(),
+    ):
+        super().__init__(layout, inputs, constant_args)
+    def codegen(self, wrapper):
+        # Parser the inputs and constant
+        args = [x.codegen_reference() for x in self.inputs]
+        const_args = []
+        const_args.extend(self.codegen_const_args())
+
+        x = args[0]
+        (
+            kernel_size,
+            stride,
+            padding,
+            dilation,
+            ceil_mode, 
+        ) = const_args[-5:]
+
+        # self.kernel = "torch.ops.aten.max_pool2d_with_indices.default"
+        self.kernel = "torch.ops.quantized.max_pool2d"
+        codegen_args = (
+            "{}".format(x)
+            + ", {}".format(kernel_size)
+            + ", {}".format(stride)
+            + ", {}".format(padding)
+            + ", {}".format(dilation)
+            + ", {}".format(ceil_mode)
+        )
+        # wrapper.writeline(f"{self.get_name()} = {self.kernel}({codegen_args})[0]")
+        wrapper.writeline(f"{self.get_name()} = {self.kernel}({codegen_args})")
+        if isinstance(self.layout, Layout):
+            self.codegen_size_asserts(wrapper)
+
+    @classmethod
+    def create(
+        cls,
+        x: "TensorBox",
+        kernel_size,
+        stride,
+        padding,
+        dilation,
+        ceil_mode,  
+    ):
+        x.realize()
+        *batch, h, w = x.get_size()
+
+        req_stride_order = [0] + list(reversed(range(1, len(stride) + 1)))
+        req_stride_order = [len(req_stride_order)] + req_stride_order
+        print("req_stride_order in maxpool2d is: {}".format(req_stride_order), flush=True)
+        x = cls.require_stride_order(x, req_stride_order)
+
+        from .lowering import pooling_size
+        h_out, ceil_mode1 = pooling_size(h, 0, kernel_size, stride, padding, ceil_mode)
+        w_out, ceil_mode2 = pooling_size(w, 1, kernel_size, stride, padding, ceil_mode)
+        output_size = list(batch) + [h_out, w_out]
+        output_stride = make_channels_last_strides_for(output_size)
+        kernel_layout = FixedLayout(
+            x.get_device(),
+            x.get_dtype(),
+            convert_shape_to_inductor(output_size),
+            convert_shape_to_inductor(output_stride),
+        )
+        assert x.get_device().type == "cpu"
+        
+        inputs = [x]
+        constant_args = [
+            kernel_size,
+            stride,
+            padding,
+            dilation,
+            ceil_mode,
+        ]
+
+        return QMaxpool2dPT2E(
+            layout=kernel_layout,
+            inputs=inputs,
+            constant_args=constant_args,
+        )
 
 @dataclasses.dataclass
 class MutableBox(IRNode):

@@ -3,9 +3,10 @@ import functools
 
 import torch
 from ..lowering import lowerings as L
-from ..pattern_matcher import Arg, CallFunction, KeywordArg, Match
+from ..pattern_matcher import Arg, CallFunction, KeywordArg, Match, filter_nodes
 from .freezing_patterns import register_freezing_graph_pattern
 from .post_grad import register_lowering_pattern
+import operator
 
 aten = torch.ops.aten
 prims = torch.ops.prims
@@ -337,10 +338,77 @@ def _register_quantization_binary_fusion():
             binary_unary_attr,  # binary_unary_attr
         )
 
+def _is_valid_quantized_maxpool2d_optimization_pattern():
+    def fn(match):
+        get_item_node = filter_nodes(match.nodes, operator.getitem)[0]
+        # return value instead of index of aten.max_pool2d_with_indices.default output
+        return get_item_node.args[1] == 0
+
+    return fn
+
+def _register_quantized_maxpool2d_lowering(
+    pattern,
+    computation_op,
+):
+    @register_lowering_pattern(
+        pattern,
+        extra_check=_is_valid_quantized_maxpool2d_optimization_pattern(),
+    )
+    def qmaxpool2d(match: Match, *args, **kwargs):
+        print("---- match the qmaxpool2d pattern ----", flush=True)
+        x = kwargs["x"]
+        kernel_size = kwargs["kernel_size"]
+        stride = kwargs["stride"]
+        padding = kwargs["padding"]
+        # dilation = kwargs["dilation"]
+        # ceil_mode = kwargs["ceil_mode"]
+        
+        computation_args = (
+            x,
+            kernel_size,
+            stride,
+            padding,
+            # dilation,
+            # ceil_mode,
+        )
+        return L[computation_op](*computation_args)
+    return qmaxpool2d
+
+def _register_quantization_maxpool2d():
+    # TODO<leslie>: support pattern with dilation and ceil_mode parameter
+    # dequantize_maxpool2d_pattern = CallFunction(
+    #     aten.max_pool2d_with_indices.default,
+    #     dequantize_per_tensor_activation_pattern,
+    #     KeywordArg("kernel_size"),
+    #     KeywordArg("stride"),
+    #     KeywordArg("padding"),
+    #     KeywordArg("dilation"),
+    #     KeywordArg("ceil_mode"),
+    # )
+    dequantize_maxpool2d_pattern = CallFunction(
+        aten.max_pool2d_with_indices.default,
+        dequantize_per_tensor_activation_pattern,
+        KeywordArg("kernel_size"),
+        KeywordArg("stride"),
+        KeywordArg("padding"),
+    )
+    dequantize_maxpool2d_get_item_pattern = CallFunction(
+        operator.getitem,
+        dequantize_maxpool2d_pattern,
+        KeywordArg("get_item_index"),
+    )
+    _register_quantized_maxpool2d_lowering(
+        generate_pattern_with_output_quant(
+            dequantize_maxpool2d_get_item_pattern
+        ),
+        aten.max_pool2d_with_indices.default,
+    )
+
 
 def _register_quantization_lowerings():
     _register_quantization_unary_fusion()
     _register_quantization_binary_fusion()
+    _register_quantization_maxpool2d()
 
 
 def _is_valid_dequant_promotion_pattern(match):

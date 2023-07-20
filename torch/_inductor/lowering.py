@@ -3263,6 +3263,7 @@ fallback_max_pool2d_with_indices = fallback_handler(aten.max_pool2d_with_indices
 def max_pool2d_with_indices(
     x, kernel_size, stride=None, padding=0, dilation=1, ceil_mode=False
 ):
+    print("---- hit the max_pool2d_with_indices lowering ----", flush=True)
     if padding == 0:
         padding = [0, 0]
     if dilation == 1:
@@ -3273,6 +3274,19 @@ def max_pool2d_with_indices(
     stride = pad_listlike(stride, 2)
     padding = pad_listlike(padding, 2)
     dilation = pad_listlike(dilation, 2)
+
+    if x.get_dtype() == torch.uint8:
+        print("---- it's for quantization use case, we will use extern kernel for better performance")
+        return TensorBox.create(
+            ir.QMaxpool2dPT2E.create(
+                x,
+                kernel_size,
+                stride,
+                padding,
+                dilation,
+                ceil_mode,
+            )
+        )
 
     assert isinstance(x, TensorBox)
     assert len(kernel_size) == 2

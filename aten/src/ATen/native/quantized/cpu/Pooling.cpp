@@ -611,19 +611,60 @@ Tensor quantized_max_pool2d(
   }
 #endif
   Tensor qy;
-  AT_DISPATCH_QINT_TYPES(qx.scalar_type(), "max_pool2d", [&]() {
-    qy = q_maxpool_2d<scalar_t>(
-        qx,
-        kernel_size[0],
-        kernel_size[1],
-        stride[0],
-        stride[1],
-        padding[0],
-        padding[1],
-        dilation[0],
-        dilation[1],
-        ceil_mode);
-  });
+  if (
+    !qx.is_quantized()
+    && qx.is_contiguous(c10::MemoryFormat::ChannelsLast)
+    && qx.scalar_type() == c10::ScalarType::Byte
+  ) {
+    // Fast path case for channels-last case and uint8 data type.
+    int ndim = qx.dim();
+    TORCH_CHECK(ndim == 4, "Expecting the input tensor of rank 4.");
+    int dimc = 1;
+    int dimh = 2;
+    int dimw = 3;
+    int nbatch = qx.size(0);
+    // Check if inputs are valid.
+    int64_t iC = qx.size(dimc);
+    int64_t iH = qx.size(dimh);
+    int64_t iW = qx.size(dimw);
+    TORCH_CHECK(iC > 0 && iH > 0 && iW > 0, "input dimensions must be non-zero.");
+
+    // Check output dimensions.
+    int64_t oC = iC;
+    int64_t oH = pooling_output_shape(iH, kernel_size[0], padding[0], stride[0], dilation[0], ceil_mode);
+    int64_t oW = pooling_output_shape(iW, kernel_size[1], padding[1], stride[1], dilation[1], ceil_mode);
+    TORCH_CHECK(oH > 0 && oW > 0,
+                "Given input size: (",
+                iC, "x", iH, "x", iW,
+                "). Calculated output size: (",
+                oC, "x", oH, "x", oW,
+                "). Output size is too small.");
+
+    std::vector<int64_t> oSizes = {nbatch, oC, oH, oW};
+    Tensor qy = at::empty(
+      oSizes,
+      device(c10::kCPU)
+        .dtype(qx.scalar_type())
+        .memory_format(c10::MemoryFormat::ChannelsLast),
+      c10::nullopt);
+    qmaxpool_2d_nhwc_stub(qx.device().type(), qx, iC, iH, iW, oH, oW, kernel_size[0], kernel_size[1],
+      stride[0], stride[1], padding[0], padding[1], dilation[0], dilation[1], qy);
+    return qy;
+  } else {
+    AT_DISPATCH_QINT_TYPES(qx.scalar_type(), "max_pool2d", [&]() {
+      qy = q_maxpool_2d<scalar_t>(
+          qx,
+          kernel_size[0],
+          kernel_size[1],
+          stride[0],
+          stride[1],
+          padding[0],
+          padding[1],
+          dilation[0],
+          dilation[1],
+          ceil_mode);
+    });
+  }
   return qy;
 }
 
@@ -706,6 +747,10 @@ class QMaxPool_arr_args final {
       std::vector<int64_t> padding,
       std::vector<int64_t> dilation,
       bool ceil_mode) {
+    if (!qx.is_quantized() && kSpatialDim == 2){
+      return at::native::quantized_max_pool2d(qx, kernel_size, stride, padding,
+                                      dilation, ceil_mode);
+    }
     if (kSpatialDim == 1) {
       return at::quantized_max_pool1d(qx, kernel_size, stride, padding,
                                       dilation, ceil_mode);
@@ -719,6 +764,10 @@ class QMaxPool_arr_args final {
 
 TORCH_LIBRARY_IMPL(quantized, QuantizedCPU, m) {
   m.impl(TORCH_SELECTIVE_NAME("quantized::max_pool1d"), TORCH_FN(QMaxPool_arr_args<1>::run));
+  m.impl(TORCH_SELECTIVE_NAME("quantized::max_pool2d"), TORCH_FN(QMaxPool_arr_args<2>::run));
+}
+
+TORCH_LIBRARY_IMPL(quantized, CPU, m) {
   m.impl(TORCH_SELECTIVE_NAME("quantized::max_pool2d"), TORCH_FN(QMaxPool_arr_args<2>::run));
 }
 
