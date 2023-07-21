@@ -523,6 +523,14 @@ at::Tensor _qconv_prepack_onednn(
     kSpatialDim += 1;
   }
   auto w_dims = weight.sizes().vec();
+
+  if (w_dims[0] == 1024
+    && w_dims[1] == 512
+    && w_dims[2] == 1
+    && w_dims[3] == 1) {
+    std::cout<<"---- hit hot spot in 2.x weight prepack-----"<<std::endl;
+  }
+
   auto strides = stride.vec();
   auto padding_l = padding.vec();
   auto padding_r = padding.vec();
@@ -530,6 +538,7 @@ at::Tensor _qconv_prepack_onednn(
   auto op_attr = ideep::attr_t();
 
   ideep::scale_t weights_scales(weight_scales.numel());
+  std::vector<int32_t> wgt_zero_points(weight_scales.numel());
 
   if (weight_scales.ndimension() == 0) {
     // Weight is quant per tensor, then weight_scales will be a scalar Tensor
@@ -537,19 +546,29 @@ at::Tensor _qconv_prepack_onednn(
         weight_scales.numel() == 1,
         "Weight is quant per tensor, weight scale expects 1 element but got ", weight_scales.numel(), " elements.");
     weights_scales[0] = weight_scales.item().toDouble();
+    wgt_zero_points[0] = 0;
   } else {
     // Weight is quant per channel
     for (int i = 0; i < weight_scales.numel(); ++i) {
       weights_scales[i] = weight_scales[i].item().toDouble();
+      wgt_zero_points[i] = 0;
     }
   }
 
   if (input_scale != 1.0f) {
+    std::cout<<"---- set src scale ----"<<std::endl;
     op_attr.set_scales_mask(DNNL_ARG_SRC, /* src_scales_mask= */0);
   }
+  std::cout<<"input_zero_point is: "<<input_zero_point<<std::endl;
   if (input_zero_point != 0) {
+    std::cout<<"---- set src zp ----"<<std::endl;
     op_attr.set_zero_points_mask(DNNL_ARG_SRC, /* src_zero_points_mask= */0);
   }
+  if (!std::all_of(weights_scales.begin(), weights_scales.end(), [](float i){ return i == 1.0f; })) {
+    std::cout<<"---- set weight scale ----"<<std::endl;
+    op_attr.set_scales(DNNL_ARG_WEIGHTS, 1, weights_scales);
+  }
+  // op_attr.set_zero_points_mask(DNNL_ARG_SRC, /* zero_points_mask= */0);
 
   at::Tensor weight_copy;
   ideep::tensor::desc w_desc;
@@ -570,8 +589,12 @@ at::Tensor _qconv_prepack_onednn(
   } else {
     w_tag = kSpatialDim == 2 ? ideep::tag::oihw : ideep::tag::oidhw;
   }
+
+
+
   ideep::dims wei_dims = with_groups ? ideep::utils::group_dims(w_desc.get_dims(), groups)
                                   : w_desc.get_dims();
+
   ideep::tensor wgt = ideep::tensor(
       ideep::tensor::desc({wei_dims, dnnl::memory::data_type::s8, w_tag}, groups),
       weight_copy.data_ptr());
@@ -581,7 +604,9 @@ at::Tensor _qconv_prepack_onednn(
   ideep::tensor exp_wgt;
   exp_wgt.init(w_desc);
   exp_wgt.set_scale(weights_scales); // Also for feed_from()
+  std::cout<<"---- start v2 weight prepack ----"<<std::endl;
   exp_wgt.feed_from(wgt, /*transposed*/false); // expect wgt to be in [OC IC KH KW] format
+  std::cout<<"---- finish v2 weight prepack ----"<<std::endl;
 
   auto packed_weight = at::native::new_with_itensor_mkldnn(
       std::move(exp_wgt),
