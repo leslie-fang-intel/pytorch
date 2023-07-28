@@ -2758,9 +2758,11 @@ class ExternKernel(InputsKernel):
         if isinstance(x, (sympy.Expr, sympy.logic.boolalg.Boolean, int)):
             return ShapeAsConstantBuffer(x)
         if isinstance(x, Constant):
-            return V.graph.add_tensor_constant(
-                torch.tensor(x.value, dtype=x.get_dtype(), device=x.get_device())
-            )
+            # import pdb;pdb.set_trace()
+            with torch.utils._mode_utils.no_dispatch():
+                t = torch.tensor(x.value, dtype=x.get_dtype(), device=x.get_device())
+                print("t is: {}".format(t), flush=True)
+            return V.graph.add_tensor_constant(t)
         if isinstance(x, ConstantBuffer):
             return x
         if isinstance(x, TensorBox):
