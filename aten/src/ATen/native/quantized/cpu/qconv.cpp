@@ -1796,6 +1796,57 @@ class QConvoneDNN final {
     TORCH_CHECK(false, "Unimplemented as onednn is not available.")
 #endif
   }
+  static at::Tensor run_pointwise_tensor(
+      at::Tensor act, // contains quantized values but not QTensor
+      at::Tensor act_scale,
+      at::Tensor act_zero_point,
+      at::Tensor weight, // contains quantized values but not QTensor
+      at::Tensor weight_scales,
+      at::Tensor weight_zero_points,
+      c10::optional<at::Tensor> bias,
+      torch::List<int64_t> stride,
+      torch::List<int64_t> padding,
+      torch::List<int64_t> dilation,
+      int64_t groups,
+      c10::optional<at::Tensor> inv_output_scale,  // inv_output_scale is the reciprocal of scale in fake quant
+      c10::optional<at::Tensor> output_zero_point,
+      bool fp32_output,
+      c10::string_view attr,
+      torch::List<c10::optional<at::Scalar>> scalars,
+      c10::optional<c10::string_view> algorithm) {
+#if AT_MKLDNN_ENABLED()
+    if (act.dim() == 3 || act.dim() == 5) {
+      // Conv1D/3D post op check
+      TORCH_CHECK(
+        attr == "none",
+        "quantized pointwise conv",
+        act.dim()-2,
+        "d doesn't support unary_post_op fusion. Got unary_post_op: ",
+        attr,
+        ".")
+    } else {
+      // Conv2D post op check
+      TORCH_CHECK(
+        attr == "none" || attr == "relu",
+        "none post_op or post_op relu is supported for quantized pointwise conv2d. Got unary_post_op: ",
+        attr,
+        ".")
+    }
+    auto inv_output_scale_v = inv_output_scale.has_value()? inv_output_scale.value().item().toDouble() : 1.0;
+    auto output_zero_point_v = output_zero_point.has_value()? output_zero_point.value().item().toLong() : 0;
+    return _quantized_convolution_onednn(
+        act, act_scale.item().toDouble(), act_zero_point.item().toLong(),
+        weight, weight_scales, weight_zero_points,
+        bias, stride, padding, dilation, /*transposed*/false,
+        groups, inv_output_scale_v, output_zero_point_v,
+        /*accum*/c10::nullopt, /*accum_scale*/0.0, /*accum_zero_point*/0,
+        /*fp32_output*/fp32_output, /*binary_attr*/c10::nullopt, /*binary_alpha*/c10::nullopt,
+        /*unary_attr*/attr, /*unary_scalars*/scalars, /*unary_algorithm*/algorithm
+    );
+#else
+    TORCH_CHECK(false, "Unimplemented as onednn is not available.")
+#endif
+  }
   static at::Tensor run_pointwise_binary(
       at::Tensor act, // contains quantized values but not QTensor
       double act_scale,
@@ -1887,6 +1938,9 @@ TORCH_LIBRARY_IMPL(onednn, MkldnnCPU, m) {
   m.impl(TORCH_SELECTIVE_NAME("onednn::qconv1d_pointwise"), QConvoneDNN::run_pointwise);
   m.impl(TORCH_SELECTIVE_NAME("onednn::qconv2d_pointwise"), QConvoneDNN::run_pointwise);
   m.impl(TORCH_SELECTIVE_NAME("onednn::qconv3d_pointwise"), QConvoneDNN::run_pointwise);
+
+
+  m.impl(TORCH_SELECTIVE_NAME("onednn::qconv2d_pointwise.tensor"), QConvoneDNN::run_pointwise_tensor);
 
   // Conv2D with binary postop
   m.impl(TORCH_SELECTIVE_NAME("onednn::qconv2d_pointwise.binary"), QConvoneDNN::run_pointwise_binary);

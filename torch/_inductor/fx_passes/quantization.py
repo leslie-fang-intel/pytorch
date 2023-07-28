@@ -282,7 +282,7 @@ def _register_qconv_weight_prepack_pass(pattern, pass_number):
                 groups,
                 x_shape,
             )
-            packed_weight_op = torch.ops.onednn.qconv_prepack
+            packed_weight_op = torch.ops.onednn.qconv_prepack.tensor
             prepack_weight_node = graph.call_function(
                 packed_weight_op, args=packed_weight_inputs
             )
@@ -299,15 +299,15 @@ def _register_qconv_weight_prepack_pass(pattern, pass_number):
                 padding,
                 dilation,
                 groups,
-                1.0,  # inv_output_scale
-                0,  # output_zero_point
+                None,  # inv_output_scale
+                None,  # output_zero_point
                 True,  # fp32_output
                 "none",  # attr
                 [],  # scalars
                 "",  # algorithm
             )
             new_conv_node = graph.call_function(
-                torch.ops.onednn.qconv2d_pointwise.default, args=new_args
+                torch.ops.onednn.qconv2d_pointwise.tensor, args=new_args
             )
             conv_node.replace_all_uses_with(new_conv_node)
             new_conv_node.meta.update(conv_node.meta)
