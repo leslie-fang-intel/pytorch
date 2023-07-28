@@ -2489,6 +2489,8 @@ class InputsKernel(Buffer):
                 x = x.data
             if isinstance(x, BaseView) and not isinstance(x, ReinterpretView):
                 x = ExternKernel.realize_input(x)
+            # if isinstance(x, Constant):
+            #     x = ExternKernel.realize_input(x)
             assert isinstance(x, (Buffer, ReinterpretView)), x
             inputs_new.append(x)
         return inputs_new
@@ -4160,15 +4162,15 @@ class QConvPointWisePT2E(ExternKernelAlloc):
     ):
         """
         if bias is not None
-            - inputs = [x, w, b, weight_scale, weight_zp]
-            - const_args is: [stride, padding, dilation, groups, x_scale, x_zp, o_inv_scale, o_zp,
+            - inputs = [x, w, b, x_scale, x_zp, weight_scale, weight_zp]
+            - const_args is: [stride, padding, dilation, groups, o_inv_scale, o_zp,
               fp32_output, unary_attr, unary_scalars, unary_algorithm]
         else
-            - inputs = [x, w, weight_scale, weight_zp]
-            - const_args is: [bias, stride, padding, dilation, groups, x_scale, x_zp, o_inv_scale, o_zp,
+            - inputs = [x, w, x_scale, x_zp, weight_scale, weight_zp]
+            - const_args is: [bias, stride, padding, dilation, groups, o_inv_scale, o_zp,
               fp32_output, unary_attr, unary_scalars, unary_algorithm]
         """
-        self.has_bias = len(inputs) == 5
+        self.has_bias = len(inputs) == 7
         super().__init__(layout, inputs, constant_args)
 
     def codegen(self, wrapper):
@@ -4180,23 +4182,22 @@ class QConvPointWisePT2E(ExternKernelAlloc):
         x = args[0]
         packed_weight = args[1]
         bias = args[2] if self.has_bias else const_args[0]
+        x_scale, x_zp = args[-4], args[-3]
         w_scale, w_zp = args[-2], args[-1]
         (
             stride,
             padding,
             dilation,
             groups,
-            x_scale,
-            x_zp,
             o_inv_scale,
             o_zp,
             fp32_output,
             unary_attr,
             unary_scalars,
             unary_algorithm,
-        ) = const_args[-12:]
+        ) = const_args[-10:]
 
-        self.kernel = "torch.ops.onednn.qconv2d_pointwise"
+        self.kernel = "torch.ops.onednn.qconv2d_pointwise.tensor"
         codegen_args = (
             f"{x}"
             + f", {x_scale}"
@@ -4224,8 +4225,8 @@ class QConvPointWisePT2E(ExternKernelAlloc):
     def create(
         cls,
         x: "TensorBox",
-        x_scale: float,
-        x_zp: int,
+        x_scale: "TensorBox",
+        x_zp: "TensorBox",
         weight: "TensorBox",  # packed_weight
         w_scale: "TensorBox",
         w_zp: "TensorBox",
@@ -4234,8 +4235,8 @@ class QConvPointWisePT2E(ExternKernelAlloc):
         padding_: List[int],
         dilation_: List[int],
         groups: int,
-        o_inv_scale: float,
-        output_zero_point: int,
+        o_inv_scale: "TensorBox",
+        output_zero_point: "TensorBox",
         fp32_output,
         unary_attr,
         unary_scalars,
@@ -4243,6 +4244,9 @@ class QConvPointWisePT2E(ExternKernelAlloc):
     ):
         transposed = False
         output_padding = None
+
+        print("bias is: {}".format(bias), flush=True)
+
         (inputs, constant_args, kernel_layout, _) = _prepare_convolution_fusion_create(
             cls,
             x,
@@ -4255,18 +4259,45 @@ class QConvPointWisePT2E(ExternKernelAlloc):
             transposed,
             output_padding,
         )
+
+        print("after realize bias is: {}".format(bias), flush=True)
+
         # swap padding and stride to align with functional conv arg order
         if bias is None:
             constant_args[1], constant_args[2] = constant_args[2], constant_args[1]
         else:
             constant_args[0], constant_args[1] = constant_args[1], constant_args[0]
 
+        print("isinstance(x_scale, torch.Tensor) is: {}".format(isinstance(x_scale, torch.Tensor)), flush=True)
+        print("x_scale is: {}".format(x_scale), flush=True)
+        print("x_zp is: {}".format(x_zp), flush=True)
+        print("o_inv_scale is: {}".format(o_inv_scale), flush=True)
+        print("output_zero_point is: {}".format(output_zero_point), flush=True)
+
+        if isinstance(x_scale, Constant):
+            print("realize x_scale", flush=True)
+            x_scale.realize()
+            with torch.utils._mode_utils.no_dispatch():
+                t = torch.tensor(x_scale.value, dtype=x_scale.get_dtype(), device=x_scale.get_device())
+                x_scale = V.graph.add_tensor_constant(t)
+
+            print("x_scale after realize is: {}".format(x_scale), flush=True)
+        if isinstance(x_zp, Constant):
+            print("realize x_zp", flush=True)
+            x_zp.realize()
+            with torch.utils._mode_utils.no_dispatch():
+                t = torch.tensor(x_zp.value, dtype=x_zp.get_dtype(), device=x_zp.get_device())
+                x_zp = V.graph.add_tensor_constant(t)
+            print("x_zp after realize is: {}".format(x_zp), flush=True)
+        # if o_inv_scale is not None and isinstance(o_inv_scale, Constant):
+        #     o_inv_scale.realize()
+        # if output_zero_point is not None and isinstance(output_zero_point, Constant):
+        #     output_zero_point.realize()
+
         w_scale.realize()
         w_zp.realize()
-        inputs = inputs + [w_scale, w_zp]
+        inputs = inputs + [x_scale, x_zp, w_scale, w_zp]
         constant_args = constant_args + [
-            x_scale,
-            x_zp,
             o_inv_scale,
             output_zero_point,
             fp32_output,

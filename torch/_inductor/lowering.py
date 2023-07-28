@@ -1277,7 +1277,8 @@ def register_onednn_fusion_ops():
             attr,
             scalars,
             algorithm,
-        ):
+        ): 
+            print("---- hit the lowering ----", flush=True)
             return TensorBox.create(
                 ir.QConvPointWisePT2E.create(
                     x,

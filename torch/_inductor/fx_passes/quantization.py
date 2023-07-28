@@ -401,9 +401,10 @@ def _register_quantization_maxpool2d():
 
 
 def _register_quantization_lowerings():
-    _register_quantization_unary_fusion()
-    _register_quantization_binary_fusion()
-    _register_quantization_maxpool2d()
+    # _register_quantization_unary_fusion()
+    # _register_quantization_binary_fusion()
+    # _register_quantization_maxpool2d()
+    pass
 
 
 def _is_valid_dequant_promotion_pattern(match):
@@ -519,6 +520,7 @@ def _register_qconv_weight_prepack_pass(pattern, pass_number):
           |
         onednn.qconv2d_pointwise <- onednn.qconv_prepack <- int8_weight
         """
+        print("---- start qconv2d weight prepack ----", flush=True)
         conv_node = match.output_node()
         assert conv_node.target is aten.convolution.default
         mul_node = conv_node.args[0]
@@ -618,6 +620,7 @@ def _register_qconv_weight_prepack_pass(pattern, pass_number):
             if clone_node is not None:
                 graph.erase_node(clone_node)
             graph.erase_node(dequant_per_channel)
+        print("---- finish qconv2d weight prepack ----", flush=True)
 
 
 def _generate_dequant_convolution_node_pattern(_dequant_per_channel_pattern):

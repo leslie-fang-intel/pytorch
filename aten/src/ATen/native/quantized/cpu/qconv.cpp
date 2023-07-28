@@ -1853,6 +1853,10 @@ class QConvoneDNN final {
     }
     auto inv_output_scale_v = inv_output_scale.has_value()? inv_output_scale.value().item().toDouble() : 1.0;
     auto output_zero_point_v = output_zero_point.has_value()? output_zero_point.value().item().toLong() : 0;
+
+    // std::cout<<"inv_output_scale_v is: "<<inv_output_scale_v<<std::endl;
+    // std::cout<<"output_zero_point_v is: "<<output_zero_point_v<<std::endl;
+
     return _quantized_convolution_onednn(
         act, act_scale.item().toDouble(), act_zero_point.item().toLong(),
         weight, weight_scales, weight_zero_points,
