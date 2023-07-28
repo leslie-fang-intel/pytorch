@@ -404,7 +404,7 @@ def _register_quantization_maxpool2d():
 def _register_quantization_lowerings():
     _register_quantization_unary_fusion()
     _register_quantization_binary_fusion()
-    # _register_quantization_maxpool2d()
+    _register_quantization_maxpool2d()
     pass
 
 

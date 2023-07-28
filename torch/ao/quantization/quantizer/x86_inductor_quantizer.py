@@ -341,19 +341,19 @@ class X86InductorQuantizer(Quantizer):
         # Step1: Recipe of fusion patterns like conv/linear.
         self._annotate_conv2d_fusion_pattern(model, config)
 
-        # # Step2: Recipe to propagate annotation for patterns beside conv/linear.
-        # # Go through all the nodes from start to end.
-        # # Recipe refer to https://github.com/intel/intel-extension-for-pytorch/blob/
-        # # 90d19323d96afc53fcc22ba5a7bb3fb07fdd6c1c/intel_extension_for_pytorch/quantization/_recipe.py#L538
-        # for node in model.graph.nodes:
-        #     self._annotation_propagation_quantizable_pattern(node, config)
+        # Step2: Recipe to propagate annotation for patterns beside conv/linear.
+        # Go through all the nodes from start to end.
+        # Recipe refer to https://github.com/intel/intel-extension-for-pytorch/blob/
+        # 90d19323d96afc53fcc22ba5a7bb3fb07fdd6c1c/intel_extension_for_pytorch/quantization/_recipe.py#L538
+        for node in model.graph.nodes:
+            self._annotation_propagation_quantizable_pattern(node, config)
 
-        # # Step3: For quantizable ops, such as maxpool2d, we need to quantize its output if it is quantized
-        # # in inputs. So, we can fuse dq-operator-q into a quantized op.
-        # # Refer to https://github.com/intel/intel-extension-for-pytorch/blob/
-        # # 90d19323d96afc53fcc22ba5a7bb3fb07fdd6c1c/intel_extension_for_pytorch/quantization/_recipe.py#L487
-        # for node in model.graph.nodes:
-        #     self._annotate_output_for_int8_in_int8_out_pattern(node, config)
+        # Step3: For quantizable ops, such as maxpool2d, we need to quantize its output if it is quantized
+        # in inputs. So, we can fuse dq-operator-q into a quantized op.
+        # Refer to https://github.com/intel/intel-extension-for-pytorch/blob/
+        # 90d19323d96afc53fcc22ba5a7bb3fb07fdd6c1c/intel_extension_for_pytorch/quantization/_recipe.py#L487
+        for node in model.graph.nodes:
+            self._annotate_output_for_int8_in_int8_out_pattern(node, config)
 
         return model
 
