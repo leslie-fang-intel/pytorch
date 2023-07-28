@@ -1872,11 +1872,11 @@ class QConvoneDNN final {
   }
   static at::Tensor run_pointwise_binary(
       at::Tensor act, // contains quantized values but not QTensor
-      double act_scale,
-      int64_t act_zero_point,
+      at::Tensor act_scale,
+      at::Tensor act_zero_point,
       at::Tensor accum, // contains quantized values but not QTensor
-      double accum_scale,
-      int64_t accum_zero_point,
+      at::Tensor accum_scale,
+      at::Tensor accum_zero_point,
       at::Tensor weight, // contains quantized values but not QTensor
       at::Tensor weight_scales,
       at::Tensor weight_zero_points,
@@ -1885,8 +1885,8 @@ class QConvoneDNN final {
       torch::List<int64_t> padding,
       torch::List<int64_t> dilation,
       int64_t groups,
-      double inv_output_scale,  // inv_output_scale is the reciprocal of scale in fake quant
-      int64_t output_zero_point,
+      at::Tensor inv_output_scale,  // inv_output_scale is the reciprocal of scale in fake quant
+      at::Tensor output_zero_point,
       bool fp32_output,
       c10::string_view binary_attr,
       c10::optional<at::Scalar> alpha,
@@ -1910,11 +1910,11 @@ class QConvoneDNN final {
       unary_attr.has_value() ? unary_attr.value() : "none",
       ".")
     return _quantized_convolution_onednn(
-        act, act_scale, act_zero_point,
+        act, act_scale.item().toDouble(), act_zero_point.item().toLong(),
         weight, weight_scales, weight_zero_points,
         bias, stride, padding, dilation, /*transposed*/false,
-        groups, inv_output_scale, output_zero_point,
-        accum, accum_scale, accum_zero_point,
+        groups, inv_output_scale.item().toDouble(), output_zero_point.item().toLong(),
+        accum, accum_scale.item().toDouble(), accum_zero_point.item().toLong(),
         /*fp32_output*/false, binary_attr, alpha,
         unary_attr, unary_scalars, unary_algorithm
     );

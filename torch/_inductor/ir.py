@@ -4379,15 +4379,14 @@ class QConvPointWiseBinaryPT2E(ExternKernelAlloc):
         """
         Needs input/weight/output qparams
         if bias is not None
-            - inputs = [x, w, b, accum, w_scale, w_zp]
-            - const_args = [stride, padding, dilation, groups, x_scale, x_zp, accum_scale, accum_zp, o_inv_scale, o_zp,
+            - inputs = [x, w, b, accum, x_scale, x_zp, w_scale, w_zp, accum_scale, accum_zp, o_inv_scale, o_zp]
+            - const_args = [stride, padding, dilation, groups,
             fp32_output, binary_attr, aplha, unary_attr, unary_scalars, unary_algorithm]
         else
-            - inputs = [x, w, accum, w_scale, w_zp]
-            - const_args = const_args is: [bias, stride, padding, dilation, groups, x_scale, x_zp, accum_scale,
-            accum_zp, o_inv_scale, o_zp, fp32_output, binary_attr, aplha, unary_attr, unary_scalars, unary_algorithm]
+            - inputs = [x, w, accum, x_scale, x_zp, w_scale, w_zp, accum_scale, accum_zp, o_inv_scale, o_zp]
+            - const_args = const_args is: [bias, stride, padding, dilation, groups, fp32_output, binary_attr, aplha, unary_attr, unary_scalars, unary_algorithm]
         """
-        self.has_bias = len(inputs) == 6
+        self.has_bias = len(inputs) == 12
         super().__init__(layout, inputs, constant_args)
 
     def codegen(self, wrapper):
@@ -4399,25 +4398,20 @@ class QConvPointWiseBinaryPT2E(ExternKernelAlloc):
         x = args[0]
         packed_weight = args[1]
         bias = args[2] if self.has_bias else const_args[0]
-        accum, w_scale, w_zp = args[-3], args[-2], args[-1]
+        
+        accum, x_scale, x_zp, w_scale, w_zp, accum_scale, accum_zp, o_inv_scale, o_zp = args[-9], args[-8], args[-7], args[-6], args[-5], args[-4], args[-3], args[-2], args[-1]
         (
             stride,
             padding,
             dilation,
             groups,
-            x_scale,
-            x_zp,
-            accum_scale,
-            accum_zp,
-            o_inv_scale,
-            o_zp,
             fp32_output,
             binary_attr,
             alpha,
             unary_attr,
             unary_scalars,
             unary_algorithm,
-        ) = const_args[-16:]
+        ) = const_args[-10:]
         self.kernel = "torch.ops.onednn.qconv2d_pointwise.binary"
         conv_args = (
             f"{x}"
@@ -4504,14 +4498,60 @@ class QConvPointWiseBinaryPT2E(ExternKernelAlloc):
 
         w_scale.realize()
         w_zp.realize()
-        inputs = inputs + [w_scale, w_zp]
-        constant_args = constant_args + [
+
+
+        assert isinstance(x_scale, Constant)
+        assert isinstance(x_zp, Constant)
+        assert isinstance(accum_scale, Constant)
+        assert isinstance(accum_zp, Constant)
+        assert isinstance(o_inv_scale, Constant)
+        assert isinstance(output_zero_point, Constant)
+
+        if isinstance(x_scale, Constant):
+            print("realize x_scale", flush=True)
+            x_scale.realize()
+            with torch.utils._mode_utils.no_dispatch():
+                t = torch.tensor(x_scale.value, dtype=x_scale.get_dtype(), device=x_scale.get_device())
+                x_scale = V.graph.add_tensor_constant(t)
+
+            print("x_scale after realize is: {}".format(x_scale), flush=True)
+        if isinstance(x_zp, Constant):
+            print("realize x_zp", flush=True)
+            x_zp.realize()
+            with torch.utils._mode_utils.no_dispatch():
+                t = torch.tensor(x_zp.value, dtype=x_zp.get_dtype(), device=x_zp.get_device())
+                x_zp = V.graph.add_tensor_constant(t)
+            print("x_zp after realize is: {}".format(x_zp), flush=True)
+        if isinstance(accum_scale, Constant):
+            accum_scale.realize()
+            with torch.utils._mode_utils.no_dispatch():
+                t = torch.tensor(accum_scale.value, dtype=accum_scale.get_dtype(), device=accum_scale.get_device())
+                accum_scale = V.graph.add_tensor_constant(t)
+        if isinstance(accum_zp, Constant):
+            accum_zp.realize()
+            with torch.utils._mode_utils.no_dispatch():
+                t = torch.tensor(accum_zp.value, dtype=accum_zp.get_dtype(), device=accum_zp.get_device())
+                accum_zp = V.graph.add_tensor_constant(t)
+        if o_inv_scale is not None and isinstance(o_inv_scale, Constant):
+            with torch.utils._mode_utils.no_dispatch():
+                t = torch.tensor(o_inv_scale.value, dtype=o_inv_scale.get_dtype(), device=o_inv_scale.get_device())
+                o_inv_scale = V.graph.add_tensor_constant(t)
+        if output_zero_point is not None and isinstance(output_zero_point, Constant):
+            with torch.utils._mode_utils.no_dispatch():
+                t = torch.tensor(output_zero_point.value, dtype=output_zero_point.get_dtype(), device=output_zero_point.get_device())
+                output_zero_point = V.graph.add_tensor_constant(t)
+
+        inputs = inputs + [
             x_scale,
             x_zp,
+            w_scale,
+            w_zp,
             accum_scale,
             accum_zp,
             o_inv_scale,
             output_zero_point,
+        ]
+        constant_args = constant_args + [
             fp32_output,
             binary_attr,
             alpha,
