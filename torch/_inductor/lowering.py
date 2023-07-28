@@ -1301,6 +1301,49 @@ def register_onednn_fusion_ops():
                 )
             )
 
+        @register_lowering(torch.ops.onednn.qconv2d_pointwise.tensor, type_promotion_kind=None)
+        def qconvolution_unary(
+            x: TensorBox,
+            x_scale,
+            x_zp,
+            packed_weight: TensorBox,
+            w_scale: TensorBox,
+            w_zp: TensorBox,
+            bias: TensorBox,
+            stride,
+            padding,
+            dilation,
+            groups,
+            o_inv_scale,
+            o_zero_point,
+            fp32_output,
+            attr,
+            scalars,
+            algorithm,
+        ): 
+            print("---- hit the lowering torch.ops.onednn.qconv2d_pointwise.tensor ----", flush=True)
+            return TensorBox.create(
+                ir.QConvPointWisePT2E.create(
+                    x,
+                    x_scale,
+                    x_zp,
+                    packed_weight,
+                    w_scale,
+                    w_zp,
+                    bias,
+                    stride,
+                    padding,
+                    dilation,
+                    groups,
+                    o_inv_scale,
+                    o_zero_point,
+                    fp32_output,
+                    attr,
+                    scalars,
+                    algorithm,
+                )
+            )
+
         @register_lowering(
             torch.ops.onednn.qconv2d_pointwise.binary, type_promotion_kind=None
         )

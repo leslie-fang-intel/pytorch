@@ -4162,15 +4162,36 @@ class QConvPointWisePT2E(ExternKernelAlloc):
     ):
         """
         if bias is not None
-            - inputs = [x, w, b, x_scale, x_zp, weight_scale, weight_zp]
-            - const_args is: [stride, padding, dilation, groups, o_inv_scale, o_zp,
-              fp32_output, unary_attr, unary_scalars, unary_algorithm]
+            if  o_inv_scale, o_zp is not None:
+                - inputs = [x, w, b, x_scale, x_zp, weight_scale, weight_zp, o_inv_scale, o_zp]
+                - const_args is: [stride, padding, dilation, groups,
+                fp32_output, unary_attr, unary_scalars, unary_algorithm]           
+            else:
+                - inputs = [x, w, b, x_scale, x_zp, weight_scale, weight_zp]
+                - const_args is: [stride, padding, dilation, groups, o_inv_scale, o_zp,
+                fp32_output, unary_attr, unary_scalars, unary_algorithm]
         else
-            - inputs = [x, w, x_scale, x_zp, weight_scale, weight_zp]
-            - const_args is: [bias, stride, padding, dilation, groups, o_inv_scale, o_zp,
-              fp32_output, unary_attr, unary_scalars, unary_algorithm]
+            if  o_inv_scale, o_zp is not None:
+                - inputs = [x, w, x_scale, x_zp, weight_scale, weight_zp, o_inv_scale, o_zp]
+                - const_args is: [bias, stride, padding, dilation, groups,
+                fp32_output, unary_attr, unary_scalars, unary_algorithm]
+            else:
+                - inputs = [x, w, x_scale, x_zp, weight_scale, weight_zp]
+                - const_args is: [bias, stride, padding, dilation, groups, o_inv_scale, o_zp,
+                fp32_output, unary_attr, unary_scalars, unary_algorithm]
         """
-        self.has_bias = len(inputs) == 7
+        self.has_bias =  False
+        self.has_output_scale =  False
+        if len(inputs) == 9:
+            self.has_bias = True
+            self.has_output_scale = True
+        elif len(inputs) == 8:
+            self.has_bias = False
+            self.has_output_scale = True
+        elif len(inputs) == 7:
+            self.has_bias = True
+            self.has_output_scale = False
+        
         super().__init__(layout, inputs, constant_args)
 
     def codegen(self, wrapper):
@@ -4182,20 +4203,36 @@ class QConvPointWisePT2E(ExternKernelAlloc):
         x = args[0]
         packed_weight = args[1]
         bias = args[2] if self.has_bias else const_args[0]
-        x_scale, x_zp = args[-4], args[-3]
-        w_scale, w_zp = args[-2], args[-1]
-        (
-            stride,
-            padding,
-            dilation,
-            groups,
-            o_inv_scale,
-            o_zp,
-            fp32_output,
-            unary_attr,
-            unary_scalars,
-            unary_algorithm,
-        ) = const_args[-10:]
+
+        if self.has_output_scale:
+            x_scale, x_zp = args[-6], args[-5]
+            w_scale, w_zp = args[-4], args[-3]
+            o_inv_scale, o_zp = args[-2], args[-1]
+            (
+                stride,
+                padding,
+                dilation,
+                groups,
+                fp32_output,
+                unary_attr,
+                unary_scalars,
+                unary_algorithm,
+            ) = const_args[-8:]       
+        else:
+            x_scale, x_zp = args[-4], args[-3]
+            w_scale, w_zp = args[-2], args[-1]
+            (
+                stride,
+                padding,
+                dilation,
+                groups,
+                o_inv_scale,
+                o_zp,
+                fp32_output,
+                unary_attr,
+                unary_scalars,
+                unary_algorithm,
+            ) = const_args[-10:]
 
         self.kernel = "torch.ops.onednn.qconv2d_pointwise.tensor"
         codegen_args = (
@@ -4289,22 +4326,36 @@ class QConvPointWisePT2E(ExternKernelAlloc):
                 t = torch.tensor(x_zp.value, dtype=x_zp.get_dtype(), device=x_zp.get_device())
                 x_zp = V.graph.add_tensor_constant(t)
             print("x_zp after realize is: {}".format(x_zp), flush=True)
-        # if o_inv_scale is not None and isinstance(o_inv_scale, Constant):
-        #     o_inv_scale.realize()
-        # if output_zero_point is not None and isinstance(output_zero_point, Constant):
-        #     output_zero_point.realize()
+        if o_inv_scale is not None and isinstance(o_inv_scale, Constant):
+            with torch.utils._mode_utils.no_dispatch():
+                t = torch.tensor(o_inv_scale.value, dtype=o_inv_scale.get_dtype(), device=o_inv_scale.get_device())
+                o_inv_scale = V.graph.add_tensor_constant(t)
+        if output_zero_point is not None and isinstance(output_zero_point, Constant):
+            with torch.utils._mode_utils.no_dispatch():
+                t = torch.tensor(output_zero_point.value, dtype=output_zero_point.get_dtype(), device=output_zero_point.get_device())
+                output_zero_point = V.graph.add_tensor_constant(t)
 
         w_scale.realize()
         w_zp.realize()
-        inputs = inputs + [x_scale, x_zp, w_scale, w_zp]
-        constant_args = constant_args + [
-            o_inv_scale,
-            output_zero_point,
-            fp32_output,
-            unary_attr,
-            unary_scalars,
-            unary_algorithm,
-        ]
+        if o_inv_scale is not None:
+            assert output_zero_point is not None
+            inputs = inputs + [x_scale, x_zp, w_scale, w_zp, o_inv_scale, output_zero_point]
+            constant_args = constant_args + [
+                fp32_output,
+                unary_attr,
+                unary_scalars,
+                unary_algorithm,
+            ]  
+        else:
+            inputs = inputs + [x_scale, x_zp, w_scale, w_zp]
+            constant_args = constant_args + [
+                o_inv_scale,
+                output_zero_point,
+                fp32_output,
+                unary_attr,
+                unary_scalars,
+                unary_algorithm,
+            ]
 
         if fp32_output:
             # in _prepare_convolution_fusion_create, we use x.dtype (uint8) to create kernel_layout

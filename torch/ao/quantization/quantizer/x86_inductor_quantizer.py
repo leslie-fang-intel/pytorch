@@ -362,7 +362,7 @@ class X86InductorQuantizer(Quantizer):
     ):
         # self._annotate_conv2d_binary_unary(model, config)
         # self._annotate_conv2d_binary(model, config)
-        # self._annotate_conv2d_unary(model, config)
+        self._annotate_conv2d_unary(model, config)
         self._annotate_conv2d(model, config)
 
     def _annotate_conv2d_binary_unary(

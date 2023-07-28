@@ -51,7 +51,7 @@ dequantize_per_channel_clone_weight_pattern = CallFunction(
 )
 
 dequantize_qconv_pt2e_pattern = CallFunction(
-    torch.ops.onednn.qconv2d_pointwise.default,
+    torch.ops.onednn.qconv2d_pointwise.tensor,
     KeywordArg("x"),
     KeywordArg("x_scale"),  # x_scale
     KeywordArg("x_zp"),  # x_zp
@@ -148,6 +148,7 @@ def _register_quantized_conv_lowering(
 ):
     @register_lowering_pattern(pattern, pass_number=pass_number)
     def qconv(match: Match, *args, **kwargs):
+        print("--- match qconv2d unary patttern ----", flush=True)
         # Activation QParams
         x, x_scale, x_zp = (
             kwargs["x"],
@@ -287,7 +288,7 @@ def _register_quantization_unary_fusion():
         _register_quantized_conv_lowering(
             patterns,
             1 if unary_attr.op_name != "none" else 2,  # pass_number
-            torch.ops.onednn.qconv2d_pointwise,  # computation_op
+            torch.ops.onednn.qconv2d_pointwise.tensor,  # computation_op
             False,  # fp32_output
             unary_attr,  # unary_attr
         )
@@ -401,7 +402,7 @@ def _register_quantization_maxpool2d():
 
 
 def _register_quantization_lowerings():
-    # _register_quantization_unary_fusion()
+    _register_quantization_unary_fusion()
     # _register_quantization_binary_fusion()
     # _register_quantization_maxpool2d()
     pass
