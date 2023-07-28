@@ -810,9 +810,33 @@ class QConvPrepackOneDNN final {
     torch::List<int64_t> dilation,
     int64_t groups,
     c10::optional<torch::List<int64_t>> input_shape) {
+
+    std::cout<<"---- start weight prepack run_conv input_scale is: "<<input_scale<<std::endl;
+    std::cout<<"---- start weight prepack run_conv input_zero_point is: "<<input_zero_point<<std::endl;
 #if AT_MKLDNN_ENABLED()
     return _qconv_prepack_onednn(
         weight, weight_scales, input_scale, input_zero_point,
+        stride, padding, dilation, groups, input_shape);
+#else
+    TORCH_CHECK(false, "Unimplemented as onednn is not available.")
+#endif
+  }
+  static at::Tensor run_conv_tensor(
+    at::Tensor weight, // from CPU backend instead of QuantizedCPU
+    at::Tensor weight_scales, // Weight zero points must be 0s for onednn
+    at::Tensor input_scale,
+    at::Tensor input_zero_point,
+    torch::List<int64_t> stride,
+    torch::List<int64_t> padding,
+    torch::List<int64_t> dilation,
+    int64_t groups,
+    c10::optional<torch::List<int64_t>> input_shape) {
+
+    std::cout<<"---- start weight prepack run_conv_tensor input_scale is: "<<input_scale<<std::endl;
+    std::cout<<"---- start weight prepack run_conv_tensor input_zero_point is: "<<input_zero_point<<std::endl;
+#if AT_MKLDNN_ENABLED()
+    return _qconv_prepack_onednn(
+        weight, weight_scales, input_scale.item().toDouble(), input_zero_point.item().toLong(),
         stride, padding, dilation, groups, input_shape);
 #else
     TORCH_CHECK(false, "Unimplemented as onednn is not available.")
@@ -847,6 +871,8 @@ TORCH_LIBRARY_IMPL(onednn, CPU, m) {
   // New OP definition for Quantization in PyTorch 2.0 Export
   // Conv Prepack
   m.impl(TORCH_SELECTIVE_NAME("onednn::qconv_prepack"), TORCH_FN(QConvPrepackOneDNN::run_conv));
+
+  m.impl(TORCH_SELECTIVE_NAME("onednn::qconv_prepack.tensor"), TORCH_FN(QConvPrepackOneDNN::run_conv_tensor));
 }
 
 } // namespace
