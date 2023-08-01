@@ -341,6 +341,8 @@ class X86InductorQuantizer(Quantizer):
         # Step1: Recipe of fusion patterns like conv/linear.
         self._annotate_conv2d_fusion_pattern(model, config)
 
+        self._annotate_bn2d_relu_fusion_pattern(model, config)
+
         # Step2: Recipe to propagate annotation for patterns beside conv/linear.
         # Go through all the nodes from start to end.
         # Recipe refer to https://github.com/intel/intel-extension-for-pytorch/blob/
@@ -364,6 +366,57 @@ class X86InductorQuantizer(Quantizer):
         self._annotate_conv2d_binary(model, config)
         self._annotate_conv2d_unary(model, config)
         self._annotate_conv2d(model, config)
+    
+    def _annotate_bn2d_relu_fusion_pattern(
+        self, model: torch.fx.GraphModule, config: QuantizationConfig
+    ):
+        fused_partitions = find_sequential_partitions(
+            model, [torch.nn.BatchNorm2d, torch.nn.ReLU]
+        )
+
+        print("---- hit fusion pass: {} ----".format(len(fused_partitions)), flush=True)
+        bn_relu_annotation_count = 0
+
+        for fused_partition in fused_partitions:
+            bn_partition, relu_partition = fused_partition
+            if len(relu_partition.output_nodes) > 1:
+                raise ValueError("Relu partition has more than one output node")
+            relu_node = relu_partition.output_nodes[0]
+            if len(bn_partition.output_nodes) > 1:
+                raise ValueError("bn partition has more than one output node")
+            bn_node = bn_partition.output_nodes[0].args[0]
+
+            print("bn_node is: {}".format(bn_node.target), flush=True)
+
+            if _is_annotated([relu_node, bn_node]):
+                continue
+            input_qspec_map = {}
+            input_act = bn_node.args[0]
+            assert isinstance(input_act, Node)
+            input_qspec_map[input_act] = get_input_act_qspec(config)
+            
+            bn_node.meta["quantization_annotation"] = _X86InductorQuantizationAnnotation(
+                input_qspec_map=input_qspec_map,
+                _annotated=True,
+            )
+            relu_node.meta["quantization_annotation"] = _X86InductorQuantizationAnnotation(
+                output_qspec=get_output_act_qspec(config),  # type: ignore[arg-type]
+                _annotated=True,
+            )
+            bn_relu_annotation_count += 1
+
+            for node in bn_partition.nodes:
+                if node is not None:
+                    if "quantization_annotation" not in node.meta:
+                        node.meta["quantization_annotation"] = _X86InductorQuantizationAnnotation()
+                    node.meta["quantization_annotation"]._annotated = True
+            for node in relu_partition.nodes:
+                if node is not None:
+                    if "quantization_annotation" not in node.meta:
+                        node.meta["quantization_annotation"] = _X86InductorQuantizationAnnotation()
+                    node.meta["quantization_annotation"]._annotated = True
+            print("bn_partition.nodes is: {}".format(bn_partition.nodes), flush=True)
+            print("bn_relu_annotation_count is: {}".format(bn_relu_annotation_count), flush=True)
 
     def _annotate_conv2d_binary_unary(
         self, gm: torch.fx.GraphModule, quantization_config: QuantizationConfig
