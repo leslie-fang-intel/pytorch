@@ -4649,11 +4649,13 @@ class QBN2DReLUPT2E(ExternKernelAlloc):
         bn2d_var = args[4]
         o_inv_scale = args[5]
         o_zp = args[6]
+        x_scale = args[7]
+        x_zp = args[8]
         (
             eps,
         ) = const_args[-3:]
 
-        self.kernel = "torch.ops.quantized.batch_norm2d_relu"
+        self.kernel = "torch.ops.quantized.batch_norm2d_relu.tensor"
         codegen_args = (
             f"{x}"
             + f", {bn2d_weight}"
@@ -4663,6 +4665,8 @@ class QBN2DReLUPT2E(ExternKernelAlloc):
             + f", {eps}"
             + f", {o_inv_scale}"
             + f", {o_zp}"
+            + f", {x_scale}"
+            + f", {x_zp}"
         )
 
         wrapper.writeline(f"{self.get_name()} = {self.kernel}({codegen_args})")
@@ -4681,6 +4685,8 @@ class QBN2DReLUPT2E(ExternKernelAlloc):
         eps,
         o_inv_scale,
         o_zp,
+        x_scale,
+        x_zp,
     ):
         # Force input to channel_last memory
 
@@ -4699,7 +4705,9 @@ class QBN2DReLUPT2E(ExternKernelAlloc):
         assert x.get_device().type == "cpu"
         o_inv_scale = cls.realize_input(o_inv_scale)
         o_zp = cls.realize_input(o_zp)
-        inputs = [x, bn2d_weight, bn2d_bias, bn2d_mean, bn2d_var, o_inv_scale, o_zp]
+        x_scale = cls.realize_input(x_scale)
+        x_zp = cls.realize_input(x_zp)
+        inputs = [x, bn2d_weight, bn2d_bias, bn2d_mean, bn2d_var, o_inv_scale, o_zp, x_scale, x_zp]
 
 
         constant_args = [

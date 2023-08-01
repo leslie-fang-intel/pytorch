@@ -3546,7 +3546,7 @@ def quantized_maxpool2d(
 
 @register_lowering(quantized.batch_norm2d_relu, type_promotion_kind=None)
 def quantized_batch_norm2d_relu(
-    x, bn2d_weight, bn2d_bias, bn2d_mean, bn2d_var, momentum, eps, o_inv_scale, o_zp
+    x, bn2d_weight, bn2d_bias, bn2d_mean, bn2d_var, momentum, eps, o_inv_scale, o_zp, x_scale, x_zp
 ):
     return TensorBox.create(
         ir.QBN2DReLUPT2E.create(
@@ -3558,7 +3558,9 @@ def quantized_batch_norm2d_relu(
             momentum,
             eps,
             o_inv_scale,
-            o_zp
+            o_zp,
+            x_scale,
+            x_zp,
         )
     )
 

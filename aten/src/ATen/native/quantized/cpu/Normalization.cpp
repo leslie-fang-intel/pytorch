@@ -12,6 +12,7 @@
 #include <ATen/ops/_empty_affine_quantized.h>
 #include <ATen/ops/empty_like.h>
 #include <ATen/ops/quantized_batch_norm_native.h>
+#include <ATen/ops/empty.h>
 #endif
 
 #include <algorithm>
@@ -168,7 +169,9 @@ Tensor q_batch_norm2d_impl(
     Tensor var,
     double eps,
     double output_scale,
-    int64_t output_zero_point) {
+    int64_t output_zero_point,
+    double input_scale = 1.0,
+    int64_t input_zero_point = 1) {
 
   TORCH_CHECK(mb_weight.has_value(), "Weight must be provided");
   TORCH_CHECK(mb_bias.has_value(), "Bias must be provided");
@@ -205,14 +208,29 @@ Tensor q_batch_norm2d_impl(
 
   auto oSizes = qx.sizes();
   auto qx_nhwc = qx.contiguous(MemoryFormat::ChannelsLast);
-  Tensor qy = at::_empty_affine_quantized(
-      oSizes,
-      at::device(kCPU)
-        .dtype(qx_nhwc.scalar_type())
-        .memory_format(MemoryFormat::ChannelsLast),
-      output_scale,
-      output_zero_point,
-      c10::nullopt);
+  Tensor qy;
+  int64_t input_zp;
+  if (qx.is_quantized()) {
+
+    qy = at::_empty_affine_quantized(
+        oSizes,
+        at::device(kCPU)
+          .dtype(qx_nhwc.scalar_type())
+          .memory_format(MemoryFormat::ChannelsLast),
+        output_scale,
+        output_zero_point,
+        c10::nullopt);
+    input_zp = qx.q_zero_point();
+    input_scale = qx.q_scale();
+  } else {
+    qy = at::empty(
+        oSizes,
+        at::device(kCPU)
+          .dtype(qx_nhwc.scalar_type())
+          .memory_format(MemoryFormat::ChannelsLast)
+      );
+    input_zp = input_zero_point;
+  }
 
   compute_fused_params(
       C,
@@ -221,7 +239,7 @@ Tensor q_batch_norm2d_impl(
       mean_data,
       var_data,
       eps,
-      qx.q_scale(),
+      input_scale,
       output_scale,
       alpha_data,
       beta_data);
@@ -231,7 +249,7 @@ Tensor q_batch_norm2d_impl(
         N,
         C,
         H * W,
-        qx.q_zero_point(),
+        input_zp,
         output_zero_point,
         qx_nhwc,
         alpha,
@@ -243,7 +261,7 @@ Tensor q_batch_norm2d_impl(
         N,
         C,
         H * W,
-        qx.q_zero_point(),
+        input_zp,
         output_zero_point,
         qx_nhwc,
         alpha,
@@ -251,6 +269,58 @@ Tensor q_batch_norm2d_impl(
         qy);
   }
   return qy;
+}
+
+template <bool ReluFused>
+Tensor q_batch_norm2d_impl_wrap(
+    Tensor qx,
+    c10::optional<Tensor> mb_weight,
+    c10::optional<Tensor> mb_bias,
+    Tensor mean,
+    Tensor var,
+    double eps,
+    double output_scale,
+    int64_t output_zero_point) {
+    return q_batch_norm2d_impl<ReluFused>(
+      qx,
+      mb_weight,
+      mb_bias,
+      mean,
+      var,
+      eps,
+      output_scale,
+      output_zero_point,
+      1.0,
+      1
+    );
+}
+
+template <bool ReluFused>
+Tensor q_batch_norm2d_tensor_impl(
+    Tensor qx,
+    c10::optional<Tensor> mb_weight,
+    c10::optional<Tensor> mb_bias,
+    Tensor mean,
+    Tensor var,
+    double eps,
+    Tensor output_scale,
+    Tensor output_zero_point,
+    Tensor input_scale,
+    Tensor input_zero_point) {
+    
+    std::cout<<"---- hit q_batch_norm2d_tensor_impl ---- "<<std::endl;
+    return q_batch_norm2d_impl<ReluFused>(
+      qx,
+      mb_weight,
+      mb_bias,
+      mean,
+      var,
+      eps,
+      output_scale.item().toDouble(),
+      output_zero_point.item().toLong(),
+      input_scale.item().toDouble(),
+      input_zero_point.item().toLong()
+    );
 }
 
 template <bool ReluFused>
@@ -406,10 +476,14 @@ TORCH_LIBRARY_IMPL(quantized, QuantizedCPU, m) {
   m.impl(TORCH_SELECTIVE_NAME("quantized::batch_norm_relu"),   TORCH_FN(q_batch_norm_impl<true>));
   m.impl(TORCH_SELECTIVE_NAME("quantized::batch_norm1d"),      TORCH_FN(q_batch_norm1d_impl<false>));
   m.impl(TORCH_SELECTIVE_NAME("quantized::batch_norm1d_relu"), TORCH_FN(q_batch_norm1d_impl<true>));
-  m.impl(TORCH_SELECTIVE_NAME("quantized::batch_norm2d"),      TORCH_FN(q_batch_norm2d_impl<false>));
-  m.impl(TORCH_SELECTIVE_NAME("quantized::batch_norm2d_relu"), TORCH_FN(q_batch_norm2d_impl<true>));
+  m.impl(TORCH_SELECTIVE_NAME("quantized::batch_norm2d"),      TORCH_FN(q_batch_norm2d_impl_wrap<false>));
+  m.impl(TORCH_SELECTIVE_NAME("quantized::batch_norm2d_relu"), TORCH_FN(q_batch_norm2d_impl_wrap<true>));
   m.impl(TORCH_SELECTIVE_NAME("quantized::batch_norm3d"),      TORCH_FN(q_batch_norm3d_impl<false>));
   m.impl(TORCH_SELECTIVE_NAME("quantized::batch_norm3d_relu"), TORCH_FN(q_batch_norm3d_impl<true>));
+}
+
+TORCH_LIBRARY_IMPL(quantized, CPU, m) {
+  m.impl(TORCH_SELECTIVE_NAME("quantized::batch_norm2d_relu.tensor"), TORCH_FN(q_batch_norm2d_tensor_impl<true>));
 }
 
 } // namespace native

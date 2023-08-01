@@ -2413,10 +2413,10 @@ void qtopk_kernel(Tensor& values,
   });
 }
 
-template <typename T>
+template <typename T, typename T_underlying>
 inline void do_bn_compute(
-    typename T::underlying* X_ptr,
-    typename T::underlying* Y_ptr,
+    T_underlying* X_ptr,
+    T_underlying* Y_ptr,
     Vectorized<float> & fake_scale,
     Vectorized<float> & in_zp_vec,
     Vectorized<float> & scale_neg_zp_premul,
@@ -2446,8 +2446,8 @@ inline void do_bn_compute(
   outputs_q.store(Y_ptr, vec_num * kVLen);
 }
 
-template <bool ReluFused>
-void q_batch_norm_kernel(
+template <bool ReluFused, typename scalar_t, typename scalar_t_underlying>
+void _q_batch_norm_kernel(
     int64_t N,
     int64_t C,
     int64_t HxW,
@@ -2456,16 +2456,14 @@ void q_batch_norm_kernel(
     const Tensor& input,
     const Tensor& a,
     const Tensor& b,
-    Tensor& output) {
-
-  AT_DISPATCH_QINT_TYPES(input.scalar_type(), "qbatch_norm", [&]() {
+    Tensor& output){
     float* alpha = a.data_ptr<float>();
     float* beta = b.data_ptr<float>();
-    auto minimum = std::numeric_limits<scalar_t::underlying>::lowest();
-    auto maximum = std::numeric_limits<scalar_t::underlying>::max();
-    scalar_t::underlying* X =
-        reinterpret_cast<scalar_t::underlying*>(input.data_ptr());
-    scalar_t::underlying* Y = reinterpret_cast<scalar_t::underlying*>(output.data_ptr());
+    auto minimum = std::numeric_limits<scalar_t_underlying>::lowest();
+    auto maximum = std::numeric_limits<scalar_t_underlying>::max();
+    scalar_t_underlying* X =
+        reinterpret_cast<scalar_t_underlying*>(input.data_ptr());
+    scalar_t_underlying* Y = reinterpret_cast<scalar_t_underlying*>(output.data_ptr());
 
     constexpr int kVLen = Vectorized<float>::size();
     const int64_t outer_size = N * HxW;
@@ -2475,15 +2473,15 @@ void q_batch_norm_kernel(
     auto fake_scale = Vectorized<float>(1.0f);
     auto scale_neg_zp_premul = fake_scale * in_zp_vec.neg();
     auto out_zero_point_v = Vec(scalar_t(out_zero_point));
-    const auto lanes = static_cast<int64_t>(Vec::float_num_vecs() * kVLen);
+    const auto lanes = static_cast<int64_t>(4 * kVLen);
     at::parallel_for(0, outer_size, 0, [&](int64_t begin, int64_t end) {
       for (const auto i : c10::irange(begin, end)) {
-        auto* X_ptr = reinterpret_cast<typename scalar_t::underlying*>(X + i * C);
-        auto* Y_ptr = reinterpret_cast<typename scalar_t::underlying*>(Y + i * C);
+        auto* X_ptr = reinterpret_cast<scalar_t_underlying*>(X + i * C);
+        auto* Y_ptr = reinterpret_cast<scalar_t_underlying*>(Y + i * C);
         int64_t ch = 0;
 
         for(; ch + lanes <= C; ch += lanes) {
-          do_bn_compute<scalar_t>(
+          do_bn_compute<scalar_t, scalar_t_underlying>(
             X_ptr + ch,
             Y_ptr + ch,
             fake_scale,
@@ -2493,7 +2491,7 @@ void q_batch_norm_kernel(
             out_zero_point_v,
             alpha + ch,
             beta + ch,
-            Vec::float_num_vecs(),
+            4,
             ReluFused,
             kVLen
           );
@@ -2504,9 +2502,9 @@ void q_batch_norm_kernel(
         int64_t elem_size = C - ch;
         if ((lanes == 32) && elem_size >= kVLen) {
           int64_t vec_num = elem_size / kVLen;
-          std::vector<typename scalar_t::underlying> buf_in(lanes);
+          std::vector<scalar_t_underlying> buf_in(lanes);
           memcpy(buf_in.data(), X_ptr + ch, vec_num * kVLen); // 3 cycles
-          do_bn_compute<scalar_t>(
+          do_bn_compute<scalar_t, scalar_t_underlying>(
             buf_in.data(),
             Y_ptr + ch,
             fake_scale,
@@ -2535,7 +2533,48 @@ void q_batch_norm_kernel(
         }
       }
     });
-  });
+}
+
+template <bool ReluFused>
+void q_batch_norm_kernel(
+    int64_t N,
+    int64_t C,
+    int64_t HxW,
+    int64_t in_zero_point,
+    int64_t out_zero_point,
+    const Tensor& input,
+    const Tensor& a,
+    const Tensor& b,
+    Tensor& output) {
+  if (input.scalar_type() == ScalarType::Byte) {
+    AT_DISPATCH_INTEGRAL_TYPES(input.scalar_type(), "qbatch_norm_cpu", [&]() {
+      _q_batch_norm_kernel<ReluFused, scalar_t, scalar_t>(
+        N,
+        C,
+        HxW,
+        in_zero_point,
+        out_zero_point,
+        input,
+        a,
+        b,
+        output
+      );
+    });
+  } else {
+    AT_DISPATCH_QINT_TYPES(input.scalar_type(), "qbatch_norm", [&]() {
+      _q_batch_norm_kernel<ReluFused, scalar_t, scalar_t::underlying>(
+        N,
+        C,
+        HxW,
+        in_zero_point,
+        out_zero_point,
+        input,
+        a,
+        b,
+        output
+      );
+    });
+  }
 }
 
 void _fake_quantize_tensor_helper(

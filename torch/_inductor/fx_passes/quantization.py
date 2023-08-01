@@ -414,6 +414,8 @@ def _register_quantized_bn2d_relu_lowering(
         bn2d_var = kwargs["bn2d_var"]
         momentum = kwargs["momentum"]
         eps = kwargs["eps"]
+        x_scale = kwargs["x_scale"]
+        x_zp = kwargs["x_zp"]
         o_inv_scale = kwargs["o_inv_scale"]
         o_zp = kwargs["o_zp"]
 
@@ -427,6 +429,8 @@ def _register_quantized_bn2d_relu_lowering(
             eps,
             o_inv_scale,
             o_zp,
+            x_scale,
+            x_zp,
         )
         print("---- hit the qbn2drelu pattern ----", flush=True)
         return L[computation_op](*computation_args)
