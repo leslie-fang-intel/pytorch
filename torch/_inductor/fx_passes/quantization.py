@@ -416,8 +416,16 @@ def _is_valid_dequant_promotion_pattern(match):
         and to_fp32_node.target is prims.convert_element_type.default
         and len(list(mul_node.users)) > 1
     ):
-        # dequant pattern has more than 1 users to be promoted
-        return True
+        # Dequant promotion brings performance benefits when the dequant node can be fused with following up operators such as conv.
+        # For densenet121, there is the pattern dequant node consumed by 7 concat node. In this case, dequant promotion brings
+        # negative optimization.
+        # We add the heuristic here, when more than half of the user nodes can be fused with the dequant node,
+        # we will do the dequant promotion.
+        positive_user_node_list = [aten.convolution.default,]
+        mul_node_users = list(mul_node.users)
+        positive_mul_node_users = list(filter(lambda user_node: user_node.target in positive_user_node_list, mul_node_users))
+
+        return len(positive_mul_node_users)/len(mul_node_users) >= 0.5
     return False
 
 
