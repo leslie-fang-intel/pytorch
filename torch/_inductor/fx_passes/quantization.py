@@ -399,11 +399,72 @@ def _register_quantization_maxpool2d():
         quantized.max_pool2d,
     )
 
+def _register_quantized_bn2d_relu_lowering(
+    pattern,
+    computation_op,
+):
+    @register_lowering_pattern(
+        pattern,
+    )
+    def qbn2drelu(match: Match, *args, **kwargs):
+        x = kwargs["x"]
+        bn2d_weight = kwargs["bn2d_weight"]
+        bn2d_bias = kwargs["bn2d_bias"]
+        bn2d_mean = kwargs["bn2d_mean"]
+        bn2d_var = kwargs["bn2d_var"]
+        momentum = kwargs["momentum"]
+        eps = kwargs["eps"]
+        o_inv_scale = kwargs["o_inv_scale"]
+        o_zp = kwargs["o_zp"]
+
+        computation_args = (
+            x,
+            bn2d_weight,
+            bn2d_bias,
+            bn2d_mean,
+            bn2d_var,
+            momentum,
+            eps,
+            o_inv_scale,
+            o_zp,
+        )
+        print("---- hit the qbn2drelu pattern ----", flush=True)
+        return L[computation_op](*computation_args)
+        #return computation_op
+
+    return qbn2drelu
+
+def _register_quantization_bn2d_relu():
+    dequantize_bn2d_pattern = CallFunction(
+        aten._native_batch_norm_legit_no_training.default,
+        dequantize_per_tensor_activation_pattern,
+        KeywordArg("bn2d_weight"),
+        KeywordArg("bn2d_bias"),
+        KeywordArg("bn2d_mean"),
+        KeywordArg("bn2d_var"),
+        KeywordArg("momentum"),
+        KeywordArg("eps"),
+    )
+    dequantize_bn2d_get_item_pattern = CallFunction(
+        operator.getitem,
+        dequantize_bn2d_pattern,
+        Arg(),
+    )
+    dequantize_bn2d_get_item_relu_pattern = CallFunction(
+        aten.relu.default,
+        dequantize_bn2d_get_item_pattern,
+    )
+    _register_quantized_bn2d_relu_lowering(
+        generate_pattern_with_output_quant(dequantize_bn2d_get_item_relu_pattern),
+        #dequantize_bn2d_get_item_pattern,
+        quantized.batch_norm2d_relu,
+    )
 
 def _register_quantization_lowerings():
     _register_quantization_unary_fusion()
     _register_quantization_binary_fusion()
     _register_quantization_maxpool2d()
+    _register_quantization_bn2d_relu()
 
 
 def _is_valid_dequant_promotion_pattern(match):

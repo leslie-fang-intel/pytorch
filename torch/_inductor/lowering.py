@@ -3544,6 +3544,24 @@ def quantized_maxpool2d(
         )
     )
 
+@register_lowering(quantized.batch_norm2d_relu, type_promotion_kind=None)
+def quantized_batch_norm2d_relu(
+    x, bn2d_weight, bn2d_bias, bn2d_mean, bn2d_var, momentum, eps, o_inv_scale, o_zp
+):
+    return TensorBox.create(
+        ir.QBN2DReLUPT2E.create(
+            x,
+            bn2d_weight,
+            bn2d_bias,
+            bn2d_mean,
+            bn2d_var,
+            momentum,
+            eps,
+            o_inv_scale,
+            o_zp
+        )
+    )
+
 
 def pad_adaptive_loader(x):
     *_, h, w = x.get_size()

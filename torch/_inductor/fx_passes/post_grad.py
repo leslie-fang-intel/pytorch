@@ -65,6 +65,8 @@ def post_grad_passes(gm: torch.fx.GraphModule, is_inference: bool):
 
         remove_extra_clones(gm.graph)
 
+        print("model before quantization fusion is: {}".format(gm.graph), flush=True)
+
         for patterns in pass_patterns:
             patterns.apply(gm.graph)
         if is_inference:

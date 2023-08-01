@@ -4627,6 +4627,91 @@ class QMaxpool2dPT2E(ExternKernelAlloc):
         )
 
 
+class QBN2DReLUPT2E(ExternKernelAlloc):
+    def __init__(
+        self,
+        layout,
+        inputs,
+        constant_args=(),
+    ):
+        super().__init__(layout, inputs, constant_args)
+
+    def codegen(self, wrapper):
+        # Parser the inputs and constant
+        args = [x.codegen_reference() for x in self.inputs]
+        const_args = []
+        const_args.extend(self.codegen_const_args())
+
+        x = args[0]
+        bn2d_weight = args[1]
+        bn2d_bias = args[2]
+        bn2d_mean = args[3]
+        bn2d_var = args[4]
+        o_inv_scale = args[5]
+        o_zp = args[6]
+        (
+            eps,
+        ) = const_args[-3:]
+
+        self.kernel = "torch.ops.quantized.batch_norm2d_relu"
+        codegen_args = (
+            f"{x}"
+            + f", {bn2d_weight}"
+            + f", {bn2d_bias}"
+            + f", {bn2d_mean}"
+            + f", {bn2d_var}"
+            + f", {eps}"
+            + f", {o_inv_scale}"
+            + f", {o_zp}"
+        )
+
+        wrapper.writeline(f"{self.get_name()} = {self.kernel}({codegen_args})")
+        if isinstance(self.layout, Layout):
+            self.codegen_size_asserts(wrapper)
+
+    @classmethod
+    def create(
+        cls,
+        x: "TensorBox",
+        bn2d_weight,
+        bn2d_bias,
+        bn2d_mean,
+        bn2d_var,
+        momentum,
+        eps,
+        o_inv_scale,
+        o_zp,
+    ):
+        # Force input to channel_last memory
+
+        x.realize()
+        output_size = x.get_size() # input output same size
+        x = cls.require_stride_order(x, [3, 0, 2, 1])
+
+        # set output dtype and memory format
+        output_stride = make_channels_last_strides_for(output_size)
+        kernel_layout = FixedLayout(
+            x.get_device(),
+            x.get_dtype(),
+            convert_shape_to_inductor(output_size),
+            convert_shape_to_inductor(output_stride),
+        )
+        assert x.get_device().type == "cpu"
+        o_inv_scale = cls.realize_input(o_inv_scale)
+        o_zp = cls.realize_input(o_zp)
+        inputs = [x, bn2d_weight, bn2d_bias, bn2d_mean, bn2d_var, o_inv_scale, o_zp]
+
+
+        constant_args = [
+            eps,
+        ]
+
+        return QBN2DReLUPT2E(
+            layout=kernel_layout,
+            inputs=inputs,
+            constant_args=constant_args,
+        )
+
 @dataclasses.dataclass
 class MutableBox(IRNode):
     """
