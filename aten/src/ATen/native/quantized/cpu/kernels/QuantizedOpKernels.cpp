@@ -2429,21 +2429,21 @@ inline void do_bn_compute(
     int64_t kVLen
 ) {
   using Vec = Vectorized<T>;
-  auto vals_q = Vec::loadu(X_ptr);
-  // Fake scale of 1.0 here, should not affect performance (FMA in place of sub)
-  auto vals_dq = vals_q.dequantize(fake_scale, in_zp_vec, scale_neg_zp_premul);
-  for (const auto idx : c10::irange(vec_num)) {
-    auto alpha_v = Vectorized<float>::loadu(alpha + idx * kVLen);
-    auto beta_v = Vectorized<float>::loadu(beta + idx * kVLen);
-    vals_dq[idx] = vec::fmadd(alpha_v, vals_dq[idx], beta_v);
-  }
-  // NOLINTNEXTLINE(bugprone-argument-comment)
-  auto outputs_q = Vec::quantize(vals_dq, /*output_scale=*/1.0f, out_zero_point, /*inv_output_scale=*/1.0f);
-  // Fake scale again
-  if (ReluFused) {
-    outputs_q = outputs_q.maximum(out_zero_point_v);
-  }
-  outputs_q.store(Y_ptr, vec_num * kVLen);
+  // auto vals_q = Vec::loadu(X_ptr);
+  // // Fake scale of 1.0 here, should not affect performance (FMA in place of sub)
+  // auto vals_dq = vals_q.dequantize(fake_scale, in_zp_vec, scale_neg_zp_premul);
+  // for (const auto idx : c10::irange(vec_num)) {
+  //   auto alpha_v = Vectorized<float>::loadu(alpha + idx * kVLen);
+  //   auto beta_v = Vectorized<float>::loadu(beta + idx * kVLen);
+  //   vals_dq[idx] = vec::fmadd(alpha_v, vals_dq[idx], beta_v);
+  // }
+  // // NOLINTNEXTLINE(bugprone-argument-comment)
+  // auto outputs_q = Vec::quantize(vals_dq, /*output_scale=*/1.0f, out_zero_point, /*inv_output_scale=*/1.0f);
+  // // Fake scale again
+  // if (ReluFused) {
+  //   outputs_q = outputs_q.maximum(out_zero_point_v);
+  // }
+  // outputs_q.store(Y_ptr, vec_num * kVLen);
 }
 
 template <bool ReluFused, typename scalar_t, typename scalar_t_underlying>

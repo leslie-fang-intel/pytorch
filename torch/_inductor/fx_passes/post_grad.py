@@ -67,6 +67,12 @@ def post_grad_passes(gm: torch.fx.GraphModule, is_inference: bool):
 
         print("model before quantization fusion is: {}".format(gm.graph), flush=True)
 
+        for node in gm.graph.nodes:
+            if node.target == aten.cat.default:
+                print("---------------------", flush=True)
+                print("before post grad fusion node is: {}".format(node.target), flush=True)
+                print("before post grad fusion node is: {}".format(node.args[0]), flush=True)
+
         for patterns in pass_patterns:
             patterns.apply(gm.graph)
         if is_inference:
