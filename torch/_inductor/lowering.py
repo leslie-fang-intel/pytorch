@@ -948,6 +948,11 @@ def cat(inputs, dim=0):
         *inputs, type_promotion_kind=ELEMENTWISE_TYPE_PROMOTION_KIND.DEFAULT
     )
     inputs = [to_dtype(inp, dtype) for inp in inputs]
+
+    if dtype is torch.uint8:
+        print("---- hit uint8 data type in ConcatKernel lowering -----", flush=True)
+        return TensorBox.create(ir.ConcatExternKernel.create(inputs, dim))
+
     return TensorBox(ir.ConcatKernel.create(inputs, dim))
 
 
