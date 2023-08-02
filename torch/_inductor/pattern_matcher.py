@@ -1158,3 +1158,59 @@ def remove_extra_clones(graph: torch.fx.Graph):
                 node.replace_all_uses_with(src)
                 graph.erase_node(node)
         seen.add(node)
+
+# def find_input_of_dq_pattern(mul_node: torch.fx.Node):
+#     assert mul_node.target is aten.mul.Tensor
+#     sub_node = mul_node.args[0]
+#     to_fp32_node = sub_node.args[0]
+#     return to_fp32_node.args[0]
+
+
+def remove_unnessary_qdq_cat(graph: torch.fx.Graph):
+    seen = set()
+    for node in reversed(graph.nodes):
+        if node.target is aten.cat.default:
+            print("---- hit remove_unnessary_qdq_cat ----- ", flush=True)
+
+            # Step 1: Remove all the input dq
+            input_nodes = node.args[0]
+            new_input_nodes = []
+            for input_node in input_nodes:
+                # replace_node = find_input_of_dq_pattern(input_node)
+
+                mul_node = input_node
+                assert mul_node.target is aten.mul.Tensor
+                sub_node = mul_node.args[0]
+                to_fp32_node = sub_node.args[0]
+
+                replace_node = to_fp32_node.args[0]
+
+
+
+                node.replace_input_with(input_node, replace_node)
+                graph.erase_node(mul_node)
+                graph.erase_node(sub_node)
+                graph.erase_node(to_fp32_node)
+
+
+
+            
+            # Step 2: Remove output q
+            output_q_mul_node = list(node.users)[0]
+            output_q_round_node = list(output_q_mul_node.users)[0]
+            output_q_add_node = list(output_q_round_node.users)[0]
+            output_q_clamp_min_node = list(output_q_add_node.users)[0]
+            output_q_clamp_max_node = list(output_q_clamp_min_node.users)[0]
+            output_q_convert_uint8_node = list(output_q_clamp_max_node.users)[0]
+
+            output_dq_convert_float_node = list(output_q_convert_uint8_node.users)[0]
+
+            output_dq_convert_float_node.replace_input_with(output_q_convert_uint8_node, node)
+            
+            graph.erase_node(output_q_convert_uint8_node)
+            graph.erase_node(output_q_clamp_max_node)
+            graph.erase_node(output_q_clamp_min_node)
+            graph.erase_node(output_q_add_node)
+            graph.erase_node(output_q_round_node)
+            graph.erase_node(output_q_mul_node)
+

@@ -308,7 +308,7 @@ Tensor q_batch_norm2d_tensor_impl(
     Tensor input_scale,
     Tensor input_zero_point) {
     
-    std::cout<<"---- hit q_batch_norm2d_tensor_impl ---- "<<std::endl;
+    // std::cout<<"---- hit q_batch_norm2d_tensor_impl ---- "<<std::endl;
     return q_batch_norm2d_impl<ReluFused>(
       qx,
       mb_weight,
