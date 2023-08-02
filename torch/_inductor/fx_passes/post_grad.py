@@ -27,6 +27,7 @@ from ..pattern_matcher import (
     register_replacement,
     remove_extra_clones,
     stable_topological_sort,
+    remove_unnessary_qdq_cat,
 )
 from ..virtualized import V
 from .group_batch_fusion import group_batch_fusion_post_grad_passes
@@ -64,6 +65,8 @@ def post_grad_passes(gm: torch.fx.GraphModule, is_inference: bool):
         lazy_init()
 
         remove_extra_clones(gm.graph)
+
+        remove_unnessary_qdq_cat(gm.graph)
 
         print("graph before post grad fusion is: {}".format(gm.graph), flush=True)
 

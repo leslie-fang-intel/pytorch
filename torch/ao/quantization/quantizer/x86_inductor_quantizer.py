@@ -341,6 +341,8 @@ class X86InductorQuantizer(Quantizer):
         # Step1: Recipe of fusion patterns like conv/linear.
         self._annotate_conv2d_fusion_pattern(model, config)
 
+        self._annotate_cat_fusion_pattern(model, config)
+
         # Step2: Recipe to propagate annotation for patterns beside conv/linear.
         # Go through all the nodes from start to end.
         # Recipe refer to https://github.com/intel/intel-extension-for-pytorch/blob/
@@ -364,6 +366,34 @@ class X86InductorQuantizer(Quantizer):
         self._annotate_conv2d_binary(model, config)
         self._annotate_conv2d_unary(model, config)
         self._annotate_conv2d(model, config)
+
+    def _annotate_cat_fusion_pattern(
+        self, gm: torch.fx.GraphModule, quantization_config: QuantizationConfig
+    ) -> None:
+        cat_annotation_count = 0
+        for node in gm.graph.nodes:
+            if node.target == torch.ops.aten.cat.default:
+                print("----------------------", flush=True)
+                print("cat in x86inductorquantizer is: {}".format(node.target), flush=True)
+                print("cat in x86inductorquantizer is: {}".format(node.args[0]), flush=True)
+                cat_annotation_count += 1      
+                print("cat_annotation_count is: {}".format(cat_annotation_count), flush=True)   
+                cat_node = node
+                input_nodes = node.args[0]
+                input_qspec_map = {}
+
+                first_input_node = input_nodes[0]
+                input_qspec_map[first_input_node] = get_input_act_qspec(quantization_config)
+
+                share_qparams_with_input_act0_qspec = SharedQuantizationSpec((first_input_node, cat_node))
+
+                for input_node in input_nodes[1:]:
+                    input_qspec_map[input_node] = share_qparams_with_input_act0_qspec
+                cat_node.meta["quantization_annotation"] = _X86InductorQuantizationAnnotation(
+                    input_qspec_map=input_qspec_map,
+                    output_qspec=share_qparams_with_input_act0_qspec,
+                    _annotated=True,
+                )
 
     def _annotate_conv2d_binary_unary(
         self, gm: torch.fx.GraphModule, quantization_config: QuantizationConfig
