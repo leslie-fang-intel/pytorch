@@ -359,16 +359,22 @@ def _register_quantized_maxpool2d_lowering(
         extra_check=_is_valid_quantized_maxpool2d_optimization_pattern(),
     )
     def qmaxpool2d(match: Match, *args, **kwargs):
+        print("---- hit the qmaxpool2d pattern matcher ----", flush=True)
         x = kwargs["x"]
         kernel_size = kwargs["kernel_size"]
         stride = kwargs["stride"]
         padding = kwargs["padding"]
+
+        dilation = kwargs["dilation"] if ("dilation" in kwargs) else 1
+        ceil_mode = kwargs["ceil_mode"] if ("ceil_mode" in kwargs) else False
 
         computation_args = (
             x,
             kernel_size,
             stride,
             padding,
+            dilation,
+            ceil_mode
         )
         return L[computation_op](*computation_args)
 
@@ -399,6 +405,25 @@ def _register_quantization_maxpool2d():
         quantized.max_pool2d,
     )
 
+    # all with the paramters
+    dequantize_maxpool2d_pattern2 = CallFunction(
+        aten.max_pool2d_with_indices.default,
+        dequantize_per_tensor_activation_pattern,
+        KeywordArg("kernel_size"),
+        KeywordArg("stride"),
+        KeywordArg("padding"),
+        KeywordArg("dilation"),
+        KeywordArg("ceil_mode"),
+    )
+    dequantize_maxpool2d_get_item_pattern2 = CallFunction(
+        operator.getitem,
+        dequantize_maxpool2d_pattern2,
+        Arg(),
+    )
+    _register_quantized_maxpool2d_lowering(
+        generate_pattern_with_output_quant(dequantize_maxpool2d_get_item_pattern2),
+        quantized.max_pool2d,
+    )
 
 def _register_quantization_lowerings():
     _register_quantization_unary_fusion()
