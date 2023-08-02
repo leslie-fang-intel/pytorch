@@ -425,10 +425,41 @@ def _register_quantization_maxpool2d():
         quantized.max_pool2d,
     )
 
+def _register_quantized_cat_lowering(
+    pattern,
+    computation_op,
+):
+    @register_lowering_pattern(
+        pattern,
+    )
+    def qcat(match: Match, *args, **kwargs):
+        input_tenors = kwargs["input_tenors"]
+        axis = kwargs["axis"]
+
+        computation_args = (
+            input_tenors,
+            axis,
+        )
+        print("---- hit the qcat pattern ----", flush=True)
+        return L[computation_op](*computation_args)
+    return qcat
+
+def _register_quantization_cat():
+    dequantize_cat_pattern = CallFunction(
+        aten.cat.default,
+        KeywordArg("input_tenors"),
+        KeywordArg("axis"),
+    )
+    _register_quantized_cat_lowering(
+        dequantize_cat_pattern,
+        aten.cat.default,
+    )
+
 def _register_quantization_lowerings():
     _register_quantization_unary_fusion()
     _register_quantization_binary_fusion()
     _register_quantization_maxpool2d()
+    _register_quantization_cat()
 
 
 def _is_valid_dequant_promotion_pattern(match):
