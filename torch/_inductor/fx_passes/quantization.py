@@ -363,7 +363,7 @@ def _register_quantized_maxpool2d_lowering(
         x = kwargs["x"]
         kernel_size = kwargs["kernel_size"]
         stride = kwargs["stride"]
-        padding = kwargs["padding"]
+        padding = kwargs["padding"] if ("padding" in kwargs) else 0
 
         dilation = kwargs["dilation"] if ("dilation" in kwargs) else 1
         ceil_mode = kwargs["ceil_mode"] if ("ceil_mode" in kwargs) else False
@@ -422,6 +422,22 @@ def _register_quantization_maxpool2d():
     )
     _register_quantized_maxpool2d_lowering(
         generate_pattern_with_output_quant(dequantize_maxpool2d_get_item_pattern2),
+        quantized.max_pool2d,
+    )
+
+    dequantize_maxpool2d_pattern3 = CallFunction(
+        aten.max_pool2d_with_indices.default,
+        dequantize_per_tensor_activation_pattern,
+        KeywordArg("kernel_size"),
+        KeywordArg("stride"),
+    )
+    dequantize_maxpool2d_get_item_pattern3 = CallFunction(
+        operator.getitem,
+        dequantize_maxpool2d_pattern3,
+        Arg(),
+    )
+    _register_quantized_maxpool2d_lowering(
+        generate_pattern_with_output_quant(dequantize_maxpool2d_get_item_pattern3),
         quantized.max_pool2d,
     )
 
