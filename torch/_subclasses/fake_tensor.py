@@ -1692,6 +1692,10 @@ def run_fallback_kernel(fake_mode, func, args, kwargs, orig_not_implemented_exce
         args = tree_map(to_real_tensor, args)
         kwargs = tree_map(to_real_tensor, kwargs)
 
+        print("func is: {}".format(func), flush=True)
+        print("args is: {}".format(args), flush=True)
+        print("kwargs is: {}".format(kwargs), flush=True)
+        # import pdb;pdb.set_trace()
         r = func(*args, **kwargs)
 
     tensor_impls = set()

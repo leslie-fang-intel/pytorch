@@ -391,6 +391,7 @@ def _register_quantized_maxpool2d_lowering(
             dilation,
             ceil_mode,
         )
+        print("---- hit the qmaxpool2d lowering -----", flush=True)
         return L[computation_op](*computation_args)
 
     return qmaxpool2d
