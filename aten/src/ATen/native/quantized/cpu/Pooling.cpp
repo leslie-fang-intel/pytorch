@@ -250,6 +250,10 @@ Tensor q_maxpool_2d(
     oSizes = {nbatch, oC, oH, oW};
   }
 
+  // qx = qx.contiguous(c10::MemoryFormat::ChannelsLast);
+
+  // std::cout<<"qx.is_contiguous(c10::MemoryFormat::ChannelsLast) is: "<<qx.is_contiguous(c10::MemoryFormat::ChannelsLast)<<std::endl;
+
   if (qx.is_contiguous(c10::MemoryFormat::ChannelsLast)) {
     // Fast path case for channels-last case.
     // In this case, we can preserve the data layout in memory

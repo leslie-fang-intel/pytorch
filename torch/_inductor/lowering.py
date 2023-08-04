@@ -937,19 +937,6 @@ def as_strided_copy(x, size, stride, storage_offset=None):
     return clone(result)
 
 
-@register_lowering(aten.cat)
-def cat(inputs, dim=0):
-    if len(inputs) == 1:
-        return clone(inputs[0])
-
-    dim = _validate_dim(inputs[0], dim, 0)
-    dtype = get_promoted_dtype(
-        *inputs, type_promotion_kind=ELEMENTWISE_TYPE_PROMOTION_KIND.DEFAULT
-    )
-    inputs = [to_dtype(inp, dtype) for inp in inputs]
-    return TensorBox(ir.ConcatKernel.create(inputs, dim))
-
-
 @register_lowering(aten.diagonal, type_promotion_kind=None)
 def diagonal(input, offset: int = 0, dim1: int = 0, dim2: int = 1):
     original_shape = input.get_size()
@@ -1533,6 +1520,30 @@ def philox_rand_offset(shape):
         numel = numel * s
     return tensor(numel, dtype=torch.int64)
 
+
+# fallback_cat = fallback_handler(aten.cat, )
+
+@register_lowering(aten.cat)
+def cat(inputs, dim=0):
+    if len(inputs) == 1:
+        return clone(inputs[0])
+
+    dim = _validate_dim(inputs[0], dim, 0)
+    dtype = get_promoted_dtype(
+        *inputs, type_promotion_kind=ELEMENTWISE_TYPE_PROMOTION_KIND.DEFAULT
+    )
+    inputs = [to_dtype(inp, dtype) for inp in inputs]
+    if dtype is torch.uint8:
+        print("---- hit uint8 data type in ConcatKernel lowering -----", flush=True)
+        # option 1:
+        return TensorBox.create(ir.ConcatExternKernel.create(inputs, dim))
+    
+        # option 2:
+        # add_needs_realized_inputs(aten.cat)
+        # add_layout_constraint(aten.cat, require_channels_last)
+        # return fallback_handler(aten.cat)(inputs, dim)
+
+    return TensorBox(ir.ConcatKernel.create(inputs, dim))
 
 @register_lowering(torch.ops.rngprims.philox_rand, type_promotion_kind=None)
 def philox_rand(size, seed, offset, stride, device, dtype):
