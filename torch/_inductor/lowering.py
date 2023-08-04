@@ -1525,6 +1525,17 @@ def philox_rand_offset(shape):
 
 @register_lowering(aten.cat)
 def cat(inputs, dim=0):
+
+    if inputs[0].get_dtype() is torch.uint8:
+        print("---- hit uint8 data type in ConcatKernel lowering -----", flush=True)
+        # option 1:
+        return TensorBox.create(ir.ConcatExternKernel.create(inputs, dim))
+
+        # option 2:
+        # add_needs_realized_inputs(aten.cat)
+        # add_layout_constraint(aten.cat, require_channels_last)
+        # return fallback_handler(aten.cat)(inputs, dim)
+
     if len(inputs) == 1:
         return clone(inputs[0])
 
@@ -1533,15 +1544,7 @@ def cat(inputs, dim=0):
         *inputs, type_promotion_kind=ELEMENTWISE_TYPE_PROMOTION_KIND.DEFAULT
     )
     inputs = [to_dtype(inp, dtype) for inp in inputs]
-    if dtype is torch.uint8:
-        print("---- hit uint8 data type in ConcatKernel lowering -----", flush=True)
-        # option 1:
-        return TensorBox.create(ir.ConcatExternKernel.create(inputs, dim))
-    
-        # option 2:
-        # add_needs_realized_inputs(aten.cat)
-        # add_layout_constraint(aten.cat, require_channels_last)
-        # return fallback_handler(aten.cat)(inputs, dim)
+
 
     return TensorBox(ir.ConcatKernel.create(inputs, dim))
 

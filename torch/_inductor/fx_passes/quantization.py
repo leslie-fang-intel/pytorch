@@ -468,7 +468,7 @@ def _register_quantization_cat():
         KeywordArg("axis"),
     )
     _register_quantized_cat_lowering(
-        dequantize_cat_pattern,
+        generate_pattern_with_output_quant(dequantize_cat_pattern),
         aten.cat.default,
     )
 

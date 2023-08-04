@@ -1188,27 +1188,27 @@ def remove_unnessary_qdq_cat(graph: torch.fx.Graph):
 
 
 
-            # Step 2: Remove output q
-            output_q_mul_node = list(node.users)[0]
-            output_q_round_node = list(output_q_mul_node.users)[0]
-            output_q_add_node = list(output_q_round_node.users)[0]
-            output_q_clamp_min_node = list(output_q_add_node.users)[0]
-            output_q_clamp_max_node = list(output_q_clamp_min_node.users)[0]
-            output_q_convert_uint8_node = list(output_q_clamp_max_node.users)[0]
+            # # Step 2: Remove output q
+            # output_q_mul_node = list(node.users)[0]
+            # output_q_round_node = list(output_q_mul_node.users)[0]
+            # output_q_add_node = list(output_q_round_node.users)[0]
+            # output_q_clamp_min_node = list(output_q_add_node.users)[0]
+            # output_q_clamp_max_node = list(output_q_clamp_min_node.users)[0]
+            # output_q_convert_uint8_node = list(output_q_clamp_max_node.users)[0]
 
-            output_dq_convert_float_node = list(output_q_convert_uint8_node.users)[0]
+            # output_dq_convert_float_node = list(output_q_convert_uint8_node.users)[0]
 
-            print("output_q_convert_uint8_node.meta is: {}".format(output_q_convert_uint8_node.meta), flush=True)
-            print("node.meta is: {}".format(node.meta), flush=True)
-
-
-            output_dq_convert_float_node.replace_input_with(output_q_convert_uint8_node, node)
-            node.meta = output_q_convert_uint8_node.meta
+            # print("output_q_convert_uint8_node.meta is: {}".format(output_q_convert_uint8_node.meta), flush=True)
+            # print("node.meta is: {}".format(node.meta), flush=True)
 
 
-            graph.erase_node(output_q_convert_uint8_node)
-            graph.erase_node(output_q_clamp_max_node)
-            graph.erase_node(output_q_clamp_min_node)
-            graph.erase_node(output_q_add_node)
-            graph.erase_node(output_q_round_node)
-            graph.erase_node(output_q_mul_node)
+            # output_dq_convert_float_node.replace_input_with(output_q_convert_uint8_node, node)
+            # node.meta = output_q_convert_uint8_node.meta
+
+
+            # graph.erase_node(output_q_convert_uint8_node)
+            # graph.erase_node(output_q_clamp_max_node)
+            # graph.erase_node(output_q_clamp_min_node)
+            # graph.erase_node(output_q_add_node)
+            # graph.erase_node(output_q_round_node)
+            # graph.erase_node(output_q_mul_node)
