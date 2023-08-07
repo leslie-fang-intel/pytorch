@@ -4585,6 +4585,97 @@ class QConvPointWiseBinaryPT2E(ExternKernelAlloc):
         )
 
 
+class ConcatExternKernel(ExternKernelAlloc):
+    def __init__(
+        self,
+        layout,
+        inputs,
+        constant_args=(),
+    ):
+        super().__init__(layout, inputs, constant_args)
+
+    def codegen(self, wrapper):
+        # Parser the inputs and constant
+        args = [x.codegen_reference() for x in self.inputs]
+        const_args = []
+        const_args.extend(self.codegen_const_args())
+
+        inputs = args
+        dim = const_args[0]
+
+
+        self.kernel = "torch.ops.aten.cat.default"
+
+        inputs_str = "["
+        for input in inputs:
+            inputs_str += f"{input}"
+            inputs_str += ","
+        inputs_str += "]"
+
+        codegen_args = (
+            inputs_str
+            + f", {dim}"
+        )
+
+        print("codegen_args is: {}".format(codegen_args), flush=True)
+
+        wrapper.writeline(f"{self.get_name()} = {self.kernel}({codegen_args})")
+        if isinstance(self.layout, Layout):
+            self.codegen_size_asserts(wrapper)
+
+    @classmethod
+    def create(
+        cls,
+        inputs,
+        dim,
+    ):
+        # Force input to channel_last memory
+        for input in inputs:
+            input.realize()
+            # input = cls.require_stride_order(input, [3, 0, 2, 1])
+        device = inputs[0].get_device()
+        dtype = inputs[0].get_dtype()
+        new_size = list(inputs[0].get_size())
+        offsets_start = [0]
+        offsets_end = [new_size[dim]]
+        assert 0 <= dim < len(new_size)
+        for i in range(1, len(inputs)):
+            input_size = inputs[i].get_size()
+            offsets_start.append(new_size[dim])
+            assert len(input_size) == len(new_size)
+            assert inputs[i].get_dtype() == dtype
+            assert inputs[i].get_device() == device
+            for j in range(len(new_size)):
+                if j == dim:
+                    new_size[j] = new_size[j] + input_size[j]
+                else:
+                    new_size[j] = V.graph.sizevars.guard_equals(
+                        new_size[j], input_size[j]
+                    )
+            offsets_end.append(new_size[dim])
+        # output_stride = FlexibleLayout.contiguous_strides(new_size)
+        # If any of the inputs is in CL format, use CL format for the output
+
+        output_stride = make_channels_last_strides_for(new_size)
+        kernel_layout = FixedLayout(
+            device,
+            dtype,
+            convert_shape_to_inductor(new_size),
+            convert_shape_to_inductor(output_stride),
+        )
+
+        inputs = inputs
+        constant_args = [
+            dim,
+        ]
+
+        return ConcatExternKernel(
+            layout=kernel_layout,
+            inputs=inputs,
+            constant_args=constant_args,
+        )
+
+
 @dataclasses.dataclass
 class MutableBox(IRNode):
     """
