@@ -54,6 +54,7 @@ class _X86InductorQuantizationAnnotation(QuantizationAnnotation):
 # Ops support int8 data type and excludes ops like conv, linear.
 quantizable_ops_pt2e: Set = {
     torch.ops.aten.max_pool2d_with_indices.default,
+    torch.ops.aten.cat.default,
 }
 
 
@@ -62,6 +63,7 @@ quantizable_ops_pt2e: Set = {
 # 2. Ops don't support int8 in and fp32 out.
 int8_in_int8_out_ops_pt2e: Set = {
     torch.ops.aten.max_pool2d_with_indices.default,
+    torch.ops.aten.cat.default,
 }
 
 
@@ -535,6 +537,27 @@ class X86InductorQuantizer(Quantizer):
             _is_output_of_quantized_pattern=True,
         )
 
+    def _annotate_cat(
+        self, node: Node, quantization_config: QuantizationConfig
+    ) -> None:
+        cat_node = node
+        input_nodes = cat_node.args[0]
+        first_input_node = input_nodes[0]
+        input_qspec_map = {}
+        input_qspec_map[first_input_node] = get_input_act_qspec(quantization_config)
+        share_qparams_with_input_act0_qspec = SharedQuantizationSpec((first_input_node, cat_node))
+
+        for input_node in input_nodes[1:]:
+            input_qspec_map[input_node] = share_qparams_with_input_act0_qspec
+
+        cat_node.meta[
+            "quantization_annotation"
+        ] = _X86InductorQuantizationAnnotation(
+            input_qspec_map=input_qspec_map,
+            _annotated=True,
+            _is_output_of_quantized_pattern=True,
+        )
+
     def _annotation_propagation_quantizable_pattern(
         self, node: Node, quantization_config: QuantizationConfig
     ) -> None:
@@ -559,6 +582,11 @@ class X86InductorQuantizer(Quantizer):
                     return
                 self._annotate_maxpool2d(node, quantization_config)
                 return
+            elif node.target is torch.ops.aten.cat.default:
+                input_nodes_to_check = node.all_input_nodes
+                if not is_all_inputs_connected_to_quantized_op(input_nodes_to_check):
+                    return
+                self._annotate_cat(node, quantization_config)
             else:
                 # TODO <leslie>: Enable recipes for more single quantizable op such as view and relu.
                 pass
@@ -599,6 +627,25 @@ class X86InductorQuantizer(Quantizer):
                     getitem_node.meta[
                         "quantization_annotation"
                     ].output_qspec = SharedQuantizationSpec(edge_or_node)
+            elif node.target is torch.ops.aten.cat.default:
+                cat_node = node
+                cat_quantization_annotation = (
+                    cat_node.meta["quantization_annotation"]
+                    if "quantization_annotation" in cat_node.meta
+                    else None
+                )
+                if (
+                    cat_quantization_annotation
+                    and cat_quantization_annotation._is_output_of_quantized_pattern
+                ):
+                    # Annotate the output_qspec of cat_node
+                    first_input_node = cat_node.all_input_nodes[0]
+                    assert isinstance(first_input_node, Node)
+                    assert isinstance(cat_node, Node)
+                    edge_or_node: Tuple[Node, Node] = (first_input_node, cat_node)
+                    cat_node.meta[
+                        "quantization_annotation"
+                    ].output_qspec = SharedQuantizationSpec(edge_or_node)                
             else:
                 # TODO <leslie>: Enable recipes for more int8_in_int8_out_ops
                 pass
