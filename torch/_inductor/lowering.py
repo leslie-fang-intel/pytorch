@@ -939,6 +939,17 @@ def as_strided_copy(x, size, stride, storage_offset=None):
 
 @register_lowering(aten.cat)
 def cat(inputs, dim=0):
+    if inputs[0].get_dtype() is torch.uint8:
+        for input in inputs:
+            # all the input should with uint8 data type
+            assert input.get_dtype() is torch.uint8
+        # option 1:
+        return TensorBox.create(ir.ConcatExternKernel.create(inputs, dim))
+        # option 2:
+        # add_needs_realized_inputs(aten.cat)
+        # add_layout_constraint(aten.cat, require_channels_last)
+        # return fallback_handler(aten.cat)(inputs, dim)
+
     if len(inputs) == 1:
         return clone(inputs[0])
 
