@@ -55,6 +55,7 @@ class _X86InductorQuantizationAnnotation(QuantizationAnnotation):
 quantizable_ops_pt2e: Set = {
     torch.ops.aten.max_pool2d_with_indices.default,
     torch.ops.aten.cat.default,
+    torch.ops.aten.avg_pool2d.default,
 }
 
 
@@ -64,6 +65,7 @@ quantizable_ops_pt2e: Set = {
 int8_in_int8_out_ops_pt2e: Set = {
     torch.ops.aten.max_pool2d_with_indices.default,
     torch.ops.aten.cat.default,
+    torch.ops.aten.avg_pool2d.default
 }
 
 
@@ -558,6 +560,21 @@ class X86InductorQuantizer(Quantizer):
             _is_output_of_quantized_pattern=True,
         )
 
+    # def _annotate_avg_pool2d(
+    #     self, node: Node, quantization_config: QuantizationConfig
+    # ) -> None:
+    #     avg_pool2d_node = node
+    #     input_node = avg_pool2d_node.args[0]
+    #     input_qspec_map = {}
+    #     input_qspec_map[input_node] = get_input_act_qspec(quantization_config)
+    #     avg_pool2d_node.meta[
+    #         "quantization_annotation"
+    #     ] = _X86InductorQuantizationAnnotation(
+    #         input_qspec_map=input_qspec_map,
+    #         _annotated=True,
+    #         _is_output_of_quantized_pattern=True,
+    #     )
+
     def _annotation_propagation_quantizable_pattern(
         self, node: Node, quantization_config: QuantizationConfig
     ) -> None:
@@ -588,8 +605,18 @@ class X86InductorQuantizer(Quantizer):
                     return
                 self._annotate_cat(node, quantization_config)
             else:
-                # TODO <leslie>: Enable recipes for more single quantizable op such as view and relu.
-                pass
+                input_node = node.all_input_nodes[0]
+                if not is_all_inputs_connected_to_quantized_op([input_node,]):
+                    return
+                input_qspec_map = {}
+                input_qspec_map[input_node] = get_input_act_qspec(quantization_config)
+                node.meta[
+                    "quantization_annotation"
+                ] = _X86InductorQuantizationAnnotation(
+                    input_qspec_map=input_qspec_map,
+                    _annotated=True,
+                    _is_output_of_quantized_pattern=True,
+                )
         return
 
     def _annotate_output_for_int8_in_int8_out_pattern(
@@ -645,7 +672,26 @@ class X86InductorQuantizer(Quantizer):
                     edge_or_node: Tuple[Node, Node] = (first_input_node, cat_node)
                     cat_node.meta[
                         "quantization_annotation"
-                    ].output_qspec = SharedQuantizationSpec(edge_or_node)                
+                    ].output_qspec = SharedQuantizationSpec(edge_or_node)
+            elif node.target is torch.ops.aten.avg_pool2d.default:
+                avg_pool2d_node = node
+                avg_pool2d_quantization_annotation = (
+                    avg_pool2d_node.meta["quantization_annotation"]
+                    if "quantization_annotation" in avg_pool2d_node.meta
+                    else None
+                )
+                if (
+                    avg_pool2d_quantization_annotation
+                    and avg_pool2d_quantization_annotation._is_output_of_quantized_pattern
+                ):
+                    # Annotate the output_qspec of cat_node
+                    input_node = avg_pool2d_node.all_input_nodes[0]
+                    assert isinstance(input_node, Node)
+                    assert isinstance(avg_pool2d_node, Node)
+                    edge_or_node: Tuple[Node, Node] = (input_node, avg_pool2d_node)
+                    avg_pool2d_node.meta[
+                        "quantization_annotation"
+                    ].output_qspec = SharedQuantizationSpec(edge_or_node)
             else:
                 # TODO <leslie>: Enable recipes for more int8_in_int8_out_ops
                 pass
