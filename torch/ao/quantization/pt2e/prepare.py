@@ -54,6 +54,8 @@ def _maybe_insert_input_observer_for_arg_or_kwarg(
     assert isinstance(arg, Node)
     # default (no observer)
     new_arg = arg
+    # if node.target is torch.ops.aten.cat.default:
+    #     import pdb;pdb.set_trace()
 
     quantization_annotation = node.meta.get("quantization_annotation", QuantizationAnnotation())
     arg_as_input_act_obs_or_fq = _get_arg_as_input_act_obs_or_fq(arg, node, named_modules, obs_or_fq_map, is_qat)
@@ -68,11 +70,36 @@ def _maybe_insert_input_observer_for_arg_or_kwarg(
             assert _is_activation_post_process_node(arg, named_modules)
             assert arg_as_input_act_obs_or_fq is not None
             observed_arg = arg.args[0]
-            assert isinstance(observed_arg, Node), f"expect observed argument to be a Node, but got: {type(observed_arg)}"
+
+
+            def update_observed_arg(observed_arg, local_arg, node, named_modules):
+                if "quantization_annotation" in node.meta:
+                    input_qspec_map = node.meta["quantization_annotation"].input_qspec_map
+                    while _is_activation_post_process_node(local_arg, named_modules):
+                        local_arg = local_arg.args[0]
+                    if local_arg in input_qspec_map:
+                        quantization_spec = input_qspec_map[local_arg]
+                        from torch.ao.quantization.quantizer import SharedQuantizationSpec
+                        if isinstance(quantization_spec, SharedQuantizationSpec):
+                            edge_or_node = quantization_spec.edge_or_node
+                            return edge_or_node
+                return observed_arg
+            observed_arg = update_observed_arg(observed_arg, arg, node, named_modules)         
+
+            # assert isinstance(observed_arg, Node), f"expect observed argument to be a Node, but got: {type(observed_arg)}"
             assert observed_arg in obs_or_fq_map, \
                 f"can't refer to a node that does not have observer/fake_quant inserted yet: {observed_arg}"
             arg_as_input_act_obs_or_fq = obs_or_fq_map[observed_arg]
-            new_arg = arg
+
+            if isinstance(observed_arg, Tuple):
+                while _is_activation_post_process_node(arg, named_modules):
+                    arg = arg.args[0]
+                new_obs_node = _insert_obs_or_fq(
+                    arg, arg_as_input_act_obs_or_fq, model, named_modules, model.graph)  # type: ignore[arg-type]
+
+                new_arg = new_obs_node
+            else:
+                new_arg = arg
             obs_or_fq_map[(observed_arg, node)] = arg_as_input_act_obs_or_fq
         else:
             assert arg_as_input_act_obs_or_fq is not None
@@ -199,6 +226,8 @@ def prepare(
     obs_or_fq_map: Dict[EdgeOrNode, ObserverOrFakeQuantize] = {}
 
     for node in nodes_before_observation:
+        # if node.target is torch.ops.aten.cat.default:
+        #     import pdb;pdb.set_trace()
         _maybe_insert_input_and_output_observers_for_node(node, model, obs_or_fq_map, is_qat)
 
     model = GraphModule(model, model.graph)
