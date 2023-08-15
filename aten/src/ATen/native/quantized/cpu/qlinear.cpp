@@ -809,8 +809,23 @@ at::Tensor PackedLinearWeightsOnednn::apply_impl(
   auto dst_dims = {M, N};
   double input_scale = input.q_scale();
   int64_t input_zero_point = input.q_zero_point();
+
+  std::cout<<"------ onednn backend start new round of linear calculation -----"<<std::endl;
+  std::cout<<"input_scale is: "<<input_scale<<std::endl;
+  std::cout<<"input_zero_point is: "<<input_zero_point<<std::endl;
+  std::cout<<"output_scale is: "<<output_scale<<std::endl;
+  std::cout<<"output_zero_point is: "<<output_zero_point<<std::endl;
+
   const ideep::scale_t& src_scales = ideep::scale_t(1, 1.0/input_scale);
   const ideep::scale_t& weights_scales = w.get_scale();
+
+  std::cout<<"weights_scales.size() is: "<<weights_scales.size()<<std::endl;
+  std::cout<<"weights_scales[0] is: "<<weights_scales[0]<<std::endl;
+  std::cout<<"input_contig.sizes is: "<<(*input_contig).sizes()<<std::endl;
+  std::cout<<"input_contig.strides is: "<<(*input_contig).strides()<<std::endl;
+  // std::cout<<"input_contig is: "<<(*input_contig).int_repr()<<std::endl;
+  std::cout<<"input_contig is: "<<(*input_contig)<<std::endl;
+
   // Scales of ONEDNN and PyTorch are reciprocal
   const ideep::scale_t& dst_scales = ideep::scale_t(1, 1.0/output_scale);
   const ideep::zero_point_t& src_zero_point = ideep::zero_point_t(1, input_zero_point);
@@ -861,8 +876,13 @@ at::Tensor PackedLinearWeightsOnednn::apply_impl(
   }
   auto out_sizes = input.sizes().vec();
   out_sizes.back() = N;
-  if (output.sizes().vec() == out_sizes)
+  if (output.sizes().vec() == out_sizes) {
+    // std::cout<<"output.int_repr(): "<<output.int_repr()<<std::endl;
+    // std::cout<<"output.int_repr(): "<<output.int_repr()<<std::endl;
+    // std::cout<<"output.sizes(): "<<output.sizes()<<std::endl;
+    // std::cout<<"output.strides(): "<<output.strides()<<std::endl;
     return output;
+  }
   return output.reshape(out_sizes);
 }
 
@@ -901,6 +921,105 @@ at::Tensor PackedLinearWeightsOnednn:: apply_tanh(
       std::move(input), output_scale, output_zero_point);
 }
 
+static at::Tensor linear_int8_with_onednn_weight_new(
+    at::Tensor input, // int8 CPU Tensor, not QTensor
+    double input_scale,
+    int64_t input_zero_point,
+    at::Tensor onednn_weight, // int8 tensor from MkldnnCPU
+    at::Tensor weight_scales,
+    at::Tensor weight_zero_points,
+    c10::optional<at::Tensor> bias, // plain tensor
+    double output_scale,
+    int64_t output_zero_point,
+    bool fp32_output,
+    std::string& post_op_name, // e.g. "none", "relu"
+    torch::List<double>& post_op_args,
+    std::string& post_op_algorithm) {
+  const int64_t dim = input.dim();
+  TORCH_CHECK(
+      dim != 0,
+      "qlinear (ONEDNN): input dim should be at least 1, but got 0");
+  TORCH_CHECK(input.scalar_type() == c10::ScalarType::Byte,
+      "qlinear (ONEDNN): data type of input should be QUint8.");
+
+  auto input_contig = input.expect_contiguous();
+
+  auto packed_weight = at::native::itensor_from_mkldnn(onednn_weight);
+  
+  auto K = input.size(dim - 1), M = input.numel() / K, N = packed_weight.get_dim(1);
+  auto input_dims = {M, K};
+  auto input_data_type = dnnl::memory::data_type::u8;
+  auto input_desc = ideep::tensor::desc(input_dims, input_data_type);
+
+  auto op_attr = onednn_utils::create_attr_by_post_op(post_op_name, post_op_args);
+
+  ideep::tensor x(input_desc, input_contig->data_ptr());
+
+  auto dst_dims = {M, N};
+
+  const ideep::scale_t& src_scales = ideep::scale_t(1, 1.0/input_scale);
+
+  ideep::scale_t weights_scales(weight_scales.numel());
+  if (weight_scales.ndimension() == 0) {
+    // Weight is quant per tensor, then weight_scales will be a scalar Tensor
+    weights_scales[0] = 1.0 / weight_scales.item().toDouble(); // Scales of ONEDNN and PyTorch are reciprocal
+  } else {
+    // Weight is quant per channel
+    for (int i = 0; i < weight_scales.numel(); ++i) {
+      weights_scales[i] = 1.0 / weight_scales[i].item().toDouble();
+    }
+  }
+
+  const ideep::scale_t& dst_scales = ideep::scale_t(1, output_scale);
+  
+  const ideep::zero_point_t& src_zero_point = ideep::zero_point_t(1, input_zero_point);
+  const ideep::zero_point_t& dst_zero_point = ideep::zero_point_t(1, output_zero_point);
+
+  auto output_dtype = fp32_output ? c10::kFloat : c10::kByte;
+
+  at::Tensor output = at::empty(
+    dst_dims,
+    device(c10::kCPU)
+        .dtype(output_dtype)
+  );
+  if (output.numel() == 0) {
+    return output;
+  }
+  ideep::tensor y({dst_dims, ideep::tensor::data_type::u8,
+                   {output.strides().cbegin(), output.strides().cend()}},
+                  output.data_ptr());
+
+  c10::optional<ideep::tensor> onednn_bias{c10::nullopt};
+  bool with_bias = bias.has_value();
+  if (bias.has_value()) {
+    auto& b = bias.value();
+    auto bias_size = b.sizes().vec();
+    bias_size.insert(bias_size.begin(), 1);
+    auto bias_desc = ideep::tensor::desc(bias_size, dnnl::memory::data_type::f32);
+    ideep::tensor packed_bias;
+    packed_bias.init(bias_desc, b.data_ptr());
+    onednn_bias = c10::optional<ideep::tensor>(packed_bias);
+  }
+  const auto& b = with_bias ? onednn_bias.value() : ideep::tensor();
+
+  LinearParams params;
+  ideep::matmul_forward::prepare</*is_dynamic=*/false>(
+      params, x, packed_weight, b, y,
+      src_scales, weights_scales, dst_scales,
+      src_zero_point, dst_zero_point, 1.0f, 1.0f, op_attr);
+
+  auto expected_weight = packed_weight.reorder_if_differ_in(params.pd.weights_desc());
+
+  ideep::matmul_forward::compute<false, false>(params, x, expected_weight, b, y);
+
+  auto out_sizes = input.sizes().vec();
+  out_sizes.back() = N;
+  if (output.sizes().vec() == out_sizes) {
+    return output;
+  }
+  return output.reshape(out_sizes);
+}
+
 static at::Tensor linear_int8_with_onednn_weight(
     at::Tensor input, // int8 CPU Tensor, not QTensor
     double input_scale,
@@ -929,44 +1048,140 @@ static at::Tensor linear_int8_with_onednn_weight(
         output_scale == 1.0f && output_zero_point == 0, "onednn qlinear: expect scale=1 and zero point=0 for fp32 output");
   }
 
-  auto input_contig = input.contiguous();
+  // auto input_contig = input.contiguous();
+  auto input_contig = input.expect_contiguous();
+  
   output_scale = 1.0 / output_scale;
 
-  auto src = at::native::itensor_from_tensor(input_contig);
+  // std::cout<<"---- hit poiint 1 -----"<<std::endl;
+
+  // auto src = at::native::itensor_from_tensor(input_contig);
+  
   auto packed_weight = at::native::itensor_from_mkldnn(onednn_weight);
   int64_t K = input.size(dim - 1), M = input.numel() / K, N = packed_weight.get_dim(1);
   c10::optional<ideep::tensor> onednn_bias{c10::nullopt};
   bool with_bias = bias.has_value();
-  if (with_bias) {
-    if (bias.value().dim() == 1) {
-      auto b_reshape = bias.value().reshape({1, bias.value().size(0)});
-      onednn_bias = at::native::itensor_view_from_dense(b_reshape);
-    } else {
-      onednn_bias = at::native::itensor_view_from_dense(bias.value());
-    }
-  }
+  // if (with_bias) {
+  //   if (bias.value().dim() == 1) {
+  //     auto b_reshape = bias.value().reshape({1, bias.value().size(0)});
+  //     onednn_bias = at::native::itensor_view_from_dense(b_reshape);
+  //   } else {
+  //     onednn_bias = at::native::itensor_view_from_dense(bias.value());
+  //   }
+  // }
   std::vector<int64_t> src_dims = {M, K};
   std::vector<int64_t> dst_dims = {M, N};
   auto output_dtype = fp32_output ? c10::kFloat : c10::kByte;
   at::Tensor output = at::empty(
     dst_dims,
     device(c10::kCPU)
-        .dtype(output_dtype)
+        .dtype(output_dtype),
+    c10::MemoryFormat::Contiguous
   );
   if (output.numel() == 0) {
     return output;
   }
-  tensor dst = at::native::itensor_view_from_dense(output);
+
+  // std::cout<<"---- hit poiint 2 -----"<<std::endl;
+
+  
+  // tensor dst = at::native::itensor_view_from_dense(output);
+
+  ideep::tensor dst({dst_dims, ideep::tensor::data_type::u8,
+                   {output.strides().cbegin(), output.strides().cend()}},
+                  output.data_ptr());
 
   // Create onednn primitive
-  auto src_desc = tensor::desc(src_dims, ideep::data_type::u8, ideep::format_tag::any);
+  auto src_desc = tensor::desc(src_dims, ideep::data_type::u8);
+
+  ideep::tensor src(src_desc, input_contig->data_ptr());
+
+  // std::cout<<"---- hit poiint 3 -----"<<std::endl;
+
   auto weights_desc = packed_weight.get_desc();
   auto dst_dtype = fp32_output ? ideep::data_type::f32 : ideep::data_type::u8;
   auto dst_desc = tensor::desc(dst_dims, dst_dtype, ideep::format_tag::any);
-  auto bias_desc = with_bias ?
-      tensor::desc(onednn_bias.value().get_dims(), ideep::data_type::f32, ideep::format_tag::any) :
-      tensor::desc();
+  // auto bias_desc = with_bias ?
+  //     tensor::desc(onednn_bias.value().get_dims(), ideep::data_type::f32, ideep::format_tag::any) :
+  //     tensor::desc();
+
+  auto bias_desc = tensor::desc();
+  if (with_bias) {
+    auto& b = bias.value();
+    auto bias_size = b.sizes().vec();
+    bias_size.insert(bias_size.begin(), 1);
+    bias_desc = ideep::tensor::desc(bias_size, dnnl::memory::data_type::f32);
+    ideep::tensor packed_bias;
+    packed_bias.init(bias_desc, b.data_ptr());
+    onednn_bias = c10::optional<ideep::tensor>(packed_bias);
+  }
+
   auto op_attr = onednn_utils::create_attr_by_post_op(post_op_name, post_op_args);
+
+
+
+
+
+
+
+  // const ideep::scale_t& src_scales = ideep::scale_t(1, 1.0/input_scale);
+  // ideep::scale_t weights_scales(weight_scales.numel());
+  // if (weight_scales.ndimension() == 0) {
+  //   // Weight is quant per tensor, then weight_scales will be a scalar Tensor
+  //   weights_scales[0] = 1.0 / weight_scales.item().toDouble(); // Scales of ONEDNN and PyTorch are reciprocal
+  // } else {
+  //   // Weight is quant per channel
+  //   for (int i = 0; i < weight_scales.numel(); ++i) {
+  //     weights_scales[i] = 1.0 / weight_scales[i].item().toDouble();
+  //   }
+  // }
+  // const ideep::scale_t& dst_scales = ideep::scale_t(1, 1.0/output_scale);
+  // const ideep::zero_point_t& src_zero_point = ideep::zero_point_t(1, input_zero_point);
+  // const ideep::zero_point_t& dst_zero_point = ideep::zero_point_t(1, output_zero_point);
+  // const auto& b = with_bias ? onednn_bias.value() : ideep::tensor();
+  // LinearParams params;
+  // ideep::matmul_forward::prepare</*is_dynamic=*/false>(
+  //     params, src, packed_weight, b, dst,
+  //     src_scales, weights_scales, dst_scales,
+  //     src_zero_point, dst_zero_point, 1.0f, 1.0f, op_attr);
+
+  // auto expected_weight = packed_weight.reorder_if_differ_in(params.pd.weights_desc());
+
+  // ideep::matmul_forward::compute<false, false>(params, src, expected_weight, b, dst);
+
+  // auto out_sizes = input.sizes().vec();
+  // out_sizes.back() = N;
+  // if (output.sizes().vec() == out_sizes) {
+  //   return output;
+  // }
+  // return output.reshape(out_sizes);
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  // std::cout<<"------ start new round of linear calculation -----"<<std::endl;
+  // std::cout<<"input_scale is: "<<input_scale<<std::endl;
+  // std::cout<<"input_zero_point is: "<<input_zero_point<<std::endl;
+  // std::cout<<"output_scale is: "<<output_scale<<std::endl;
+  // std::cout<<"output_zero_point is: "<<output_zero_point<<std::endl;
+
+  // std::cout<<"input_contig.sizes is: "<<input_contig.sizes()<<std::endl;
+  // std::cout<<"input_contig.strides is: "<<input_contig.strides()<<std::endl;
+  // std::cout<<"input_contig is: "<<(input_contig.to(c10::kFloat) - input_zero_point)*input_scale<<std::endl;
+
+  // std::cout<<"weight_scales is: "<<weight_scales<<std::endl;
+  // static bool save_once = true;
 
   if (input_scale != 1.0f) {
     op_attr.set_scales_mask(DNNL_ARG_SRC, 0);
@@ -988,25 +1203,49 @@ static at::Tensor linear_int8_with_onednn_weight(
 
 
   op_attr.set_scratchpad_mode(dnnl::scratchpad_mode::user);
+  // std::cout<<"---- hit poiint 5 -----"<<std::endl;
   auto engine = ideep::engine::cpu_engine();
+
+  src_desc = tensor::desc(src_dims, ideep::data_type::u8, ideep::format_tag::any);
+  
+  if (with_bias) {
+    // tag bia_tag = onednn_bias.value().get_dims().size() == 2 ? tag::ab : tag::abc;
+    bias_desc = {onednn_bias.value().get_dims(), ideep::data_type::f32, ideep::format_tag::ab}; // Use f32 instead of s32 to improve accuracy
+  }
+
+  // std::cout<<"dst.is_empty() is: "<<dst.is_empty()<<std::endl;
+  dst_desc = dst.get_desc().to_type(ideep::data_type::u8);
+
   auto primitive_desc = with_bias ?
       dnnl::matmul::primitive_desc(engine, src_desc, weights_desc, bias_desc, dst_desc, op_attr) :
       dnnl::matmul::primitive_desc(engine, src_desc, weights_desc, dst_desc, op_attr);
   auto primitive = dnnl::matmul(primitive_desc);
 
+  ideep::tensor expected_weight = packed_weight.reorder_if_differ_in(primitive_desc.weights_desc());
+
   // Prepare args and execute primitive
   tensor scratchpad(primitive_desc.scratchpad_desc());
   ideep::exec_args args;
+
+  // std::cout<<"---------src target element data +1 is: "<<int(*(((uint8_t*)src.get_data_handle())+1))<<std::endl;
+
   args.insert({DNNL_ARG_SRC, src});
-  args.insert({DNNL_ARG_WEIGHTS, packed_weight});
+
+  // std::cout<<"---------expected_weight target element data +1 is: "<<int(*(((int8_t*)expected_weight.get_data_handle())+1))<<std::endl;
+
+  args.insert({DNNL_ARG_WEIGHTS, expected_weight});
   args.insert({DNNL_ARG_DST, dst});
   args.insert({DNNL_ARG_SCRATCHPAD, scratchpad});
   if (with_bias) {
+
+    // std::cout<<"---------onednn_bias target element data +1 is: "<<float(*(((float*)onednn_bias.value().get_data_handle())+1))<<std::endl;
+  
     args.insert({DNNL_ARG_BIAS, onednn_bias.value()});
   }
 
   tensor src_scales_t;
   if (input_scale != 1.0f) {
+    // std::cout<<"--- should hit src_scales_t ----"<<std::endl;
     src_scales_t = tensor(ideep::scale_t(1, input_scale));
     args.insert({DNNL_ARG_ATTR_SCALES | DNNL_ARG_SRC, src_scales_t});
   }
@@ -1015,25 +1254,55 @@ static at::Tensor linear_int8_with_onednn_weight(
   
   tensor dst_scales_t;
   if (output_scale != 1.0f) {
+    // std::cout<<"--- should hit dst_scales_t ----"<<std::endl;
     dst_scales_t = tensor(ideep::scale_t(1, output_scale));
     args.insert({DNNL_ARG_ATTR_SCALES | DNNL_ARG_DST, dst_scales_t});
   }
 
   tensor src_zp_t;
   if (input_zero_point != 0) {
-    tensor src_zp_t = tensor(ideep::zero_point_t(1, input_zero_point));
+    // std::cout<<"--- should hit src_zp_t ----"<<std::endl;
+    src_zp_t = tensor(ideep::zero_point_t(1, input_zero_point));
     args.insert({DNNL_ARG_ATTR_ZERO_POINTS | DNNL_ARG_SRC, src_zp_t});
   }
 
   tensor dst_zp_t;
   if (output_zero_point != 0) {
+    // std::cout<<"--- should hit dst_zp_t ----"<<std::endl;
     dst_zp_t = tensor(ideep::zero_point_t(1, output_zero_point));
     args.insert({DNNL_ARG_ATTR_ZERO_POINTS | DNNL_ARG_DST, dst_zp_t});
   }
 
+  // std::cout<<"---------wei_scales_t target element data +1 is: "<<float(*(((float*)wei_scales_t.get_data_handle())+1))<<std::endl;
+
   args.insert({DNNL_ARG_ATTR_SCALES | DNNL_ARG_WEIGHTS, wei_scales_t});
   primitive.execute(ideep::stream::default_stream(), args);
-  return output;
+
+  // std::cout<<"2---------grad_w target element data is: "<<float(*(((BFloat16*)grad_w.get_data_handle())+512))<<std::endl;
+
+  // std::cout<<"output: "<<output<<std::endl;
+  // std::cout<<"output.sizes(): "<<output.sizes()<<std::endl;
+  // std::cout<<"output.strides(): "<<output.strides()<<std::endl;
+  
+  // if (save_once) {
+  //   std::cout<<"---- only save first time -----"<<std::endl;
+  //   //torch::jit::load(output, "/home/lesliefang/pytorch_1_7_1/inductor_quant/torch_script/inductor/int8/pytorch_2_1_accuracy_test/inductor_output.pt");
+  //   save_once = false;
+  // }
+  // std::cout<<"output.sizes is: "<<output.sizes()<<std::endl;
+  // std::cout<<"output.strides is: "<<output.strides()<<std::endl;
+  // std::cout<<"output is: "<<(output.to(c10::kFloat) - output_zero_point)*output_scale<<std::endl;
+
+  std::cout<<"---------dst target element data +1 is: "<<int(*(((uint8_t*)dst.get_data_handle())+1))<<std::endl;
+
+  // return output;
+
+  auto out_sizes = input.sizes().vec();
+  out_sizes.back() = N;
+  if (output.sizes().vec() == out_sizes) {
+    return output;
+  }
+  return output.reshape(out_sizes);
 }
 #endif // #if AT_MKLDNN_ENABLED()
 

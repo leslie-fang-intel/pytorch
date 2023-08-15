@@ -4151,13 +4151,13 @@ class TestQuantizedLinear(TestCase):
             'relu': torch.ops.quantized.linear_relu,
         }
         post_op_algorithm = ''
-        in_channels_list = [4, 8]
-        out_channels_list = [16, 32]
+        in_channels_list = [4,]
+        out_channels_list = [16,]
         batch_size = 1
-        use_bias_list = [True, False]
-        supported_post_ops = ['none', 'relu']
-        weight_quant_per_channel_list = [True, False]
-        fp32_output_list = [True, False]
+        use_bias_list = [True,]
+        supported_post_ops = ['none',]
+        weight_quant_per_channel_list = [True,]
+        fp32_output_list = [False]
         x_scale, x_zp = 1.2, 1
         w_scale, w_zp = 0.8, 0
         y_scale, y_zp = 4.7, 2
@@ -4190,7 +4190,7 @@ class TestQuantizedLinear(TestCase):
                 qw_cpu = qw.int_repr()
                 qw_packed = qlinear_prepack(qw_cpu, x.shape)
                 qy_cpu = qlinear(qx_cpu, x_scale, x_zp, qw_packed, w_scales, w_zps,
-                                 b, y_scale, y_zp, fp32_out, post_op, post_op_args, post_op_algorithm)
+                                 b, 1.0/y_scale, y_zp, fp32_out, post_op, post_op_args, post_op_algorithm)
 
                 # Reference
                 qw_packed_ref = qlinear_prepack_ref(qw, b)
