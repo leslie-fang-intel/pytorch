@@ -7,6 +7,7 @@
 #include <ATen/cpu/vec/vec_base.h>
 #include <c10/macros/Macros.h>
 #include <c10/util/irange.h>
+#include <iostream>
 
 namespace at {
 namespace vec {
@@ -1441,6 +1442,197 @@ Vectorized<int8_t> inline operator>>(const Vectorized<int8_t>& a, const Vectoriz
 template <>
 Vectorized<uint8_t> inline operator>>(const Vectorized<uint8_t>& a, const Vectorized<uint8_t>& b) {
   return shift_512_8<false>(a, b);
+}
+
+inline void transpose_4x4_dwords (__m128i w0, __m128i w1,
+                                  __m128i w2, __m128i w3,
+                                  __m128i &r0, __m128i &r1,
+                                  __m128i &r2, __m128i &r3)
+{
+  // Input:
+  // 0  1  2  3
+  // 4  5  6  7
+  // 8  9  10 11
+  // 12 13 14 15
+
+  // Step 1: shuffle 64 bit
+  // 0 1 4 5 
+  // 2 3 6 7
+  // 8 9 12 13
+  // 10 11 14 15
+
+  // 0x44: 01000100
+  __m128 x0 = _mm_shuffle_ps(_mm_castsi128_ps(w0), _mm_castsi128_ps(w1), 0x44); // 0 1 4 5 
+  // 0xee: 11101110
+  __m128 x1 = _mm_shuffle_ps(_mm_castsi128_ps(w0), _mm_castsi128_ps(w1), 0xee); // 2 3 6 7
+  // 0x44: 01000100
+  __m128 x2 = _mm_shuffle_ps(_mm_castsi128_ps(w2), _mm_castsi128_ps(w3), 0x44); // 8 9 12 13
+  // 0xee: 11101110
+  __m128 x3 = _mm_shuffle_ps(_mm_castsi128_ps(w2), _mm_castsi128_ps(w3), 0xee); // 10 11 14 15
+
+  // Step 2: interleave shuffle 64 bit
+  // 0 4 8 12 
+  // 1 5 9 13
+  // 2 6 10 14
+  // 3 7 11 15
+
+  // 0x88: 10001000
+  r0 = _mm_castps_si128(_mm_shuffle_ps(x0, x2, 0x88));
+  // 0xdd: 11011101
+  r1 = _mm_castps_si128(_mm_shuffle_ps(x0, x2, 0xdd));
+  // 0x88: 10001000
+  r2 = _mm_castps_si128(_mm_shuffle_ps(x1, x3, 0x88));
+  // 0xdd: 11011101
+  r3 = _mm_castps_si128(_mm_shuffle_ps(x1, x3, 0xdd));
+}
+
+template<>
+inline void transpose_mxn<uint8_t, 16, 16>(
+    const uint8_t* src,
+    int64_t ld_src,
+    uint8_t* dst,
+    int64_t ld_dst) {
+  // Refer to: https://pzemtsov.github.io/2014/10/01/how-to-transpose-a-16x16-matrix.html
+  // std::cout<<"---- hit uint8_t transpose_mxn ----"<<std::endl;
+  
+  // load from src to registers
+  // a: a0  a1  a2  a3  a4  a5  a6  a7  a8  a9  a10 a11 a12 a13 a14 a15
+  // b: b0  b1  b2  b3  b4  b5  b6  b7  b8  b9  b10 b11 b12 b13 b14 b15
+  // c: c0  c1  c2  c3  c4  c5  c6  c7  c8  c9  c10 c11 c12 c13 c14 c15
+  // d: d0  d1  d2  d3  d4  d5  d6  d7  d8  d9  d10 d11 d12 d13 d14 d15
+  // e: e0  e1  e2  e3  e4  e5  e6  e7  e8  e9  e10 e11 e12 e13 e14 e15
+  // f: f0  f1  f2  f3  f4  f5  f6  f7  f8  f9  f10 f11 f12 f13 f14 f15
+  // g: g0  g1  g2  g3  g4  g5  g6  g7  g8  g9  g10 g11 g12 g13 g14 g15
+  // h: h0  h1  h2  h3  h4  h5  h6  h7  h8  h9  h10 h11 h12 h13 h14 h15
+  // i: i0  i1  i2  i3  i4  i5  i6  i7  i8  i9  i10 i11 i12 i13 i14 i15
+  // j: j0  j1  j2  j3  j4  j5  j6  j7  j8  j9  j10 j11 j12 j13 j14 j15
+  // k: k0  k1  k2  k3  k4  k5  k6  k7  k8  k9  k10 k11 k12 k13 k14 k15
+  // l: l0  l1  l2  l3  l4  l5  l6  l7  l8  l9  l10 l11 l12 l13 l14 l15
+  // m: m0  m1  m2  m3  m4  m5  m6  m7  m8  m9  m10 m11 m12 m13 m14 m15
+  // n: n0  n1  n2  n3  n4  n5  n6  n7  n8  n9  n10 n11 n12 n13 n14 n15
+  // o: o0  o1  o2  o3  o4  o5  o6  o7  o8  o9  o10 o11 o12 o13 o14 o15
+  // p: p0  p1  p2  p3  p4  p5  p6  p7  p8  p9  p10 p11 p12 p13 p14 p15
+  __m128i a = _mm_loadu_epi8(&src[0 * ld_src]);
+  __m128i b = _mm_loadu_epi8(&src[1 * ld_src]);
+  __m128i c = _mm_loadu_epi8(&src[2 * ld_src]);
+  __m128i d = _mm_loadu_epi8(&src[3 * ld_src]);
+  __m128i e = _mm_loadu_epi8(&src[4 * ld_src]);
+  __m128i f = _mm_loadu_epi8(&src[5 * ld_src]);
+  __m128i g = _mm_loadu_epi8(&src[6 * ld_src]);
+  __m128i h = _mm_loadu_epi8(&src[7 * ld_src]);
+  __m128i i = _mm_loadu_epi8(&src[8 * ld_src]);
+  __m128i j = _mm_loadu_epi8(&src[9 * ld_src]);
+  __m128i k = _mm_loadu_epi8(&src[10 * ld_src]);
+  __m128i l = _mm_loadu_epi8(&src[11 * ld_src]);
+  __m128i m = _mm_loadu_epi8(&src[12 * ld_src]);
+  __m128i n = _mm_loadu_epi8(&src[13 * ld_src]);
+  __m128i o = _mm_loadu_epi8(&src[14 * ld_src]);
+  __m128i p = _mm_loadu_epi8(&src[15 * ld_src]);
+
+  __m128i w00, w01, w02, w03;
+  __m128i w10, w11, w12, w13;
+  __m128i w20, w21, w22, w23;
+  __m128i w30, w31, w32, w33;
+
+  // Step 2: Do 32 bit transpose
+  // w00: a0  a1  a2  a3  b0  b1  b2  b3  c0  c1  c2  c3  d0  d1  d2  d3
+  // w01: a4  a5  a6  a7  b4  b5  b6  b7  c4  c5  c6  c7  d4  d5  d6  d7
+  // w02: a8  a9  a10 a11  b8  b9  b10 b11  c8  c9  c10 c11 d8  d9  d10 d11
+  // w03: a12 a13 a14 a15  b12 b13 b14 b15  c12 c13 c14 c15 d12 d13 d14 d15
+  // w10: e0  e1  e2  e3  f0  f1  f2  f3  g0  g1  g2  g3 h0  h1  h2  h3
+  // w11: e4  e5  e6  e7  f4  f5  f6  f7  g4  g5  g6  g7 h4  h5  h6  h7
+  // w12: e8  e9  e10 e11  f8  f9  f10 f11  g8  g9  g10 g11 h8  h9  h10 h11
+  // w13: e12 e13 e14 e15  f12 f13 f14 f15  g12 g13 g14 g15 h12 h13 h14 h15
+  // w20: i0  i1  i2  i3  j0  j1  j2  j3  k0  k1  k2  k3 l0  l1  l2  l3
+  // w21: i4  i5  i6  i7  j4  j5  j6  j7  k4  k5  k6  k7 l5  l6  l7  l8
+  // w22: i8  i9  i10 i11  j8  j9  j10 j11  k8  k9  k10 k11 l8  l9  l10 l11
+  // w23: i12 i13 i14 i15  j12 j13 j14 j15  k12 k13 k14 k15 l12 l13 l14 l15
+  // w30: m0  m1  m2  m3  n0  n1  n2  n3  o0  o1  o2  o3 p0  p1  p2  p3
+  // w31: m4  m5  m6  m7  n4  n5  n6  n7  o4  o5  o6  o7 p4  p5  p6  p7
+  // w32: m8  m9  m10 m11  n8  n9  n10 n11  o8  o9  o10 o11 p8  p9  p10 p11
+  // w33: m12 m13 m14 m15  n12 n13 n14 n15  o12 o13 o14 o15 p12 p13 p14 p15
+  transpose_4x4_dwords (a, b, c, d, w00, w01, w02, w03);
+  transpose_4x4_dwords (e, f, g, h, w10, w11, w12, w13);
+  transpose_4x4_dwords (i, j, k, l, w20, w21, w22, w23);
+  transpose_4x4_dwords (m, n, o, p, w30, w31, w32, w33);
+
+  // Step 3: Shuffle 4x4 among the 32 bit  
+
+  // w00: a0  b0  c0  d0  a1  b1  c1  d1  a2  b2  c2  d2  a3  b3  c3  d3
+  // w01: a4  b4  c4  d4  a5  b5  c5  d5  a6  b6  c6  d6  a7  b7  c7  d7
+  // w02: a8  b8  c8  d8  a9  b9  c9  d9  a10  b10  c10  d10  a11  b11  c11  d11
+  // w03: a12  b12  c12  d12  a13  b13  c13  d13  a14  b14  c14  d14 a15  b15  c15  d15
+  // w10: e0  f0  g0  h0  ...
+  // w11: e4  f4  g4  h4  ...
+  // w12: e8  f0  g8  h8  ...
+  // w13: e12  f12  g12  h12  ...
+  // w20: i0  j0  k0  l0  ...
+  // w21: i4  j4  k4  l4  ...
+  // w22: i8  j8  k8  l8  ...
+  // w23: i12  j12  k12  l12  ...
+  // w30: m0  n0  o0  p0  ...
+  // w31: m4  n4  o4  p4  ...
+  // w32: m8  n8  o8  p8  ...
+  // w33: m12  n12  o12  p12  ...
+
+  __m128i shuffle_mask = _mm_setr_epi8 (0, 4, 8, 12, 1, 5, 9, 13, 2, 6, 10, 14, 3, 7, 11, 15);
+  
+  w00 = _mm_shuffle_epi8(w00, shuffle_mask);
+  w01 = _mm_shuffle_epi8(w01, shuffle_mask);
+  w02 = _mm_shuffle_epi8(w02, shuffle_mask);
+  w03 = _mm_shuffle_epi8(w03, shuffle_mask);
+  w10 = _mm_shuffle_epi8(w10, shuffle_mask);
+  w11 = _mm_shuffle_epi8(w11, shuffle_mask);
+  w12 = _mm_shuffle_epi8(w12, shuffle_mask);
+  w13 = _mm_shuffle_epi8(w13, shuffle_mask);
+  w20 = _mm_shuffle_epi8(w20, shuffle_mask);
+  w21 = _mm_shuffle_epi8(w21, shuffle_mask);
+  w22 = _mm_shuffle_epi8(w22, shuffle_mask);
+  w23 = _mm_shuffle_epi8(w23, shuffle_mask);
+  w30 = _mm_shuffle_epi8(w30, shuffle_mask);
+  w31 = _mm_shuffle_epi8(w31, shuffle_mask);
+  w32 = _mm_shuffle_epi8(w32, shuffle_mask);
+  w33 = _mm_shuffle_epi8(w33, shuffle_mask);
+
+  // Step 4: 32 bit shuffle again
+  //  a0  b0  c0  d0  ...  o0
+  //  a1  b1  c1  d1  ...  o1
+  //  a2  b2  c2  d2  ...  o2
+  //  a3  b3  c3  d3  ...  o3
+  //  a4  ...
+  //  a5  ...
+  //  a6  ...
+  //  a7  ...
+  //  a8  ...
+  //  a9  ...
+  //  a10 ...
+  //  a11 ...
+  //  a12 ...
+  //  a13 ...
+  //  a14 ...
+  //  a15 b15 c15 d15 ...  o15
+  transpose_4x4_dwords (w00, w10, w20, w30, a, b, c, d);
+  transpose_4x4_dwords (w01, w11, w21, w31, e, f, g, h);
+  transpose_4x4_dwords (w02, w12, w22, w32, i, j, k, l);
+  transpose_4x4_dwords (w03, w13, w23, w33, m, n, o, p);
+
+  // Step 5: Store Back 
+  _mm_storeu_epi8(&dst[0 * ld_dst], a);
+  _mm_storeu_epi8(&dst[1 * ld_dst], b);
+  _mm_storeu_epi8(&dst[2 * ld_dst], c);
+  _mm_storeu_epi8(&dst[3 * ld_dst], d);
+  _mm_storeu_epi8(&dst[4 * ld_dst], e);
+  _mm_storeu_epi8(&dst[5 * ld_dst], f);
+  _mm_storeu_epi8(&dst[6 * ld_dst], g);
+  _mm_storeu_epi8(&dst[7 * ld_dst], h);
+  _mm_storeu_epi8(&dst[8 * ld_dst], i);
+  _mm_storeu_epi8(&dst[9 * ld_dst], j);
+  _mm_storeu_epi8(&dst[10 * ld_dst], k);
+  _mm_storeu_epi8(&dst[11 * ld_dst], l);
+  _mm_storeu_epi8(&dst[12 * ld_dst], m);
+  _mm_storeu_epi8(&dst[13 * ld_dst], n);
+  _mm_storeu_epi8(&dst[14 * ld_dst], o);
+  _mm_storeu_epi8(&dst[15 * ld_dst], p);
 }
 
 #endif

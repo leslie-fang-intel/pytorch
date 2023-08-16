@@ -1537,6 +1537,113 @@ Vectorized<uint8_t> inline operator>>(const Vectorized<uint8_t>& a, const Vector
   return shift_256_8<false>(a, b);
 }
 
+template<>
+inline void transpose_mxn<uint8_t, 8, 8>(
+    const uint8_t* src,
+    int64_t ld_src,
+    uint8_t* dst,
+    int64_t ld_dst) {
+  // Refer to: https://stackoverflow.com/questions/42162270/a-better-8x8-bytes-matrix-transpose-with-sse
+  // std::cout<<"---- hit AVX2 transpose_mxn ----"<<std::endl;
+
+  // load from src to registers
+  __m128i a, b, c, d;
+  // a: a0  a1  a2  a3  a4  a5  a6  a7 b0  b1  b2  b3  b4  b5  b6  b7
+  // b: c0  c1  c2  c3  c4  c5  c6  c7 d0  d1  d2  d3  d4  d5  d6  d7
+  // c: e0  e1  e2  e3  e4  e5  e6  e7 f0  f1  f2  f3  f4  f5  f6  f7
+  // d: g0  g1  g2  g3  g4  g5  g6  g7 h0  h1  h2  h3  h4  h5  h6  h7
+  if (ld_src == 8) {
+    // Fast path of load when ld_src == 8, we can assume the adjacent 2 rows are contiguous
+    // std::cout<<"--- hit load of fast path ----"<<std::endl;
+    a = _mm_loadu_epi8(&src[0 * ld_src]);
+    b = _mm_loadu_epi8(&src[2 * ld_src]);
+    c = _mm_loadu_epi8(&src[4 * ld_src]);
+    d = _mm_loadu_epi8(&src[6 * ld_src]);
+  } else {
+    // std::cout<<"--- hit load of fall back path ----"<<std::endl;
+    __at_align__ uint8_t tmp_load_buf[16];
+    std::memcpy(tmp_load_buf, &src[0 * ld_src], 8 * sizeof(uint8_t));
+    std::memcpy(tmp_load_buf+8, &src[1 * ld_src], 8 * sizeof(uint8_t));
+    a = _mm_loadu_epi8(tmp_load_buf);
+
+    std::memcpy(tmp_load_buf, &src[2 * ld_src], 8 * sizeof(uint8_t));
+    std::memcpy(tmp_load_buf+8, &src[3 * ld_src], 8 * sizeof(uint8_t));
+    b = _mm_loadu_epi8(tmp_load_buf);
+
+    std::memcpy(tmp_load_buf, &src[4 * ld_src], 8 * sizeof(uint8_t));
+    std::memcpy(tmp_load_buf+8, &src[5 * ld_src], 8 * sizeof(uint8_t));
+    c = _mm_loadu_epi8(tmp_load_buf);
+
+    std::memcpy(tmp_load_buf, &src[6 * ld_src], 8 * sizeof(uint8_t));
+    std::memcpy(tmp_load_buf+8, &src[7 * ld_src], 8 * sizeof(uint8_t));
+    d = _mm_loadu_epi8(tmp_load_buf);
+  }
+
+  __m128i ta, tb, tc, td;
+
+  // Step 1:
+  // ta: a0  a1  a2  a3  b0  b1  b2  b3  c0  c1  c2  c3  d0  d1  d2  d3   
+  // tb: e0  e1  e2  e3  f0  f1  f2  f3  g0  g1  g2  g3  h0  h1  h2  h3
+  // tc: a4  a5  a6  a7  b4  b5  b6  b7  c4  c5  c6  c7  d4  d5  d6  d7
+  // td: e4  e5  e6  e7  f4  f5  f6  f7  g4  g5  g6  g7  h4  h5  h6  h7
+  ta = _mm_castps_si128(_mm_shuffle_ps(_mm_castsi128_ps(a),_mm_castsi128_ps(b),0b10001000));
+  tb = _mm_castps_si128(_mm_shuffle_ps(_mm_castsi128_ps(c),_mm_castsi128_ps(d),0b10001000));
+  tc = _mm_castps_si128(_mm_shuffle_ps(_mm_castsi128_ps(a),_mm_castsi128_ps(b),0b11011101));
+  td = _mm_castps_si128(_mm_shuffle_ps(_mm_castsi128_ps(c),_mm_castsi128_ps(d),0b11011101));
+
+  __m128i pshufbcnst = _mm_setr_epi8(0,4,8,12, 1,5,9,13, 2,6,10,14, 3,7,11,15);
+
+  // Step 2:
+  // a: a0  b0  c0  d0  a1  b1  c1  d1  a2  b2  c2  d2  a3  b3  c3  d3  
+  // b: e0  f0  g0  h0  e1  f1  g1  h1  e2  f2  g2  h2  e3  f3  g3  h3
+  // c: a4  b4  c4  d4  a5  b5  c5  d5  a6  b6  c6  d6  a7  b7  c7  d7  
+  // d: e4  f4  g4  h4  e5  f5  g5  h5  e6  f6  g6  h6  e7  f7  g7  h7
+  a = _mm_shuffle_epi8(ta,pshufbcnst);
+  b = _mm_shuffle_epi8(tb,pshufbcnst);
+  c = _mm_shuffle_epi8(tc,pshufbcnst);
+  d = _mm_shuffle_epi8(td,pshufbcnst);
+
+  // Step 3:
+  // ta: a0  b0  c0  d0  e0  f0  g0  h0  a1  b1  c1  d1  e1  f1  g1  h1
+  // tb: a2  b2  c2  d2  e2  f2  g2  h2  a3  b3  c3  d3  e3  f3  g3  h3
+  // tc: a4  b4  c4  d4  e4  f4  g4  h4  a5  b5  c5  d5  e5  f5  g5  h5
+  // td: a6  b6  c6  d6  e6  f6  g6  h6  a7  b7  c7  d7  e7  f7  g7  h7
+  ta = _mm_unpacklo_epi32(a,b);
+  tb = _mm_unpackhi_epi32(a,b);
+  tc = _mm_unpacklo_epi32(c,d);
+  td = _mm_unpackhi_epi32(c,d);
+
+  // Store Back
+
+  if (ld_dst == 8) {
+    // Fast path of store when ld_dst == 8, we can assume the adjacent 2 rows are contiguous
+    // std::cout<<"--- hit store of fast path ----"<<std::endl;
+    _mm_storeu_epi8(&dst[0 * ld_dst], ta);
+    _mm_storeu_epi8(&dst[2 * ld_dst], tb);
+    _mm_storeu_epi8(&dst[4 * ld_dst], tc);
+    _mm_storeu_epi8(&dst[6 * ld_dst], td);
+  } else {
+    // std::cout<<"--- hit store of fall back path ----"<<std::endl;
+    __at_align__ uint8_t tmp_store_buf[16];
+
+    _mm_storeu_epi8(tmp_store_buf, ta);
+    std::memcpy(&dst[0 * ld_dst], tmp_store_buf, 8 * sizeof(uint8_t));
+    std::memcpy(&dst[1 * ld_dst], tmp_store_buf+8, 8 * sizeof(uint8_t));
+
+    _mm_storeu_epi8(tmp_store_buf, tb);
+    std::memcpy(&dst[2 * ld_dst], tmp_store_buf, 8 * sizeof(uint8_t));
+    std::memcpy(&dst[3 * ld_dst], tmp_store_buf+8, 8 * sizeof(uint8_t));
+
+    _mm_storeu_epi8(tmp_store_buf, tc);
+    std::memcpy(&dst[4 * ld_dst], tmp_store_buf, 8 * sizeof(uint8_t));
+    std::memcpy(&dst[5 * ld_dst], tmp_store_buf+8, 8 * sizeof(uint8_t));
+
+    _mm_storeu_epi8(tmp_store_buf, td);
+    std::memcpy(&dst[6 * ld_dst], tmp_store_buf, 8 * sizeof(uint8_t));
+    std::memcpy(&dst[7 * ld_dst], tmp_store_buf+8, 8 * sizeof(uint8_t));
+  }
+}
+
 #endif
 
 }}}

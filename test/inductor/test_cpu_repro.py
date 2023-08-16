@@ -856,6 +856,13 @@ class CPUReproTests(TestCase):
     )
     @patch("torch.cuda.is_available", lambda: False)
     def test_tile2d_load_decomposed_dequant_add_relu_quant(self):
+
+        import random
+        local_seed=2023
+        torch.manual_seed(local_seed) # Set PyTorch seed
+        np.random.seed(seed=local_seed) # Set Numpy seed
+        random.seed(local_seed) # Set the Python seed
+
         def fn(
             x,
             scale,
@@ -869,6 +876,13 @@ class CPUReproTests(TestCase):
             use_dequant2,
             use_quant,
         ):
+
+            torch._dynamo.config.verbose = True
+            torch._inductor.config.trace.enabled = True
+            torch._inductor.config.trace.debug_log = True
+            torch._inductor.config.debug = True
+            torch._inductor.config.freezing = True
+
             if use_dequant:
                 x = torch.ops.quantized_decomposed.dequantize_per_tensor(
                     x, scale, zero_point, 0, 255, torch.uint8
