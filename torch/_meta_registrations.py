@@ -2086,6 +2086,7 @@ if torch._C._has_mkldnn:
         output_shape = list(x.shape)
         output_shape[-1] = w.shape[0]
         out = x.new_empty(output_shape, dtype=(torch.float32 if fp32_output else None))
+        out = out.to(memory_format=torch.contiguous_format)
         return out
 
 
