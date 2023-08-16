@@ -3973,7 +3973,7 @@ def _prepare_linear_fusion_create(
             )
         output_size = output.size()
 
-        req_stride_order = [0, 1]
+        req_stride_order = [1, 0]  # Require contiguous input
         output_stride = make_contiguous_strides_for(output_size)
 
     x = cls.require_stride_order(x, req_stride_order)
