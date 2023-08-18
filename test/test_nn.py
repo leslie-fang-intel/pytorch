@@ -3295,6 +3295,7 @@ tensor(..., device='meta', size=(1,), requires_grad=True)""")
             self.assertEqual(tuple(result.shape), tuple(ref_output.shape))
             np.testing.assert_allclose(result, ref_output, atol=1e-5)
 
+    @set_default_dtype(torch.double)
     def test_transformerdecoderlayer_gelu(self):
         # this is a deterministic test for TransformerDecoderLayer with gelu activation
         d_model = 4
@@ -4573,6 +4574,7 @@ tensor(..., device='meta', size=(1,), requires_grad=True)""")
                     with self.assertRaisesRegex(RuntimeError, "Expected sequence length to be larger than 0 in RNN"):
                         rnn(input)
 
+    @set_default_dtype(torch.double)
     def test_RNN_input_size_zero(self):
         for module in (nn.RNN, nn.LSTM, nn.GRU):
             for device in get_all_device_types():
