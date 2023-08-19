@@ -149,12 +149,15 @@ std::tuple<Tensor, Tensor, Tensor> nested_layer_norm(
     const c10::optional<Tensor>& weight_opt,
     const c10::optional<Tensor>& bias_opt,
     double eps) {
+  
+  Tensor input_new = input.to(at::kFloat);
+
   TORCH_CHECK(weight_opt && bias_opt, "NestedTensor layer_norm requires weight and bias");
   const auto& weight = *weight_opt;
   const auto& bias = *bias_opt;
   TORCH_CHECK(!weight.is_nested(), "NestedTensor weight not supported for layer_norm");
   TORCH_CHECK(!bias.is_nested(), "NestedTensor bias not supported for layer_norm");
-  auto* nt_input = get_nested_tensor_impl(input);
+  auto* nt_input = get_nested_tensor_impl(input_new);
   TORCH_CHECK(nested_tensor_impl_is_contiguous(nt_input));
   const auto& input_buffer = nt_input->get_buffer();
   auto M_N = _check_nested_layer_norm_inputs(*nt_input, normalized_shape, weight, bias);

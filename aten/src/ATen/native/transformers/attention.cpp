@@ -277,9 +277,13 @@ std::tuple<Tensor, Tensor, Tensor> transform_bias_rescale_qkv_cpu(
   TORCH_CHECK(_3D % 3 == 0);
   const auto dim_per_head = D / num_head;
   auto q_k_v = at::empty({3, B, num_head, T, dim_per_head}, qkv_->options());
+  
+
+  Tensor qkv_bias_new = qkv_bias.to(qkv.scalar_type());
 
   const auto qkv_contig = qkv_->expect_contiguous();
-  const auto qkv_bias_contig = qkv_bias.expect_contiguous();
+  const auto qkv_bias_contig = qkv_bias_new.expect_contiguous();
+
   AT_DISPATCH_FLOATING_TYPES_AND2(
       ScalarType::Half,
       ScalarType::BFloat16,
@@ -393,7 +397,12 @@ std::tuple<Tensor, Tensor> native_multi_head_attention_cpu(
 #endif
 
   // shape: [B, T, 3 x D]
+  std::cout<<"query.scalar_type() is: "<<query.scalar_type()<<std::endl;
+  std::cout<<"key.scalar_type() is: "<<key.scalar_type()<<std::endl;
+  std::cout<<"value.scalar_type() is: "<<value.scalar_type()<<std::endl;
+  std::cout<<"qkv_weight.scalar_type() is: "<<qkv_weight.scalar_type()<<std::endl;
   auto qkv = qkv_projection(query, key, value, embed_dim, qkv_weight);
+  std::cout<<"qkv.scalar_type() is: "<<qkv.scalar_type()<<std::endl;
 
   if (!qkv.is_nested() && qkv.numel() == 0) {
     if (query.is_nested()) {
@@ -417,6 +426,9 @@ std::tuple<Tensor, Tensor> native_multi_head_attention_cpu(
   }
 #endif
   // shape: 3 x [B, num_head, T, dim_per_head]
+  std::cout<<"qkv.scalar_type() is: "<<qkv.scalar_type()<<std::endl;
+  std::cout<<"qkv_bias.scalar_type() is: "<<qkv_bias.scalar_type()<<std::endl;
+  std::cout<<"num_head is: "<<num_head<<std::endl;
   auto q_k_v = _transform_bias_rescale_qkv(qkv, qkv_bias, num_head);
   qkv = Tensor(); // Not used any more, allow free
   auto& q = std::get<0>(q_k_v);

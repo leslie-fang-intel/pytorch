@@ -19,8 +19,11 @@ Tensor linear_for_ffn(
     const Tensor& mat2,
     c10::optional<bool> use_gelu) {
   if (mat1.is_nested()) {
+    Tensor mat1_new = mat1.to(at::kFloat);
+    Tensor mat2_new = mat2.to(at::kFloat);
+    Tensor bias_new = bias.to(at::kFloat);
     return NestedTensor_times_Tensor_plus_Tensor_addmm(
-        bias, mat1, mat2.t(), 1, 1, use_gelu);
+        bias_new, mat1_new, mat2_new.t(), 1, 1, use_gelu);
   }
 
   auto mat1_ = mat1.view({mat1.sizes()[0] * mat1.sizes()[1], mat1.sizes()[2]});
