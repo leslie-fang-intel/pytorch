@@ -237,18 +237,29 @@ Tensor qkv_projection(
         // return (key.to_padded_tensor(0.0)).equal(value.to_padded_tensor(0.0));
 
         // Option 2: Get tensor list view and compare each tensor
-        std::vector<at::Tensor> key_tensors_view = key.unbind();
-        std::vector<at::Tensor> value_tensors_view = value.unbind();
-        if (key_tensors_view.size() != value_tensors_view.size()) {
+        // std::vector<at::Tensor> key_tensors_view = key.unbind();
+        // std::vector<at::Tensor> value_tensors_view = value.unbind();
+        // if (key_tensors_view.size() != value_tensors_view.size()) {
+        //   return false;
+        // }
+        // for (int i=0;i<key_tensors_view.size();i++){
+        //   if (!key_tensors_view[i].equal(value_tensors_view[i])) {
+        //     return false;
+        //   }
+        // }
+        // return true;
+
+        // Option 3: use memcmp as refer to the implementation of equal_quantized_cpu           
+        if (key.numel() != value.numel()) {
           return false;
         }
-        for (int i=0;i<key_tensors_view.size();i++){
-          if (!key_tensors_view[i].equal(value_tensors_view[i])) {
-            return false;
-          }
+        if (key.element_size() != value.element_size()) {
+          return false;
         }
-        return true;
-  
+        // Based on the document: https://pytorch.org/docs/stable/nested.html, nested tensor has contiguous piece of memory
+        void* key_data = key.data_ptr();
+        void* value_data = value.data_ptr();
+        return 0 == memcmp(key_data, value_data, key.numel() * key.element_size());
       } else {
         return key.equal(value);
       }
@@ -262,17 +273,30 @@ Tensor qkv_projection(
           // return (query.to_padded_tensor(0.0)).equal(key.to_padded_tensor(0.0));
 
           // Option 2: Get tensor list view and compare each tensor
-          std::vector<at::Tensor> query_tensors_view = query.unbind();
-          std::vector<at::Tensor> key_tensors_view = key.unbind();
-          if (query_tensors_view.size() != key_tensors_view.size()) {
+          // std::vector<at::Tensor> query_tensors_view = query.unbind();
+          // std::vector<at::Tensor> key_tensors_view = key.unbind();
+          // if (query_tensors_view.size() != key_tensors_view.size()) {
+          //   return false;
+          // }
+          // for (int i=0;i<query_tensors_view.size();i++){
+          //   if (!query_tensors_view[i].equal(key_tensors_view[i])) {
+          //     return false;
+          //   }
+          // }
+          // return true;
+
+          // Option 3: use memcmp as refer to the implementation of equal_quantized_cpu           
+          if (query.numel() != key.numel()) {
             return false;
           }
-          for (int i=0;i<query_tensors_view.size();i++){
-            if (!query_tensors_view[i].equal(key_tensors_view[i])) {
-              return false;
-            }
+          if (query.element_size() != key.element_size()) {
+            return false;
           }
-          return true;
+          // Based on the document: https://pytorch.org/docs/stable/nested.html, nested tensor has contiguous piece of memory
+          void* query_data = query.data_ptr();
+          void* key_data = key.data_ptr();
+          return 0 == memcmp(query_data, key_data, key.numel() * key.element_size());
+
         } else {
           return query.equal(key);
         }
