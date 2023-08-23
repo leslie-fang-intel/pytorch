@@ -26,6 +26,7 @@
 #else
 #include <ATen/ops/cat.h>
 #endif
+#include <iostream>
 
 #include <ATen/native/nested/NestedTensorTransformerFunctions.h>
 namespace at {
@@ -232,7 +233,22 @@ Tensor qkv_projection(
   if ([&key, &value]{
     if (key.scalar_type() == at::kBFloat16 && value.scalar_type() == at::kBFloat16) {
       if (key.is_nested() && value.is_nested()) {
-        return (key.to_padded_tensor(0.0)).equal(value.to_padded_tensor(0.0));
+        // Option 1: copy to 1 dense tensor and do equal
+        // return (key.to_padded_tensor(0.0)).equal(value.to_padded_tensor(0.0));
+
+        // Option 2: Get tensor list view and compare each tensor
+        std::vector<at::Tensor> key_tensors_view = key.unbind();
+        std::vector<at::Tensor> value_tensors_view = value.unbind();
+        if (key_tensors_view.size() != value_tensors_view.size()) {
+          return false;
+        }
+        for (int i=0;i<key_tensors_view.size();i++){
+          if (!key_tensors_view[i].equal(value_tensors_view[i])) {
+            return false;
+          }
+        }
+        return true;
+  
       } else {
         return key.equal(value);
       }
@@ -242,7 +258,21 @@ Tensor qkv_projection(
     if ([&query, &key]{
       if (query.scalar_type() == at::kBFloat16 && key.scalar_type() == at::kBFloat16) {
         if (query.is_nested() && key.is_nested()) {
-          return (query.to_padded_tensor(0.0)).equal(key.to_padded_tensor(0.0));
+          // Option 1: copy to 1 dense tensor and do equal
+          // return (query.to_padded_tensor(0.0)).equal(key.to_padded_tensor(0.0));
+
+          // Option 2: Get tensor list view and compare each tensor
+          std::vector<at::Tensor> query_tensors_view = query.unbind();
+          std::vector<at::Tensor> key_tensors_view = key.unbind();
+          if (query_tensors_view.size() != key_tensors_view.size()) {
+            return false;
+          }
+          for (int i=0;i<query_tensors_view.size();i++){
+            if (!query_tensors_view[i].equal(key_tensors_view[i])) {
+              return false;
+            }
+          }
+          return true;
         } else {
           return query.equal(key);
         }
