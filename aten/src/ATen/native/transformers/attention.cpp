@@ -229,8 +229,26 @@ Tensor qkv_projection(
   // shape: [B, T, 3 x D]
   Tensor qkv;
 
-  if (key.is_same(value)) {
-    if (query.is_same(key)) {
+  if ([&key, &value]{
+    if (key.scalar_type() == at::kBFloat16 && value.scalar_type() == at::kBFloat16) {
+      if (key.is_nested() && value.is_nested()) {
+        return (key.to_padded_tensor(0.0)).equal(value.to_padded_tensor(0.0));
+      } else {
+        return key.equal(value);
+      }
+    }
+    return key.is_same(value);
+  }()) {
+    if ([&query, &key]{
+      if (query.scalar_type() == at::kBFloat16 && key.scalar_type() == at::kBFloat16) {
+        if (query.is_nested() && key.is_nested()) {
+          return (query.to_padded_tensor(0.0)).equal(key.to_padded_tensor(0.0));
+        } else {
+          return query.equal(key);
+        }
+      }
+      return query.is_same(key);    
+    }()) {
       // self-attention
       qkv = gemm_nt(query, qkv_weight);
     } else {

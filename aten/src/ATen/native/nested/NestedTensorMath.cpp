@@ -15,6 +15,7 @@
 #include <ATen/native/nested/NestedTensorUtils.h>
 
 #include <tuple>
+#include <iostream>
 
 namespace at {
 namespace native {
@@ -170,8 +171,8 @@ std::tuple<Tensor, Tensor, Tensor> nested_layer_norm(
       c10::nullopt /* pin_memory */,
       at::MemoryFormat::Contiguous);
   auto options = input_buffer.options();
-  if (input_buffer.is_cuda()) {
-    auto acc_type = at::toAccumulateType(input_buffer.scalar_type(), true);
+  if (input_buffer.is_cuda() || (input_buffer.is_cpu() && input_buffer.scalar_type() == at::kBFloat16)) {
+    auto acc_type = at::toAccumulateType(input_buffer.scalar_type(), input_buffer.is_cuda());
     options = options.dtype(acc_type);
   }
   Tensor mean = at::empty({M}, options);
