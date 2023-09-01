@@ -1430,10 +1430,10 @@ static at::Tensor _quantized_convolution_onednn(
   if (kSpatialDim == 1) {
     kSpatialDim += 1;
   }
-  TORCH_CHECK(
-    weight.is_mkldnn(),
-    func_name, ": Weight should be prepacked as an MKLDNN tensor"
-  );
+  // TORCH_CHECK(
+  //   weight.is_mkldnn(),
+  //   func_name, ": Weight should be prepacked as an MKLDNN tensor"
+  // );
   if (transposed) {
     TORCH_CHECK(
       false,
@@ -1517,7 +1517,24 @@ static at::Tensor _quantized_convolution_onednn(
   const ideep::zero_point_t dst_zero_points = ideep::zero_point_t(1, output_zero_point);
 
   // Weight
-  auto packed_weight = at::native::itensor_from_mkldnn(weight);
+  // int64_t a = act.sizes().vec()[0];
+  // torch::List<int64_t> input_shape({act.sizes().vec()[0], act.sizes().vec()[1]});
+  torch::List<int64_t> input_shape(act.sizes());
+  auto packed_weight = weight.is_mkldnn() ?
+    at::native::itensor_from_mkldnn(weight) :
+    at::native::itensor_from_mkldnn(
+      _qconv_prepack_onednn(
+        weight,
+        weight_scales,
+        act_scale,
+        act_zero_point,
+        stride,
+        padding,
+        dilation,
+        groups,
+        input_shape
+      )
+    );
 
   // Bias
   ideep::tensor onednn_bias;
@@ -1911,6 +1928,11 @@ TORCH_LIBRARY_IMPL(onednn, MkldnnCPU, m) {
 
   // Conv2D with binary postop
   m.impl(TORCH_SELECTIVE_NAME("onednn::qconv2d_pointwise.binary"), QConvoneDNN::run_pointwise_binary);
+}
+
+TORCH_LIBRARY_IMPL(onednn, CPU, m) {
+  // For inductor dynamic shape case, which we expect to do weight prepack in runtime.
+  m.impl(TORCH_SELECTIVE_NAME("onednn::qconv2d_pointwise"), QConvoneDNN::run_pointwise);
 }
 
 } // namespace
