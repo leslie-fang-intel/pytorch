@@ -246,6 +246,8 @@ def freeze(
 
     log.debug("%s", lazy_format_graph_code("FROZEN GRAPH", aot_autograd_gm))
 
+    print("graph after freezing pass is: {}".format(aot_autograd_gm), flush=True)
+
     return aot_autograd_gm, preserved_arg_indices
 
 

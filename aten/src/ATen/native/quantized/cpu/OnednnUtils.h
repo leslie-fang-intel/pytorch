@@ -410,7 +410,9 @@ at::Tensor _qconv_prepack_onednn(
     torch::List<int64_t> padding,
     torch::List<int64_t> dilation,
     int64_t groups,
-    c10::optional<torch::List<int64_t>> input_shape=c10::nullopt);
+    c10::optional<torch::List<int64_t>> input_shape=c10::nullopt,
+    double output_scale=1.0f,
+    int64_t output_zero_point=0);
 
 static at::Tensor _quantized_convolution_onednn(
     at::Tensor act, // contains quantized values but not QTensor

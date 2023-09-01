@@ -501,7 +501,9 @@ at::Tensor _qconv_prepack_onednn(
     torch::List<int64_t> padding,
     torch::List<int64_t> dilation,
     int64_t groups,
-    c10::optional<torch::List<int64_t>> input_shape) {
+    c10::optional<torch::List<int64_t>> input_shape,
+    double output_scale,
+    int64_t output_zero_point) {
   int kSpatialDim = weight.ndimension() - 2;
   TORCH_CHECK(
       weight.ndimension() == kSpatialDim + 2,
@@ -574,7 +576,12 @@ at::Tensor _qconv_prepack_onednn(
   if (input_zero_point != 0) {
     op_attr.set_zero_points_mask(DNNL_ARG_SRC, /* src_zero_points_mask= */0);
   }
-
+  if (output_scale != 1.0f) {
+    op_attr.set_scales_mask(DNNL_ARG_DST, /* dst_scales_mask= */0);
+  }
+  if (output_zero_point != 0) {
+    op_attr.set_zero_points_mask(DNNL_ARG_DST, /* dst_zero_points_mask= */0);
+  }
   at::Tensor weight_copy;
   ideep::tensor::desc w_desc;
   ideep::dims dims_iohw, dims_giohw;

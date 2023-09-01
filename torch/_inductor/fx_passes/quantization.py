@@ -10,6 +10,7 @@ from ..pattern_matcher import Arg, CallFunction, filter_nodes, KeywordArg, ListO
 from ..utils import pad_listlike
 from .freezing_patterns import register_freezing_graph_pattern
 from .post_grad import register_lowering_pattern
+from torch.fx.experimental.symbolic_shapes import free_symbols
 
 aten = torch.ops.aten
 prims = torch.ops.prims
@@ -692,7 +693,6 @@ def _is_valid_dequant_conv2d_pattern(match):
         ):
             # Only support conv2d now
             return False
-
     mul_node = conv_node.args[0]
     sub_node = mul_node.args[0]
     to_fp32_node = sub_node.args[0]
@@ -734,6 +734,7 @@ def _register_qconv_weight_prepack_pass(pattern, pass_number):
         conv_node = match.output_node()
         assert conv_node.target is aten.convolution.default
         mul_node = conv_node.args[0]
+        input_size = conv_node.args[0].meta.get("val").shape
         sub_node = mul_node.args[0]
         to_fp32_node = sub_node.args[0]
         has_clone_to_channel_last_node_in_pattern = (
@@ -791,9 +792,16 @@ def _register_qconv_weight_prepack_pass(pattern, pass_number):
                 x_shape,
             )
             packed_weight_op = torch.ops.onednn.qconv_prepack
-            prepack_weight_node = graph.call_function(
-                packed_weight_op, args=packed_weight_inputs
-            )
+
+            prepack_weight_node = None
+            print("in check qconv weight prepack free_symbols(input_size) is: {}".format(free_symbols(input_size)), flush=True)
+            if not free_symbols(input_size):
+                prepack_weight_node = graph.call_function(
+                    packed_weight_op, args=packed_weight_inputs
+                )
+            else:
+                # For dynamic shape case, we need to pack weight in runtime.
+                prepack_weight_node = qw
 
             new_args: Tuple[Any, ...] = (
                 qx,

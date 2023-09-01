@@ -1532,7 +1532,9 @@ static at::Tensor _quantized_convolution_onednn(
         padding,
         dilation,
         groups,
-        input_shape
+        input_shape,
+        1.0 / inv_output_scale,
+        output_zero_point
       )
     );
 
