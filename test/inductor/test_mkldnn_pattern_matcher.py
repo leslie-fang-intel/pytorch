@@ -511,8 +511,8 @@ class TestPatternMatcher(TestPatternMatcherBase):
             v = torch.randn((1, 3, 8, 8), dtype=torch.float32, requires_grad=False).add(
                 1
             )
-            # Totally 8 pattern_matcher_count, 39 pattern_matcher_nodes
-            # 1. Pair of to_int8 and to_fp32 at conv input * 1, extra input of add * 1, and graph output * 1
+            # Totally 7 pattern_matcher_count, 37 pattern_matcher_nodes
+            # 1. Pair of to_int8 and to_fp32 at extra input of add * 1, and graph output * 1
             #    matched in pointless_convert pass at
             #    torch/_inductor/fx_passes/joint_graph.py: [convert_element_type, convert_element_type_1]
             # 2. Dequant pattern matcher for dequant promotion * 1
@@ -527,8 +527,8 @@ class TestPatternMatcher(TestPatternMatcherBase):
             self._test_common(
                 mod,
                 (v,),
-                8,
-                39,
+                7,
+                37,
                 check_quantization=True,
             )
 
@@ -571,8 +571,8 @@ class TestPatternMatcher(TestPatternMatcherBase):
             v = torch.randn((1, 3, 8, 8), dtype=torch.float32, requires_grad=False).add(
                 1
             )
-            # Totally 8 pattern_matcher_count, 40 pattern_matcher_nodes
-            # 1. Pair of to_int8 and to_fp32 at conv input * 1, extra input of add * 1, and graph output * 1
+            # Totally 7 pattern_matcher_count, 38 pattern_matcher_nodes
+            # 1. Pair of to_int8 and to_fp32 at extra input of add * 1, and graph output * 1
             #    matched in pointless_convert pass at
             #    torch/_inductor/fx_passes/joint_graph.py: [convert_element_type, convert_element_type_1]
             # 2. Dequant pattern matcher for dequant promotion * 1
@@ -587,8 +587,8 @@ class TestPatternMatcher(TestPatternMatcherBase):
             self._test_common(
                 mod,
                 (v,),
-                8,
-                40,
+                7,
+                38,
                 check_quantization=True,
             )
 
@@ -627,8 +627,8 @@ class TestPatternMatcher(TestPatternMatcherBase):
         mod = M().eval()
         v = torch.randn((1, 3, 8, 8), dtype=torch.float32, requires_grad=False).add(1)
 
-        # Totally 11 pattern_matcher_count, 54 pattern_matcher_nodes for conv
-        # 1. Pair of to_int8 and to_fp32 at conv input * 2, extra input of add * 1, and graph output * 1
+        # Totally 10 pattern_matcher_count, 52 pattern_matcher_nodes for conv
+        # 1. Pair of to_int8 and to_fp32 at conv input * 1, extra input of add * 1, and graph output * 1
         #    matched in pointless_convert pass at
         #    torch/_inductor/fx_passes/joint_graph.py: [convert_element_type, convert_element_type_1]
         # 2. Dequant pattern matcher for dequant promotion * 1
@@ -643,8 +643,8 @@ class TestPatternMatcher(TestPatternMatcherBase):
         self._test_common(
             mod,
             (v,),
-            11,
-            54,
+            10,
+            52,
             check_quantization=True,
         )
 
@@ -762,8 +762,8 @@ class TestPatternMatcher(TestPatternMatcherBase):
         mod = M().eval()
         v = torch.rand((2, 4))
 
-        # Totally 11 pattern_matcher_count, 50 pattern_matcher_nodes for linear
-        # 1. Pair of to_int8 and to_fp32 at linear input * 2, extra input of add * 1, and graph output * 1
+        # Totally 10 pattern_matcher_count, 48 pattern_matcher_nodes for linear
+        # 1. Pair of to_int8 and to_fp32 at linear input * 1, extra input of add * 1, and graph output * 1
         #    matched in pointless_convert pass at
         #    torch/_inductor/fx_passes/joint_graph.py: [convert_element_type, convert_element_type_1]
         # 2. Dequant pattern matcher for dequant promotion * 1
@@ -775,8 +775,8 @@ class TestPatternMatcher(TestPatternMatcherBase):
         self._test_common(
             mod,
             (v,),
-            11,
-            50,
+            10,
+            48,
             check_quantization=True,
         )
 
