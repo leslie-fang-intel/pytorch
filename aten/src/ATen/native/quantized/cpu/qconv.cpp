@@ -1935,6 +1935,8 @@ TORCH_LIBRARY_IMPL(onednn, MkldnnCPU, m) {
 TORCH_LIBRARY_IMPL(onednn, CPU, m) {
   // For inductor dynamic shape case, which we expect to do weight prepack in runtime.
   m.impl(TORCH_SELECTIVE_NAME("onednn::qconv2d_pointwise"), QConvoneDNN::run_pointwise);
+
+  m.impl(TORCH_SELECTIVE_NAME("onednn::qconv2d_pointwise.binary"), QConvoneDNN::run_pointwise_binary);
 }
 
 } // namespace
