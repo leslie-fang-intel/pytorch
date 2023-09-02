@@ -283,12 +283,15 @@ c10::intrusive_ptr<LinearPackedParamsBase> PackedLinearWeightsOnednn::prepack(
   return ret_ptr;
 }
 
-inline at::Tensor pack_weight_to_onednn_tensor(
+at::Tensor pack_weight_to_onednn_tensor(
     const at::Tensor& weight,
-    c10::optional<torch::List<int64_t>>& input_shape) {
+    c10::optional<torch::List<int64_t>> input_shape,
+    bool transpose_weight) {
   std::vector<int64_t> w_dims = weight.sizes().vec();
   ideep::tensor wei = ideep::tensor({w_dims, dnnl::memory::data_type::s8}, weight.data_ptr());
-  wei.transpose_(0, 1); // oneDNN requires transposed weight
+  if (transpose_weight) {
+    wei.transpose_(0, 1); // oneDNN requires transposed weight
+  }
   ideep::dims input_dims = input_shape.has_value() ? input_shape.value().vec() : ideep::dims();
   ideep::attr_t op_attr;
   op_attr.set_zero_points_mask(DNNL_ARG_SRC, 0);

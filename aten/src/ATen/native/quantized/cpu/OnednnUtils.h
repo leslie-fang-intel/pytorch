@@ -414,6 +414,11 @@ at::Tensor _qconv_prepack_onednn(
     double output_scale=1.0f,
     int64_t output_zero_point=0);
 
+at::Tensor pack_weight_to_onednn_tensor(
+    const at::Tensor& weight,
+    c10::optional<torch::List<int64_t>> input_shape,
+    bool transpose_weight=true);
+
 static at::Tensor _quantized_convolution_onednn(
     at::Tensor act, // contains quantized values but not QTensor
     double act_scale,

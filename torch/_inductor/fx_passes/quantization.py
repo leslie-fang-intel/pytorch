@@ -919,6 +919,8 @@ def _register_qlinear_weight_prepack_pass(pattern, pass_number):
         input_index = 0 if linear_node.target is aten.mm.default else 1
         weight_index = input_index + 1
         mul_node = linear_node.args[input_index]
+        batch_size = mul_node.meta.get("val").shape[0]
+        print("in linear weight prepack batch_size is: {}".format(batch_size), flush=True)
         sub_node = mul_node.args[0]
         to_fp32_node = sub_node.args[0]
         t_node = linear_node.args[weight_index]
@@ -954,9 +956,17 @@ def _register_qlinear_weight_prepack_pass(pattern, pass_number):
                 x_shape,
             )
             packed_weight_op = torch.ops.onednn.qlinear_prepack
-            prepack_weight_node = graph.call_function(
-                packed_weight_op, args=packed_weight_inputs
-            )
+            print("in linear weight prepack free_symbols(batch_size) is: {}".format(free_symbols(batch_size)), flush=True)
+            use_dynamic_shape = False
+            if not free_symbols(batch_size):
+                prepack_weight_node = graph.call_function(
+                    packed_weight_op, args=packed_weight_inputs
+                )
+            else:
+                use_dynamic_shape = True
+                prepack_weight_node = t_node
+                t_node.update_arg(0, qw)
+                print("t_node.args is: {}".format(t_node.args), flush=True)
 
             new_args: Tuple[Any, ...] = (
                 qx,
@@ -986,7 +996,8 @@ def _register_qlinear_weight_prepack_pass(pattern, pass_number):
             graph.erase_node(sub_node)
             graph.erase_node(to_fp32_node)
             # Erase the dequant per channel pattern
-            graph.erase_node(t_node)
+            if not use_dynamic_shape:
+                graph.erase_node(t_node)
             graph.erase_node(dequant_per_channel)
 
 

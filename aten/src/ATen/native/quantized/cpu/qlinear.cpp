@@ -931,7 +931,16 @@ static at::Tensor linear_int8_with_onednn_weight(
 
   auto input_contig = input.contiguous();
   auto src = at::native::itensor_from_tensor(input_contig);
-  auto packed_weight = at::native::itensor_from_mkldnn(onednn_weight);
+  torch::List<int64_t> input_shape(input.sizes());
+  auto packed_weight = onednn_weight.is_mkldnn() ?
+    at::native::itensor_from_mkldnn(onednn_weight) :
+    at::native::itensor_from_mkldnn(
+      pack_weight_to_onednn_tensor(
+        onednn_weight.contiguous(),
+        input_shape,
+        false
+      )
+    );
   int64_t K = input.size(dim - 1), M = input.numel() / K, N = packed_weight.get_dim(1);
   c10::optional<ideep::tensor> onednn_bias{c10::nullopt};
   bool with_bias = bias.has_value();
@@ -1153,6 +1162,11 @@ TORCH_LIBRARY_IMPL(quantized, CPU, m) {
 }
 
 TORCH_LIBRARY_IMPL(onednn, MkldnnCPU, m) {
+  m.impl(TORCH_SELECTIVE_NAME("onednn::qlinear_pointwise"),
+      TORCH_FN(QLinearOnednn::run_pointwise));
+}
+
+TORCH_LIBRARY_IMPL(onednn, CPU, m) {
   m.impl(TORCH_SELECTIVE_NAME("onednn::qlinear_pointwise"),
       TORCH_FN(QLinearOnednn::run_pointwise));
 }
