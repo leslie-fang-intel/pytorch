@@ -444,11 +444,11 @@ def _is_valid_quantized_maxpool2d_optimization_pattern():
         if get_item_node.args[1] != 0:
             return False
 
-        maxpool2d_node = filter_nodes(match.nodes, aten.max_pool2d_with_indices.default)[0]
-        output_shape = maxpool2d_node.meta.get("val")[0].shape
-        if free_symbols(output_shape):
-            # Doesn't support dynamic shape yet
-            return False
+        # maxpool2d_node = filter_nodes(match.nodes, aten.max_pool2d_with_indices.default)[0]
+        # output_shape = maxpool2d_node.meta.get("val")[0].shape
+        # if free_symbols(output_shape):
+        #     # Doesn't support dynamic shape yet
+        #     return False
 
         return True
 
