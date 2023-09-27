@@ -135,6 +135,7 @@ class Interpreter:
                 continue
 
             try:
+                # print("---- node is: {}".format(node), flush=True)
                 self.env[node] = self.run_node(node)
             except Exception as e:
                 if self.extra_traceback:

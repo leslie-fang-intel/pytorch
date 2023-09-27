@@ -704,6 +704,18 @@ class GraphLowering(torch.fx.Interpreter):
     def run_node(self, n: torch.fx.Node):
         log.debug("lowering %s", LazyString(lambda: n.format_node()))
         origins = {n}
+
+        # print("n.target is: {}".format(n.target), flush=True)
+
+        if n.target == torch.ops.aten.nonzero.default:
+            print("n.target0 is: {}".format(n.target), flush=True)
+
+        if n.target == torch.ops.aten.full.default:
+            print("n.target1 is: {}".format(n.target), flush=True)
+
+        if n.target == torch.ops.aten.sym_size:
+            print("n.target2 is: {}".format(n.target), flush=True)
+
         if n.op == "call_function":
             args, kwargs = self.fetch_args_kwargs_from_env(n)
             origins |= gather_origins(args, kwargs)

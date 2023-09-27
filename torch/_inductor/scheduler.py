@@ -17,7 +17,8 @@ from torch.utils._triton import has_triton
 from . import config, dependencies, ir, metrics
 from .codegen.common import get_scheduling_for_device, Kernel
 from .dependencies import StarDep, WeakDep
-from .ir import ComputedBuffer, MultiOutput, MultiOutputLayout
+from .ir import ComputedBuffer, MultiOutput, MultiOutputLayout, FixedLayout
+from torch.fx.experimental.symbolic_shapes import free_symbols
 from .sizevars import SimplifyIndexing
 from .utils import (
     cache_on_self,
@@ -589,10 +590,16 @@ class NopKernelSchedulerNode(BaseSchedulerNode):
 class SchedulerNode(BaseSchedulerNode):
     def __init__(self, scheduler: "Scheduler", node: ir.ComputedBuffer, group_fn):
         super().__init__(scheduler, node)
+        print("-------", flush=True)
         (
             self._sizes,
             self._body,
         ) = node.simplify_and_reorder()
+
+
+        print("group_fn(self._sizes) is: {}".format(group_fn(self._sizes)), flush=True)
+
+        print("self._sizes is: {}".format(self._sizes), flush=True)
 
         self.group = (node.get_device(), group_fn(self._sizes))
 
@@ -1100,6 +1107,8 @@ class Scheduler:
         self.dead_node_elimination()
         self.compute_predecessors()
 
+        print("self.nodes is: {}".format(self.nodes), flush=True)
+
         metrics.ir_nodes_pre_fusion += len(self.nodes)
         V.debug.ir_pre_fusion(self.nodes)
         self.num_orig_nodes = len(self.nodes)
@@ -1309,14 +1318,27 @@ class Scheduler:
         again = True  # repeat until a fixed point
         while again:
             updated_nodes = []
+            print("----- in dead_node_elimination, self.nodes is: {}".format(self.nodes), flush=True)
             for node in self.nodes:
 
                 def can_eliminate_user(user: NodeUser):
                     return user.is_weak or user.get_name() in V.graph.removed_buffers
 
-                can_eliminate = not node.has_side_effects() and all(
-                    can_eliminate_user(u) for u in node.users
+                print("----- in dead_node_elimination, node is: {} -----".format(node), flush=True)
+                
+                # if isinstance(node.node.layout, FixedLayout):
+                #     print(node.node.layout.size, flush=True)
+                #     print( free_symbols(node.node.layout.size), flush=True)
+
+                can_eliminate = (
+                    not node.has_side_effects()
+                    and (isinstance(node.node.layout, FixedLayout) and not free_symbols(node.node.layout.size))
+                    and all(
+                        can_eliminate_user(u) for u in node.users
+                    )
                 )
+
+                print("----- in dead_node_elimination, can_eliminate is: {} -----".format(can_eliminate), flush=True)
 
                 if not can_eliminate:
                     updated_nodes.append(node)
@@ -1326,6 +1348,7 @@ class Scheduler:
                     V.graph.removed_buffers.add(node.get_name())
 
             again = len(self.nodes) > len(updated_nodes)
+            print("----- in dead_node_elimination, again is: {}".format(again), flush=True)
             self.nodes = updated_nodes
 
         # Prune any WeakDeps no longer needed

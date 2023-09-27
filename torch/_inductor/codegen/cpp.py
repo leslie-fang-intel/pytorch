@@ -1311,10 +1311,15 @@ class CppKernel(Kernel):
             ), f"{self.call_ranges} == {tuple(lengths)} + {tuple(reduction_lengths)}"
             assert self.reduction_depth == len(lengths)
         else:
+            # print("checkpoint1 self.kernel_group.args is: {}".format(self.kernel_group.args), flush=True)
             self.call_ranges = tuple(lengths) + tuple(reduction_lengths)
+            # print("checkpoint2 self.kernel_group.args is: {}".format(self.kernel_group.args), flush=True)
             self.ranges = [self.rename_indexing(x) for x in self.call_ranges]
+            # print("checkpoint3 self.kernel_group.args is: {}".format(self.kernel_group.args), flush=True)
             self.itervars = [sympy_symbol(f"i{n}") for n in range(len(self.ranges))]
+            # print("checkpoint4 self.kernel_group.args is: {}".format(self.kernel_group.args), flush=True)
             self.reduction_depth = len(lengths)
+            #print("checkpoint5 self.kernel_group.args is: {}".format(self.kernel_group.args), flush=True)
         return (
             self.itervars[: self.reduction_depth],
             self.itervars[self.reduction_depth :],
@@ -1562,6 +1567,9 @@ class CppVecKernel(CppKernel):
         var_expr = f"{var} + {cexpr_index(index)}"
         dtype = V.graph.get_dtype(name)
         non_contiguous = stride_at(tiling_var, index) != 1 or "tmp" in f"{index}"
+
+        print("--- should hit here once ----", flush=True)
+
         if non_contiguous:
             var_expr = "tmpbuf"
         if V.graph.get_dtype(name) in DTYPE_LOWP_FP:
@@ -2621,15 +2629,23 @@ class CppKernelProxy(CppKernel):
         )
 
         kernel_group = self.kernel_group
+        print("in code gen self.kernel_group.args is: {}".format(self.kernel_group.args), flush=True)
         _, (group, reduction_group) = max(
             nodes, key=lambda x: int(x.is_reduction())
         ).group
 
+        print("2 in code gen self.kernel_group.args is: {}".format(self.kernel_group.args), flush=True)
+
         self.set_ranges(group, reduction_group)
 
+        print("2.1 in code gen self.kernel_group.args is: {}".format(self.kernel_group.args), flush=True)
+
         def codegen_kernel(cls, *args):
+            print("in codegen_kernel kernel_group.args is: {}".format(kernel_group.args), flush=True)
             with kernel_group.new_kernel(cls, *args) as kernel:
                 run(kernel)
+
+                # print("in codegen_kernel kernel_group.args is: {}".format(kernel_group.args), flush=True)
 
                 # Ugly hack to maintain the metrics kernel count since
                 # we only count in CppKernelProxy, not those contained in it
@@ -2657,12 +2673,19 @@ class CppKernelProxy(CppKernel):
                     with kernel.write_to_suffix():
                         node.run(vars, ())
 
+        print("3 in code gen self.kernel_group.args is: {}".format(self.kernel_group.args), flush=True)
+
         scalar_kernel = codegen_kernel(CppKernel)
+
+        print("4 in code gen self.kernel_group.args is: {}".format(self.kernel_group.args), flush=True)
+
         V.graph.removed_buffers |= scalar_kernel.removed_buffers
         self.loop_nest = LoopNestWithSplit.build(scalar_kernel)
 
         if not self.picked_vec_isa:
             return
+
+        print("in code gen self.kernel_group.args2 is: {}".format(self.kernel_group.args), flush=True)
 
         def select_tiling_indices():
             all_index = []
@@ -2837,6 +2860,7 @@ class CppScheduling(BaseScheduling):
         pass
 
     def flush(self):
+        # print("in flush self.kernel_group.args is: {}".format(self.kernel_group.args), flush=True)
         self.kernel_group.codegen_define_and_call(V.graph.wrapper_code)
         self.get_kernel_group()
 
@@ -2845,6 +2869,9 @@ class KernelGroup:
     def __init__(self):
         super().__init__()
         self.args = KernelArgs()
+
+        print("self.args is: {}".format(self.args), flush=True)
+
         self.loops_code = BracesBuffer()
         self.ws = WorkSharing(self.loops_code)
         self.stack = contextlib.ExitStack()
@@ -2871,6 +2898,9 @@ class KernelGroup:
             else ""
         )
         kernel_name = "_".join(["cpp", fused_name, wrapper.next_kernel_suffix()])
+        
+        print("self.args2 is: {}".format(self.args), flush=True)
+
         arg_defs, call_args, arg_types = self.args.cpp_argdefs()
         arg_defs = ",\n".ljust(25).join(arg_defs)
         arg_types = ",".join(arg_types)

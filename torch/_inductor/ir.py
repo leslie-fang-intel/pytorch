@@ -1478,6 +1478,7 @@ class BaseView(IRNode):
         return self.data.has_exceeded_max_reads()
 
     def realize(self):
+        # print("self.data.get_name()", flush=True)
         return self.data.realize()
 
     def realize_hint(self):
@@ -5303,6 +5304,7 @@ class MutableBox(IRNode):
         raise AttributeError(f"{type(self.data).__name__}.{name} not callable")
 
     def realize(self):
+        print("self.data", flush=True)
         return self.data.realize()
 
     @property
@@ -5348,6 +5350,10 @@ class StorageBox(MutableBox):
         return False
 
     def realize(self):
+        # print("self.data.name is: {}".format(self.data.name), flush=True)
+        
+        # print("--- hit this realize method -----", flush=True)
+        
         if isinstance(
             self.data,
             (
@@ -5358,6 +5364,7 @@ class StorageBox(MutableBox):
                 TemplateBuffer,
             ),
         ):
+            # print("self.data.get_name() is: {}".format(self.data.get_name()), flush=True)
             return self.data.get_name()
         assert isinstance(self.data, (Pointwise, Reduction)), type(self.data)
         origin_node = self.data.get_origin_node()
@@ -5372,6 +5379,9 @@ class StorageBox(MutableBox):
             data=self.data,
         )
         self.data.name = V.graph.register_buffer(self.data)
+
+        print("self.data.name is: {}".format(self.data.name), flush=True)
+
         self.data.origins = self.origins
         self.data.origin_node = origin_node
         self.data.traceback = traceback

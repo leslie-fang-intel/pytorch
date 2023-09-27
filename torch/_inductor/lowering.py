@@ -275,8 +275,12 @@ def _register_lowering(
         if unpacked:
             args = [args]
 
+        print("--- hit here ----", flush=True)
+
         out = decomp_fn(*args, **kwargs)
         validate_ir(out)
+
+        print("---- out is: {}".format(out), flush=True)
 
         return out
 
