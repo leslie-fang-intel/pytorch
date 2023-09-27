@@ -1316,7 +1316,7 @@ class CppKernel(Kernel):
             # print("checkpoint2 self.kernel_group.args is: {}".format(self.kernel_group.args), flush=True)
             self.ranges = [self.rename_indexing(x) for x in self.call_ranges]
             # print("checkpoint3 self.kernel_group.args is: {}".format(self.kernel_group.args), flush=True)
-            self.itervars = [sympy_symbol(f"i{n}") for n in range(len(self.ranges))]
+            self.itervars = [sympy_symbol(f"p{n}") for n in range(len(self.ranges))]
             # print("checkpoint4 self.kernel_group.args is: {}".format(self.kernel_group.args), flush=True)
             self.reduction_depth = len(lengths)
             #print("checkpoint5 self.kernel_group.args is: {}".format(self.kernel_group.args), flush=True)
