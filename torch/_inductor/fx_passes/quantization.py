@@ -1172,9 +1172,9 @@ def _register_quantization_weight_pack_pass():
         dequantize_per_tensor_to_bfloat16_activation_pattern, pass_number=0, dtype=torch.bfloat16
     )  # pass_number=0 to run before weight prepack
 
-    # _register_dequant_promotion_pass(
-    #     dequantize_per_tensor_activation_pattern, pass_number=1
-    # )  # pass_number=0 to run before weight prepack
+    _register_dequant_promotion_pass(
+        dequantize_per_tensor_activation_pattern, pass_number=1
+    )  # pass_number=0 to run before weight prepack
 
 
     weight_prepack_patterns = _generate_qconv_weight_prepack_patterns()
