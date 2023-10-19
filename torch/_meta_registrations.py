@@ -2141,6 +2141,7 @@ if torch._C._has_mkldnn:
             groups,
             None,
         )
+        print("in qconv2d_point meta dispatch output_dtype is: {}".format(output_dtype), flush=True)
         out = x.new_empty(shape_out, dtype=output_dtype)
         out = out.to(memory_format=torch.channels_last)
         return out
