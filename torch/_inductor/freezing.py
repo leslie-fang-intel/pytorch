@@ -99,6 +99,7 @@ def freeze(
     aot_autograd_gm.recompile()
 
     aot_example_inputs = [example_inputs[ind] for ind in preserved_arg_indices]
+
     freezing_passes(aot_autograd_gm, aot_example_inputs)
 
     constant_fold(aot_autograd_gm)

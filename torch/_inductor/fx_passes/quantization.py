@@ -37,6 +37,24 @@ dequantize_per_tensor_activation_pattern = CallFunction(
     KeywordArg("x_scale"),
 )
 
+dequantize_per_tensor_to_bfloat16_activation_pattern = CallFunction(
+    prims.convert_element_type.default,
+    CallFunction(
+        aten.mul.Tensor,
+        CallFunction(
+            aten.sub.Tensor,
+            CallFunction(
+                prims.convert_element_type.default,
+                KeywordArg("x"),
+                KeywordArg("x_dq_dtype"),
+            ),
+            KeywordArg("x_zp"),
+        ),
+        KeywordArg("x_scale"),
+    ),
+    KeywordArg("activation_to_bf16"),
+)
+
 dequantize_per_channel_weight_pattern = CallFunction(
     quantized_decomposed.dequantize_per_channel.default,
     KeywordArg("q_weight"),
@@ -46,6 +64,21 @@ dequantize_per_channel_weight_pattern = CallFunction(
     KeywordArg("w_quant_min"),
     KeywordArg("w_quant_max"),
     KeywordArg("w_dtype"),
+)
+
+dequantize_per_channel_to_bf16_weight_pattern = CallFunction(
+        prims.convert_element_type.default,
+        CallFunction(
+            quantized_decomposed.dequantize_per_channel.default,
+            KeywordArg("q_weight"),
+            KeywordArg("w_scale"),
+            KeywordArg("w_zp"),
+            KeywordArg("w_axis"),
+            KeywordArg("w_quant_min"),
+            KeywordArg("w_quant_max"),
+            KeywordArg("w_dtype"),
+        ),
+        KeywordArg("autocast_weight_convert_dtype"),
 )
 
 dequantize_per_channel_clone_weight_pattern = CallFunction(
@@ -629,30 +662,48 @@ def _register_quantization_lowerings():
     _register_quantization_cat()
 
 
-def _is_valid_dequant_promotion_pattern(match):
-    mul_node = match.output_node()
-    sub_node = mul_node.args[0]
-    to_fp32_node = sub_node.args[0]
-    if (
-        mul_node.target is aten.mul.Tensor
-        and sub_node.target is aten.sub.Tensor
-        and to_fp32_node.target is prims.convert_element_type.default
-        and len(list(mul_node.users)) > 1
-    ):
-        # dequant pattern has more than 1 users to be promoted
-        return True
-    return False
+def _is_valid_dequant_promotion_pattern(dtype=torch.float32):
+    def inner(match):
+        print("---- check dequant promotion pattern ----", flush=True)
+        print("dtype is: {}".format(dtype), flush=True)
 
 
-def _register_dequant_promotion_pass(pattern, pass_number):
+        assert dtype in [torch.float32, torch.bfloat16]
+        if dtype == torch.float32:
+            mul_node = match.output_node()
+        else:
+            convert_to_bf16_node = match.output_node()
+            mul_node = convert_to_bf16_node.args[0]
+
+            if convert_to_bf16_node.name == "convert_element_type_11":
+                print("-----------------convert_to_bf16_node is: {}".format(convert_to_bf16_node), flush=True)
+
+        sub_node = mul_node.args[0]
+        to_fp32_node = sub_node.args[0]
+        if (
+            mul_node.target is aten.mul.Tensor
+            and sub_node.target is aten.sub.Tensor
+            and to_fp32_node.target is prims.convert_element_type.default
+            and len(list(mul_node.users)) > 1 if dtype == torch.float32 else len(list(convert_to_bf16_node.users)) > 1
+        ):
+            # dequant pattern has more than 1 users to be promoted
+            return True
+        return False
+
+    return inner
+
+
+def _register_dequant_promotion_pass(pattern, pass_number, dtype=torch.float32):
     @register_freezing_graph_pattern(
         pattern,
-        extra_check=_is_valid_dequant_promotion_pattern,
+        extra_check=_is_valid_dequant_promotion_pattern(dtype),
         pass_number=pass_number,
     )
     def dequant_promotion(match: Match, *args, **kwargs):
         # If dequant pattern used by multiply nodes,
         # we will do dequant promotion. So each user node has a separate dequant pattern connected.
+        assert dtype in [torch.float32, torch.bfloat16]
+        print("---- hit dequant promotion ----", flush=True)
         def clone_to_new_node(graph, source_node, user_node):
             assert (
                 source_node.op == "call_function"
@@ -667,22 +718,47 @@ def _register_dequant_promotion_pass(pattern, pass_number):
                 user_node.replace_input_with(source_node, new_node)
             return new_node
 
-        mul_node = match.output_node()
-        sub_node = mul_node.args[0]
-        to_fp32_node = sub_node.args[0]
-        assert mul_node.target is aten.mul.Tensor
-        assert sub_node.target is aten.sub.Tensor
-        assert to_fp32_node.target is prims.convert_element_type.default
+        # mul_node = match.output_node()
+        if dtype == torch.float32:
+            mul_node = match.output_node()
+            sub_node = mul_node.args[0]
+            to_fp32_node = sub_node.args[0]
+            assert mul_node.target is aten.mul.Tensor
+            assert sub_node.target is aten.sub.Tensor
+            assert to_fp32_node.target is prims.convert_element_type.default
 
-        graph = match.graph
-        user_node_list = list(mul_node.users)
-        for user_node in user_node_list:
-            # Step1: Duplicate the mul node
-            new_mul_node = clone_to_new_node(graph, mul_node, user_node)
-            # Step2: Duplicate the sub node
-            new_sub_node = clone_to_new_node(graph, sub_node, new_mul_node)
-            # Step3: Duplicate the to_fp32 node
-            _ = clone_to_new_node(graph, to_fp32_node, new_sub_node)
+            graph = match.graph
+            user_node_list = list(mul_node.users)
+            for user_node in user_node_list:
+                # Step1: Duplicate the mul node
+                new_mul_node = clone_to_new_node(graph, mul_node, user_node)
+                # Step2: Duplicate the sub node
+                new_sub_node = clone_to_new_node(graph, sub_node, new_mul_node)
+                # Step3: Duplicate the to_fp32 node
+                _ = clone_to_new_node(graph, to_fp32_node, new_sub_node)
+        else:
+            convert_to_bf16_node = match.output_node()
+
+            if convert_to_bf16_node.name == "convert_element_type_11":
+                print("------ start to promotion convert_to_bf16_node is: {}".format(convert_to_bf16_node), flush=True)
+
+            mul_node = convert_to_bf16_node.args[0]
+            sub_node = mul_node.args[0]
+            to_fp32_node = sub_node.args[0]
+            assert mul_node.target is aten.mul.Tensor
+            assert sub_node.target is aten.sub.Tensor
+            assert to_fp32_node.target is prims.convert_element_type.default
+
+            graph = match.graph
+            user_node_list = list(convert_to_bf16_node.users)
+            for user_node in user_node_list:
+                new_convert_to_bf16_node_node = clone_to_new_node(graph, convert_to_bf16_node, user_node)
+                # Step1: Duplicate the mul node
+                new_mul_node = clone_to_new_node(graph, mul_node, new_convert_to_bf16_node_node)
+                # Step2: Duplicate the sub node
+                new_sub_node = clone_to_new_node(graph, sub_node, new_mul_node)
+                # Step3: Duplicate the to_fp32 node
+                _ = clone_to_new_node(graph, to_fp32_node, new_sub_node)
 
 
 def _is_valid_dequant_conv2d_pattern(dtype):
@@ -934,6 +1010,10 @@ def _generate_qconv_weight_prepack_patterns(dtype=torch.float32):
     else:
         return (
             _generate_dequant_convolution_node_pattern(
+                dequantize_per_channel_to_bf16_weight_pattern,
+                torch.bfloat16,
+            ),
+            _generate_dequant_convolution_node_pattern(
                 dequantize_per_channel_to_bf16_clone_weight_pattern,
                 torch.bfloat16,
             ),
@@ -1089,20 +1169,26 @@ def _generate_qlinear_weight_prepack_patterns():
 @functools.lru_cache(None)
 def _register_quantization_weight_pack_pass():
     _register_dequant_promotion_pass(
-        dequantize_per_tensor_activation_pattern, pass_number=0
+        dequantize_per_tensor_to_bfloat16_activation_pattern, pass_number=0, dtype=torch.bfloat16
     )  # pass_number=0 to run before weight prepack
+
+    # _register_dequant_promotion_pass(
+    #     dequantize_per_tensor_activation_pattern, pass_number=1
+    # )  # pass_number=0 to run before weight prepack
+
+
     weight_prepack_patterns = _generate_qconv_weight_prepack_patterns()
     for weight_prepack_pattern in weight_prepack_patterns:
         # Register to pass_number 1, so we can do dequant promotion in pass_number 0.
-        _register_qconv_weight_prepack_pass(weight_prepack_pattern, pass_number=1)
+        _register_qconv_weight_prepack_pass(weight_prepack_pattern, pass_number=2)
 
     # int8-mixed-bf16
     weight_prepack_patterns = _generate_qconv_weight_prepack_patterns(torch.bfloat16)
     for weight_prepack_pattern in weight_prepack_patterns:
         # Register to pass_number 1, so we can do dequant promotion in pass_number 0.
-        _register_qconv_weight_prepack_pass(weight_prepack_pattern, pass_number=1, dtype=torch.bfloat16)
+        _register_qconv_weight_prepack_pass(weight_prepack_pattern, pass_number=2, dtype=torch.bfloat16)
 
     weight_prepack_patterns = _generate_qlinear_weight_prepack_patterns()
     for weight_prepack_pattern in weight_prepack_patterns:
         # Register to pass_number 1, so we can do dequant promotion in pass_number 0.
-        _register_qlinear_weight_prepack_pass(weight_prepack_pattern, pass_number=1)
+        _register_qlinear_weight_prepack_pass(weight_prepack_pattern, pass_number=2)

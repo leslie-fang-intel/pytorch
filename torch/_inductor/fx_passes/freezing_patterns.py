@@ -62,8 +62,13 @@ def freezing_passes(gm: torch.fx.GraphModule, aot_example_inputs):
     constant_fold(gm)
     fake_tensor_prop(gm, aot_example_inputs, True)
 
+
+    # print("Before weight prepack freezing_passes gm is: {}".format(gm), flush=True)
+
     for pattern in pass_patterns:
         pattern.apply(gm.graph)
+    
+    # print("After weight prepack freezing_passes gm is: {}".format(gm), flush=True)
 
     # The CPU weight packing always assume the conv's weight is channels last,
     # So make sure the layout_optimization is on when doing it.
@@ -79,6 +84,12 @@ def freezing_passes(gm: torch.fx.GraphModule, aot_example_inputs):
     stable_topological_sort(gm.graph)
     gm.recompile()
     gm.graph.lint()
+
+    # print("After weight prepack freezing_passes2 gm is: {}".format(gm), flush=True)
+    
+    # from torch.fx.passes.graph_drawer import FxGraphDrawer
+    # g = FxGraphDrawer(gm, "shuffnetv2")
+    # g.get_dot_graph().write_svg("/home/lesliefang/pytorch_1_7_1/quantization/torch_script/inductor/int8/int8-mixed-bf16/after_weight_prepack_freezing_passes2.svg")
 
 
 @init_once_fakemode
