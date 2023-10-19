@@ -1528,14 +1528,19 @@ static at::Tensor _quantized_convolution_onednn(
   ideep::tensor onednn_bias;
   const int output_channels = weight.size(0);
   bool with_bias = bias.has_value();
+
+  at::Tensor bias_val_float;
   if (with_bias) {
     at::Tensor bias_val = bias.value();
+
+    bias_val_float = bias_val.to(at::kFloat);
+  
     TORCH_CHECK(bias_val.dim() == 1, "bias should be a vector (1D Tensor)");
     TORCH_CHECK(
         bias_val.size(0) == output_channels,
         "bias should have K elements: " + std::to_string(output_channels));
     auto bias_desc = ideep::tensor::desc(bias.value().sizes().vec(), dnnl::memory::data_type::f32);
-    onednn_bias.init(bias_desc, bias.value().data_ptr());
+    onednn_bias.init(bias_desc, bias_val_float.data_ptr());
   }
 
   const auto& expected_bias = with_bias ? onednn_bias : ideep::tensor();
