@@ -5040,7 +5040,7 @@ class QConvPointWisePT2E(ExternKernelAlloc):
             x_zp,
             o_inv_scale,
             o_zp,
-            fp32_output,
+            output_dtype,
             unary_attr,
             unary_scalars,
             unary_algorithm,
@@ -5061,7 +5061,7 @@ class QConvPointWisePT2E(ExternKernelAlloc):
             + f", {groups}"
             + f", {o_inv_scale}"
             + f", {o_zp}"
-            + f", {fp32_output}"
+            + f", {output_dtype}"
             + f", {unary_attr}"
             + f", {unary_scalars}"
             + f", {unary_algorithm}"
@@ -5179,7 +5179,7 @@ class QConvPointWiseBinaryPT2E(ExternKernelAlloc):
             accum_zp,
             o_inv_scale,
             o_zp,
-            fp32_output,
+            output_dtype,
             binary_attr,
             alpha,
             unary_attr,
@@ -5204,7 +5204,7 @@ class QConvPointWiseBinaryPT2E(ExternKernelAlloc):
             + f", {groups}"
             + f", {o_inv_scale}"
             + f", {o_zp}"
-            + f", {fp32_output}"
+            + f", {output_dtype}"
             + f", {binary_attr}"
             + f", {alpha}"
             + f", {unary_attr}"

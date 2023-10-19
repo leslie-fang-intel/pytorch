@@ -6448,11 +6448,12 @@ class TestQuantizedConv(TestCase):
         X2_zero_point=0,
         fp32_output=False,
         weight_in_channel_last_format=False,
+        bfloat16_output=False,
     ):
         # ONEDNN only supports symmetric quantization of weight
         if W_zero_point is not None:
             W_zero_point = len(W_zero_point) * [0]
-        if fp32_output:
+        if fp32_output or bfloat16_output:
             Y_scale = 1.0
             Y_zero_point = 0
         batch_size = 3
@@ -6578,6 +6579,11 @@ class TestQuantizedConv(TestCase):
                 post_op.algorithm,
             )
         else:
+            set_output_dtype = None
+            if fp32_output:
+                set_output_dtype = torch.float32
+            elif bfloat16_output:
+                set_output_dtype = torch.bfloat16
             Y_q_cpu_tensor = qconv(
                 X_q_cpu_tensor,
                 X_scale,
@@ -6592,7 +6598,7 @@ class TestQuantizedConv(TestCase):
                 groups,
                 1.0 / Y_scale,  # Kernel expects pass in reciprocal of scale in fake quant
                 Y_zero_point,
-                fp32_output,
+                set_output_dtype,
                 post_op.unary_attr,
                 post_op.scalars,
                 post_op.algorithm,
@@ -6602,6 +6608,11 @@ class TestQuantizedConv(TestCase):
                 Y_q_cpu_tensor = torch.quantize_per_tensor(
                     Y_q_cpu_tensor, scale=Y_scale, zero_point=Y_zero_point, dtype=output_dtype
                 ).int_repr()
+            if bfloat16_output:
+                self.assertTrue(Y_q_cpu_tensor.dtype == torch.bfloat16)
+                Y_q_cpu_tensor = torch.quantize_per_tensor(
+                    Y_q_cpu_tensor.to(torch.float32), scale=Y_scale, zero_point=Y_zero_point, dtype=output_dtype
+                ).int_repr()                
 
         # Make sure the results match
         # assert_array_almost_equal compares using the following formula:
@@ -6739,6 +6750,74 @@ class TestQuantizedConv(TestCase):
                 fp32_output=fp32_output,
                 weight_in_channel_last_format=channel_last_weight_format,
             )
+
+    @skipIfNoONEDNN
+    def test_qconv2d_bfloat16_output_pt2e(self):
+        groups_list = [1, 3]
+        input_channels_per_group = 2
+        output_channels_per_group = 2
+        input_feature_map_shape = (10, 10)
+        kernels = (3, 3)
+        strides = (2, 2)
+        pads = (1, 1)
+        dilations = (1, 1)
+        W_scale = [1.5]
+        W_zero_point = [0]
+        use_bias_list = [False, True]
+        use_channelwise_list = [False, True]
+        channel_last_weight_format_list = [False, True]
+        bfloat16_output_list = [False, True]
+        options = itertools.product(
+            groups_list,
+            use_bias_list,
+            use_channelwise_list,
+            channel_last_weight_format_list,
+            bfloat16_output_list,
+        )
+        # for groups, use_bias, use_channelwise, channel_last_weight_format, bfloat16_output in options:
+        # if (bfloat16_output or channel_last_weight_format) and not (use_bias and use_channelwise):
+        #     # Remove some test combination to reduce UT test time
+        #     continue
+
+        groups = 1
+        use_bias = False
+        use_channelwise = True
+        channel_last_weight_format = True
+        bfloat16_output = True
+        
+        qconv = torch.ops.onednn.qconv2d_pointwise
+        qconv_prepack = torch.ops.onednn.qconv_prepack
+        conv_op = torch.nn.Conv2d(
+            input_channels_per_group * groups,
+            output_channels_per_group * groups,
+            kernels,
+            strides,
+            pads,
+            dilations,
+            groups,
+        )
+        pointwise_post_op = PointwisePostOp()
+        self._test_qconv_impl_cpu_tensor(
+            qconv,
+            qconv_prepack,
+            conv_op,
+            input_channels_per_group=input_channels_per_group,
+            input_feature_map_shape=input_feature_map_shape,
+            output_channels_per_group=output_channels_per_group,
+            groups=groups,
+            kernels=kernels,
+            strides=strides,
+            pads=pads,
+            dilations=dilations,
+            W_scale=W_scale,
+            W_zero_point=W_zero_point,
+            use_bias=use_bias,
+            post_op=pointwise_post_op,
+            use_channelwise=use_channelwise,
+            fp32_output=False,
+            weight_in_channel_last_format=channel_last_weight_format,
+            bfloat16_output=bfloat16_output,
+        )
 
     @skipIfNoONEDNN
     def test_qconv3d_pt2e(self):

@@ -69,7 +69,7 @@ dequantize_qconv_pt2e_pattern = CallFunction(
     KeywordArg("groups"),
     KeywordArg("inv_output_scale"),  # inv_output_scale = 1.0
     KeywordArg("output_zero_point"),  # output_zero_point = 0
-    KeywordArg("fp32_output"),  # fp32_output = True
+    KeywordArg("output_dtype"),  # output_dtype = None
     KeywordArg("attr"),  # attr = "none"
     Arg(),  # scalars
     Arg(),  # algorithm
@@ -164,7 +164,7 @@ def _register_quantized_conv_lowering(
     pattern,
     pass_number,
     computation_op,
-    fp32_output,
+    output_dtype,
     unary_attr,
 ):
     @register_lowering_pattern(pattern, pass_number=pass_number)
@@ -195,7 +195,7 @@ def _register_quantized_conv_lowering(
             kwargs["o_zp"],
         )
         assert (
-            kwargs["fp32_output"] is True
+            kwargs["output_dtype"] is torch.float32
         )  # Expected int8-in fp32-out qconv in weight prepack phase
         assert (
             kwargs["attr"] == "none"
@@ -214,7 +214,7 @@ def _register_quantized_conv_lowering(
             groups,
             o_inv_scale,
             o_zero_point,
-            fp32_output,
+            output_dtype,
             unary_attr.op_name,
             unary_attr.scalars_attr,
             unary_attr.algorithm_attr,
@@ -366,7 +366,7 @@ def _register_quantization_unary_fusion():
             patterns,
             1 if unary_attr.op_name != "none" else 2,  # pass_number
             torch.ops.onednn.qconv2d_pointwise,  # computation_op
-            False,  # fp32_output
+            None,  # output_dtype
             unary_attr,  # unary_attr
         )
 
@@ -813,7 +813,7 @@ def _register_qconv_weight_prepack_pass(pattern, pass_number):
                 groups,
                 1.0,  # inv_output_scale
                 0,  # output_zero_point
-                True,  # fp32_output
+                torch.float32,  # output_dtype
                 "none",  # attr
                 [],  # scalars
                 "",  # algorithm

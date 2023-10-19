@@ -897,6 +897,8 @@ def fw_compiler_freezing(
         fake_tensor_prop(aot_autograd_model, aot_example_inputs, True)
         convert_conv_weights_to_channels_last(aot_autograd_model)
 
+    print("aot_autograd_model before freeze is: {}".format(aot_autograd_model), flush=True)
+
     opt_model, preserved_arg_indices = freeze(
         dynamo_model,
         aot_autograd_model,
