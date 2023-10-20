@@ -403,7 +403,7 @@ class X86InductorQuantizer(Quantizer):
     ):
         # self._annotate_conv2d_binary_unary(model, config)
         # self._annotate_conv2d_binary(model, config)
-        # self._annotate_conv2d_unary(model, config)
+        self._annotate_conv2d_unary(model, config)
         self._annotate_conv2d(model, config)
         # self._annotate_linear_unary(model, config)
         self._annotate_linear(model, config)
@@ -515,7 +515,7 @@ class X86InductorQuantizer(Quantizer):
             self._annotate_conv_node_helper(conv_node, False, quantization_config)
             unary_node.meta[QUANT_ANNOTATION_KEY] = _X86InductorQuantizationAnnotation(
                 # TODO<leslie> Remove the annotate of output when oneDNN qconv support fp32 out.
-                output_qspec=get_output_act_qspec(quantization_config),  # type: ignore[arg-type]
+                # output_qspec=get_output_act_qspec(quantization_config),  # type: ignore[arg-type]
                 _annotated=True,
                 _is_output_of_quantized_pattern=True,
             )

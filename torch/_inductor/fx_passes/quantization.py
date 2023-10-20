@@ -424,6 +424,24 @@ def _register_quantization_unary_fusion():
             self.scalars_attr = scalars_attr if scalars_attr else []
             self.algorithm_attr = algorithm_attr if algorithm_attr else ""
 
+    # # TODO Conv-ReLU Fusion FP32-output
+    # conv_unary_fp32_output_replace_patterns = {
+    #     # int-miexed-bf16
+    #     UnaryAttr("relu", [], ""): generate_pattern_with_unary(
+    #             dequantize_qconv_pt2e_pattern, aten.relu.default
+    #         ),
+    # }
+    # for unary_attr, patterns in conv_unary_fp32_output_replace_patterns.items():
+    #     # Register qconv2d pattern for ExternKernel Lowering
+    #     _register_quantized_conv_lowering(
+    #         patterns,
+    #         1 if unary_attr.op_name != "none" else 2,  # pass_number
+    #         torch.ops.onednn.qconv2d_pointwise,  # computation_op
+    #         None,  # output_dtype
+    #         unary_attr,  # unary_attr
+    #         original_pattern_output_dtype=torch.bfloat16,
+    #     )
+
     conv_unary_replace_patterns = {
         UnaryAttr("none", [], ""): generate_pattern_with_output_quant(
             dequantize_qconv_pt2e_pattern
@@ -445,15 +463,44 @@ def _register_quantization_unary_fusion():
             unary_attr,  # unary_attr
         )
 
+
+    # # Conv-ReLU Fusion BF16-output
+    # conv_unary_int8_mixed_bf16_bf16_output_replace_patterns = {
+    #     # int-miexed-bf16
+    #     UnaryAttr("relu", [], ""): generate_pattern_with_output_quant(
+    #         generate_pattern_with_unary(
+    #             dequantize_qconv_pt2e_pattern, aten.relu.default
+    #         ),
+    #         dtype=torch.bfloat16
+    #     ),
+    # }
+    # for unary_attr, patterns in conv_unary_int8_mixed_bf16_bf16_output_replace_patterns.items():
+    #     # Register qconv2d pattern for ExternKernel Lowering
+    #     _register_quantized_conv_lowering(
+    #         patterns,
+    #         1 if unary_attr.op_name != "none" else 2,  # pass_number
+    #         torch.ops.onednn.qconv2d_pointwise,  # computation_op
+    #         None,  # output_dtype
+    #         unary_attr,  # unary_attr
+    #         original_pattern_output_dtype=torch.bfloat16,
+    #     )
+
+    # Conv-ReLU Fusion int8-output
     # int-mixed-bf16
-    conv_unary_int8_mixed_bf16_replace_patterns = {
+    conv_unary_int8_mixed_bf16_int8_output_replace_patterns = {
         # int-miexed-bf16
         UnaryAttr("none", [], ""): generate_pattern_with_output_quant(
             dequantize_qconv_pt2e_pattern,
             dtype=torch.bfloat16
         ),
+        UnaryAttr("relu", [], ""): generate_pattern_with_output_quant(
+            generate_pattern_with_unary(
+                dequantize_qconv_pt2e_pattern, aten.relu.default
+            ),
+            dtype=torch.bfloat16
+        ),
     }
-    for unary_attr, patterns in conv_unary_int8_mixed_bf16_replace_patterns.items():
+    for unary_attr, patterns in conv_unary_int8_mixed_bf16_int8_output_replace_patterns.items():
         # Register qconv2d pattern for ExternKernel Lowering
         _register_quantized_conv_lowering(
             patterns,
