@@ -167,7 +167,7 @@ def generate_pattern_with_unary(computation_call, unary_post_op):
     return computation_call
 
 
-def generate_pattern_with_output_quant(computation_call):
+def generate_pattern_with_output_quant(computation_call, dtype=torch.float32):
     """
     quantize output:
         output = round(output * o_inv_scale)
@@ -176,30 +176,61 @@ def generate_pattern_with_output_quant(computation_call):
         output = clamp_max(output, 127)
         output = output.to(uint8)
     """
-    quantized_op_output_pattern_pt2e = CallFunction(
-        prims.convert_element_type.default,
-        CallFunction(
-            aten.clamp_max.default,
+    assert dtype in [torch.float32, torch.bfloat16]
+    if dtype == torch.float32:
+        quantized_op_output_pattern_pt2e = CallFunction(
+            prims.convert_element_type.default,
             CallFunction(
-                aten.clamp_min.default,
+                aten.clamp_max.default,
                 CallFunction(
-                    aten.add.Tensor,
+                    aten.clamp_min.default,
                     CallFunction(
-                        aten.round.default,
+                        aten.add.Tensor,
                         CallFunction(
-                            aten.mul.Tensor,
-                            computation_call,
-                            KeywordArg("o_inv_scale"),
+                            aten.round.default,
+                            CallFunction(
+                                aten.mul.Tensor,
+                                computation_call,
+                                KeywordArg("o_inv_scale"),
+                            ),
                         ),
+                        KeywordArg("o_zp"),
                     ),
-                    KeywordArg("o_zp"),
+                    KeywordArg("o_qmin"),
                 ),
-                KeywordArg("o_qmin"),
+                KeywordArg("o_qmax"),
             ),
-            KeywordArg("o_qmax"),
-        ),
-        KeywordArg("o_dtype"),
-    )
+            KeywordArg("o_dtype"),
+        )
+    elif dtype == torch.bfloat16:
+        quantized_op_output_pattern_pt2e = CallFunction(
+            prims.convert_element_type.default,
+            CallFunction(
+                aten.clamp_max.default,
+                CallFunction(
+                    aten.clamp_min.default,
+                    CallFunction(
+                        aten.add.Tensor,
+                        CallFunction(
+                            aten.round.default,
+                            CallFunction(
+                                aten.mul.Tensor,
+                                CallFunction(
+                                    prims.convert_element_type.default,
+                                    computation_call,
+                                    KeywordArg("output_convert_bf16_to_fp32_dtype"),
+                                ),
+                                KeywordArg("o_inv_scale"),
+                            ),
+                        ),
+                        KeywordArg("o_zp"),
+                    ),
+                    KeywordArg("o_qmin"),
+                ),
+                KeywordArg("o_qmax"),
+            ),
+            KeywordArg("o_dtype"),
+        )       
     return quantized_op_output_pattern_pt2e
 
 
@@ -209,6 +240,7 @@ def _register_quantized_conv_lowering(
     computation_op,
     output_dtype,
     unary_attr,
+    original_pattern_output_dtype=torch.float32,
 ):
     @register_lowering_pattern(pattern, pass_number=pass_number)
     def qconv(match: Match, *args, **kwargs):
@@ -238,7 +270,7 @@ def _register_quantized_conv_lowering(
             kwargs["o_zp"],
         )
         assert (
-            kwargs["output_dtype"] is torch.float32
+            kwargs["output_dtype"] is original_pattern_output_dtype
         )  # Expected int8-in fp32-out qconv in weight prepack phase
         assert (
             kwargs["attr"] == "none"
@@ -411,6 +443,25 @@ def _register_quantization_unary_fusion():
             torch.ops.onednn.qconv2d_pointwise,  # computation_op
             None,  # output_dtype
             unary_attr,  # unary_attr
+        )
+
+    # int-mixed-bf16
+    conv_unary_int8_mixed_bf16_replace_patterns = {
+        # int-miexed-bf16
+        UnaryAttr("none", [], ""): generate_pattern_with_output_quant(
+            dequantize_qconv_pt2e_pattern,
+            dtype=torch.bfloat16
+        ),
+    }
+    for unary_attr, patterns in conv_unary_int8_mixed_bf16_replace_patterns.items():
+        # Register qconv2d pattern for ExternKernel Lowering
+        _register_quantized_conv_lowering(
+            patterns,
+            1 if unary_attr.op_name != "none" else 2,  # pass_number
+            torch.ops.onednn.qconv2d_pointwise,  # computation_op
+            None,  # output_dtype
+            unary_attr,  # unary_attr
+            original_pattern_output_dtype=torch.bfloat16,
         )
 
     linear_unary_replace_patterns = {
@@ -656,7 +707,7 @@ def _register_quantization_cat():
 
 
 def _register_quantization_lowerings():
-    # _register_quantization_unary_fusion()
+    _register_quantization_unary_fusion()
     # _register_quantization_binary_fusion()
     _register_quantization_maxpool2d()
     _register_quantization_cat()
