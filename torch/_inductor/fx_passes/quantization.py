@@ -234,6 +234,30 @@ def generate_pattern_with_output_quant(computation_call, dtype=torch.float32):
     return quantized_op_output_pattern_pt2e
 
 
+def _is_valid_quantized_conv2d_optimization_pattern(output_dtype, original_pattern_output_dtype):
+    def fn(match):
+        if output_dtype is not None:
+            if output_dtype != original_pattern_output_dtype:
+                return False
+            
+            qconv_node_after_weight_prepack = filter_nodes(match.nodes, torch.ops.onednn.qconv2d_pointwise)[0]
+            
+            if "output_dtype" in qconv_node_after_weight_prepack.kwargs:
+                qconv_node_after_weight_prepack_output_dtype = qconv_node_after_weight_prepack.kwargs["output_dtype"]
+                assert qconv_node_after_weight_prepack_output_dtype in [torch.float32, torch.bfloat16]
+                if qconv_node_after_weight_prepack_output_dtype != output_dtype:
+                    return False
+            else:
+                assert len(qconv_node_after_weight_prepack.args) >= 14
+                qconv_node_after_weight_prepack_output_dtype = qconv_node_after_weight_prepack.args[13]
+                assert qconv_node_after_weight_prepack_output_dtype in [torch.float32, torch.bfloat16]
+                if qconv_node_after_weight_prepack_output_dtype != output_dtype:
+                    return False
+
+        return True
+
+    return fn
+
 def _register_quantized_conv_lowering(
     pattern,
     pass_number,
@@ -242,7 +266,11 @@ def _register_quantized_conv_lowering(
     unary_attr,
     original_pattern_output_dtype=torch.float32,
 ):
-    @register_lowering_pattern(pattern, pass_number=pass_number)
+    @register_lowering_pattern(
+        pattern,
+        extra_check=_is_valid_quantized_conv2d_optimization_pattern(output_dtype, original_pattern_output_dtype),
+        pass_number=pass_number,
+    )
     def qconv(match: Match, *args, **kwargs):
         # Activation QParams
         x, x_scale, x_zp = (
@@ -265,10 +293,15 @@ def _register_quantized_conv_lowering(
             kwargs["groups"],
         )
         # Output QParams
-        o_inv_scale, o_zero_point = (
-            kwargs["o_inv_scale"],
-            kwargs["o_zp"],
-        )
+        o_inv_scale = 1.0
+        o_zero_point = 0
+        if output_dtype == None: 
+            # int8_output
+            o_inv_scale, o_zero_point = (
+                kwargs["o_inv_scale"],
+                kwargs["o_zp"],
+            )
+
         assert (
             kwargs["output_dtype"] is original_pattern_output_dtype
         )  # Expected int8-in fp32-out qconv in weight prepack phase
@@ -424,23 +457,23 @@ def _register_quantization_unary_fusion():
             self.scalars_attr = scalars_attr if scalars_attr else []
             self.algorithm_attr = algorithm_attr if algorithm_attr else ""
 
-    # # TODO Conv-ReLU Fusion FP32-output
-    # conv_unary_fp32_output_replace_patterns = {
-    #     # int-miexed-bf16
-    #     UnaryAttr("relu", [], ""): generate_pattern_with_unary(
-    #             dequantize_qconv_pt2e_pattern, aten.relu.default
-    #         ),
-    # }
-    # for unary_attr, patterns in conv_unary_fp32_output_replace_patterns.items():
-    #     # Register qconv2d pattern for ExternKernel Lowering
-    #     _register_quantized_conv_lowering(
-    #         patterns,
-    #         1 if unary_attr.op_name != "none" else 2,  # pass_number
-    #         torch.ops.onednn.qconv2d_pointwise,  # computation_op
-    #         None,  # output_dtype
-    #         unary_attr,  # unary_attr
-    #         original_pattern_output_dtype=torch.bfloat16,
-    #     )
+    # TODO Conv post op ReLU Fusion FP32-output
+    conv_unary_fp32_output_replace_patterns = {
+        # Conv post op ReLU Fusion FP32-output
+        UnaryAttr("relu", [], ""): generate_pattern_with_unary(
+                dequantize_qconv_pt2e_pattern, aten.relu.default
+            ),
+    }
+    for unary_attr, patterns in conv_unary_fp32_output_replace_patterns.items():
+        # Register qconv2d pattern for ExternKernel Lowering
+        _register_quantized_conv_lowering(
+            patterns,
+            1 if unary_attr.op_name != "none" else 2,  # pass_number
+            torch.ops.onednn.qconv2d_pointwise,  # computation_op
+            torch.float32,  # output_dtype
+            unary_attr,  # unary_attr
+            original_pattern_output_dtype=torch.float32,
+        )
 
     conv_unary_replace_patterns = {
         UnaryAttr("none", [], ""): generate_pattern_with_output_quant(
@@ -463,27 +496,23 @@ def _register_quantization_unary_fusion():
             unary_attr,  # unary_attr
         )
 
-
-    # # Conv-ReLU Fusion BF16-output
-    # conv_unary_int8_mixed_bf16_bf16_output_replace_patterns = {
-    #     # int-miexed-bf16
-    #     UnaryAttr("relu", [], ""): generate_pattern_with_output_quant(
-    #         generate_pattern_with_unary(
-    #             dequantize_qconv_pt2e_pattern, aten.relu.default
-    #         ),
-    #         dtype=torch.bfloat16
-    #     ),
-    # }
-    # for unary_attr, patterns in conv_unary_int8_mixed_bf16_bf16_output_replace_patterns.items():
-    #     # Register qconv2d pattern for ExternKernel Lowering
-    #     _register_quantized_conv_lowering(
-    #         patterns,
-    #         1 if unary_attr.op_name != "none" else 2,  # pass_number
-    #         torch.ops.onednn.qconv2d_pointwise,  # computation_op
-    #         None,  # output_dtype
-    #         unary_attr,  # unary_attr
-    #         original_pattern_output_dtype=torch.bfloat16,
-    #     )
+    # Conv post op ReLU Fusion BF16-output
+    conv_unary_int8_mixed_bf16_bf16_output_replace_patterns = {
+        # Conv post op ReLU Fusion BF16-output
+        UnaryAttr("relu", [], ""): generate_pattern_with_unary(
+                dequantize_qconv_pt2e_pattern, aten.relu.default
+            ),
+    }
+    for unary_attr, patterns in conv_unary_int8_mixed_bf16_bf16_output_replace_patterns.items():
+        # Register qconv2d pattern for ExternKernel Lowering
+        _register_quantized_conv_lowering(
+            patterns,
+            1 if unary_attr.op_name != "none" else 2,  # pass_number
+            torch.ops.onednn.qconv2d_pointwise,  # computation_op
+            torch.bfloat16,  # output_dtype
+            unary_attr,  # unary_attr
+            original_pattern_output_dtype=torch.bfloat16,
+        )
 
     # Conv-ReLU Fusion int8-output
     # int-mixed-bf16
