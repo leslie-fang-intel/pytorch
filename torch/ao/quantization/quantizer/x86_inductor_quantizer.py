@@ -35,12 +35,41 @@ from torch.fx.passes.utils.source_matcher_utils import (
     get_source_partitions,
     SourcePartition,
 )
+from torch.fx.passes.utils.matcher_with_name_node_map_utils import SubgraphMatcherWithNameNodeMap
+from torch._export import capture_pre_autograd_graph
 
 __all__ = [
     "X86InductorQuantizer",
     "get_default_x86_inductor_quantization_config",
 ]
 
+_quantized_add_pattern_example_inputs = (
+    torch.randn(1, 1, 3, 3),  # input1
+    torch.randn(1, 1, 1, 1),  # weight1
+    torch.randn(1),           # bias1
+    torch.randn(1, 1, 3, 3),  # input2
+    torch.randn(1, 1, 1, 1),  # weight2
+    torch.randn(1),           # bias2
+)
+
+def conv_add_pattern(input1, weight1, bias1, input2, weight2, bias2):
+    conv1 = torch.nn.functional.conv2d(input1, weight1, bias1)
+    conv2 = torch.nn.functional.conv2d(input2, weight2, bias2)
+    output = conv1 + conv2
+    return output, {"input1": input1, "weight1": weight1, "bias1": bias1, "input2": input2, "weight2": weight2, "bias2": bias2, "output": output}
+    # returns an additional dict that includes a map from name to node that we want to annotate
+    # return {"input1": input1, "weight1": weight1, "bias1": bias1, "input2": input2, "weight2": weight2, "bias2": bias2, "output": output}
+
+_quantized_relu_pattern_example_inputs = (
+    torch.randn(1, 1, 3, 3),  # input1
+    torch.randn(1, 1, 1, 1),  # weight1
+    torch.randn(1),           # bias1
+)
+
+def conv_relu_pattern(input1, weight1, bias1):
+    conv1 = torch.nn.functional.conv2d(input1, weight1, bias1)
+    relu = torch.nn.functional.relu(conv1)
+    return relu, {"conv": conv1, "relu": relu}
 
 @dataclass
 class _X86InductorQuantizationAnnotation(QuantizationAnnotation):
@@ -214,6 +243,7 @@ class X86InductorQuantizer(Quantizer):
         super().__init__()
         self.global_config: QuantizationConfig = None  # type: ignore[assignment]
         self.operator_type_config: Dict[str, Optional[QuantizationConfig]] = {}
+        self.conv_add_pattern_gm = capture_pre_autograd_graph(conv_relu_pattern, _quantized_relu_pattern_example_inputs)
 
     @classmethod
     def get_supported_quantization_configs(cls) -> List[QuantizationConfig]:
@@ -401,7 +431,7 @@ class X86InductorQuantizer(Quantizer):
     def _annotate_conv2d_fusion_pattern(
         self, model: torch.fx.GraphModule, config: QuantizationConfig
     ):
-        self._annotate_conv2d_binary_unary(model, config)
+        # self._annotate_conv2d_binary_unary(model, config)
         self._annotate_conv2d_binary(model, config)
         self._annotate_conv2d_unary(model, config)
         self._annotate_conv2d(model, config)
@@ -455,6 +485,11 @@ class X86InductorQuantizer(Quantizer):
     def _annotate_conv2d_binary(
         self, gm: torch.fx.GraphModule, quantization_config: QuantizationConfig
     ) -> None:
+        # matcher = SubgraphMatcherWithNameNodeMap(conv_add_pattern_gm)
+        # matches = matcher.match(gm)
+        # print("__len__(matches) is: {}".format(len(matches)), flush=True)
+        # return
+
         # Conv2d + add
         fused_partitions = find_sequential_partitions(
             gm, [torch.nn.Conv2d, operator.add]
