@@ -35,6 +35,7 @@ from torch.fx.passes.utils.source_matcher_utils import (
     get_source_partitions,
     SourcePartition,
 )
+from ..pt2e.utils import get_aten_graph_module
 
 __all__ = [
     "X86InductorQuantizer",
@@ -71,22 +72,136 @@ int8_in_int8_out_ops_pt2e: Set = {
 from torch.fx.passes.utils.matcher_with_name_node_map_utils import SubgraphMatcherWithNameNodeMap
 from torch._export import capture_pre_autograd_graph
 
+
+_quantized_conv_relu_stride_padding_pattern_example_inputs = (
+    torch.randn(1, 1, 3, 3),  # input1
+    torch.randn(1, 1, 1, 1),  # weight1
+    torch.randn(1),           # bias1
+)
+
+def conv_relu_stride_padding_pattern(input, weight, bias):
+    conv = torch.nn.functional.conv2d(input, weight, bias, (1, 1), (1, 1))
+    output = torch.nn.functional.relu(conv)
+    return output, {
+        "input": input,
+        "weight": weight,
+        "bias": bias,
+        "output": output
+    }
+
+_quantized_conv_relu_with_bias_pattern_example_inputs = (
+    torch.randn(1, 1, 3, 3),  # input1
+    torch.randn(1, 1, 1, 1),  # weight1
+    torch.randn(1),           # bias1
+)
+
+def conv_relu_with_bias_pattern(input, weight, bias):
+    conv = torch.nn.functional.conv2d(input, weight, bias)
+    output = torch.nn.functional.relu(conv)
+    return output, {
+        "input": input,
+        "weight": weight,
+        "bias": bias,
+        "output": output
+    }
+
+def conv_inplace_relu_with_bias_pattern(input, weight, bias):
+    conv = torch.nn.functional.conv2d(input, weight, bias)
+    output = torch.nn.functional.relu(conv, inplace=True)
+    return output, {
+        "input": input,
+        "weight": weight,
+        "bias": bias,
+        "output": output
+    }
+
 _quantized_add_pattern_example_inputs = (
     torch.randn(1, 1, 3, 3),  # input1
     torch.randn(1, 1, 1, 1),  # weight1
     torch.randn(1),           # bias1
-    torch.randn(1, 1, 3, 3),  # input2
-    torch.randn(1, 1, 1, 1),  # weight2
-    torch.randn(1),           # bias2
+    torch.randn(1, 1, 3, 3),  # extra_input
 )
 
-def conv_add_pattern(input1, weight1, bias1, input2, weight2, bias2):
-    conv1 = torch.nn.functional.conv2d(input1, weight1, bias1)
-    conv2 = torch.nn.functional.conv2d(input2, weight2, bias2)
-    output = conv1 + conv2
-    return output, {"input1": input1, "weight1": weight1, "bias1": bias1, "input2": input2, "weight2": weight2, "bias2": bias2, "output": output}
+def conv_add_pattern(input, weight, bias, extra_input):
+    conv = torch.nn.functional.conv2d(input, weight, bias)
+    # conv2 = torch.nn.functional.conv2d(input2, weight2, bias2)
+    output = conv + extra_input
+    return output, {
+        "input": input,
+        "weight": weight,
+        "bias": bias,
+        "extra_input": extra_input,
+        "output": output
+    }
 
-conv_add_pattern_gm = capture_pre_autograd_graph(conv_add_pattern, _quantized_add_pattern_example_inputs)
+def conv_inplace_add_pattern(input, weight, bias, extra_input):
+    conv = torch.nn.functional.conv2d(input, weight, bias)
+    # conv2 = torch.nn.functional.conv2d(input2, weight2, bias2)
+    conv += extra_input
+    return conv, {
+        "input": input,
+        "weight": weight,
+        "bias": bias,
+        "extra_input": extra_input,
+        "output": conv
+    }
+
+def conv_add_relu_pattern(input, weight, bias, extra_input):
+    conv = torch.nn.functional.conv2d(input, weight, bias)
+    # conv2 = torch.nn.functional.conv2d(input2, weight2, bias2)
+    add = conv + extra_input
+    output = torch.nn.functional.relu(add)
+    return output, {
+        "input": input,
+        "weight": weight,
+        "bias": bias,
+        "extra_input": extra_input,
+        "add": add,
+        "output": output
+    }
+
+def conv_inplace_add_relu_pattern(input, weight, bias, extra_input):
+    conv = torch.nn.functional.conv2d(input, weight, bias)
+    # conv2 = torch.nn.functional.conv2d(input2, weight2, bias2)
+    conv += extra_input
+    output = torch.nn.functional.relu(conv)
+    return output, {
+        "input": input,
+        "weight": weight,
+        "bias": bias,
+        "extra_input": extra_input,
+        "add": conv,
+        "output": output
+    }
+
+def conv_add_inplace_relu_pattern(input, weight, bias, extra_input):
+    conv = torch.nn.functional.conv2d(input, weight, bias)
+    # conv2 = torch.nn.functional.conv2d(input2, weight2, bias2)
+    add = conv + extra_input
+    output = torch.nn.functional.relu(add, inplace=True)
+    return output, {
+        "input": input,
+        "weight": weight,
+        "bias": bias,
+        "extra_input": extra_input,
+        "add": add,
+        "output": output
+    }
+
+def conv_inplace_add_inplace_relu_pattern(input, weight, bias, extra_input):
+    conv = torch.nn.functional.conv2d(input, weight, bias)
+    # conv2 = torch.nn.functional.conv2d(input2, weight2, bias2)
+    conv += extra_input
+    output = torch.nn.functional.relu(conv, inplace=True)
+    return output, {
+        "input": input,
+        "weight": weight,
+        "bias": bias,
+        "extra_input": extra_input,
+        "add": conv,
+        "output": output
+    }
+
 
 QUANT_ANNOTATION_KEY = "quantization_annotation"
 
@@ -233,6 +348,56 @@ class X86InductorQuantizer(Quantizer):
         super().__init__()
         self.global_config: QuantizationConfig = None  # type: ignore[assignment]
         self.operator_type_config: Dict[str, Optional[QuantizationConfig]] = {}
+
+        # Conv ReLU
+        self.conv_relu_with_bias_pattern = get_aten_graph_module(
+            conv_relu_with_bias_pattern,
+            _quantized_conv_relu_with_bias_pattern_example_inputs,
+            False,
+        )
+        self.conv_inplace_relu_with_bias_pattern = get_aten_graph_module(
+            conv_inplace_relu_with_bias_pattern,
+            _quantized_conv_relu_with_bias_pattern_example_inputs,
+            False,
+        )
+        self.conv_inplace_relu_stride_padding_pattern = get_aten_graph_module(
+            conv_relu_stride_padding_pattern,
+            _quantized_conv_relu_stride_padding_pattern_example_inputs,
+            False,
+        )
+        # Conv Add
+        self.conv_add_pattern = get_aten_graph_module(
+            conv_add_pattern,
+            _quantized_add_pattern_example_inputs,
+            False,
+        )
+        self.conv_inplace_add_pattern = get_aten_graph_module(
+            conv_inplace_add_pattern,
+            _quantized_add_pattern_example_inputs,
+            False,
+        )
+
+        # Conv Add ReLU
+        self.conv_add_relu_pattern = get_aten_graph_module(
+            conv_add_relu_pattern,
+            _quantized_add_pattern_example_inputs,
+            False,
+        )
+        self.conv_inplace_add_relu_pattern = get_aten_graph_module(
+            conv_inplace_add_relu_pattern,
+            _quantized_add_pattern_example_inputs,
+            False,
+        )
+        self.conv_add_inplace_relu_pattern = get_aten_graph_module(
+            conv_add_inplace_relu_pattern,
+            _quantized_add_pattern_example_inputs,
+            False,
+        )
+        self.conv_inplace_add_inplace_relu_pattern = get_aten_graph_module(
+            conv_inplace_add_inplace_relu_pattern,
+            _quantized_add_pattern_example_inputs,
+            False,
+        )
 
     @classmethod
     def get_supported_quantization_configs(cls) -> List[QuantizationConfig]:
@@ -431,113 +596,211 @@ class X86InductorQuantizer(Quantizer):
         self, gm: torch.fx.GraphModule, quantization_config: QuantizationConfig
     ) -> None:
         # Conv2d + add + unary op
-        fused_partitions = find_sequential_partitions(
-            gm, [torch.nn.Conv2d, operator.add, torch.nn.ReLU]
-        )
-        for fused_partition in fused_partitions:
-            conv_partition, binary_partition, unary_partition = fused_partition
-            conv_node, binary_node, unary_node = self._get_output_nodes_of_partitions(
-                [conv_partition, binary_partition, unary_partition]
-            )
-            conv_node_idx, extra_input_node_idx = self._get_input_idx_for_binary_node(
-                conv_node, binary_node
-            )
-            if (conv_node_idx is None) or (extra_input_node_idx is None):
-                continue
-            if conv_node != binary_node.args[conv_node_idx]:
-                raise ValueError(f"{conv_node} doesn't match input of binary node")
-            extra_input_node = binary_node.args[extra_input_node_idx]
-            if (
-                conv_node.op != "call_function"
-                or conv_node.target != torch.ops.aten.conv2d.default
-            ):
-                # No conv node found to be fused with add
-                continue
-            if _is_annotated([unary_node, binary_node, conv_node]):
-                continue
-            self._annotate_conv_node_helper(conv_node, False, quantization_config)
-            binary_node_input_qspec_map = {}
-            binary_node_input_qspec_map[extra_input_node] = get_input_act_qspec(
-                quantization_config
-            )
-            binary_node.meta[QUANT_ANNOTATION_KEY] = _X86InductorQuantizationAnnotation(
-                input_qspec_map=binary_node_input_qspec_map,
-                _annotated=True,
-            )
-            unary_node.meta[QUANT_ANNOTATION_KEY] = _X86InductorQuantizationAnnotation(
-                # TODO<leslie> Remove the annotate of output when oneDNN qconv support fp32 out.
-                output_qspec=get_output_act_qspec(quantization_config),  # type: ignore[arg-type]
-                _annotated=True,
-                _is_output_of_quantized_pattern=True,
-            )
+        # print("inside annotate conv binary, gm.graph is: {}".format(gm.graph), flush=True)
+        matcher = SubgraphMatcherWithNameNodeMap(self.conv_add_relu_pattern)
+        matches = matcher.match(gm.graph)
+        # print(matches)
+        # print("__len__(matches) is: {}".format(len(matches)), flush=True)
+
+        matcher = SubgraphMatcherWithNameNodeMap(self.conv_inplace_add_relu_pattern)
+        matches2 = matcher.match(gm.graph)
+        # print(matches2)
+        # print("__len__(matches2) is: {}".format(len(matches2)), flush=True)
+
+        matcher = SubgraphMatcherWithNameNodeMap(self.conv_add_inplace_relu_pattern)
+        matches3 = matcher.match(gm.graph)
+        # print(matches3)
+        # print("__len__(matches3) is: {}".format(len(matches3)), flush=True)
+
+        matcher = SubgraphMatcherWithNameNodeMap(self.conv_inplace_add_inplace_relu_pattern)
+        matches4 = matcher.match(gm.graph)
+        # print(matches4)
+        # print("__len__(matches4) is: {}".format(len(matches4)), flush=True)
+        
+        for matches in [matches, matches2, matches3, matches4]:
+            for match in matches:
+                name_node_map = match.name_node_map
+                input_node = name_node_map["input"]
+                weight_node = name_node_map["weight"]
+                bias_node = name_node_map["bias"]
+                extra_input = name_node_map["extra_input"]
+                # binary_node = name_node_map["add"]
+                unary_node = name_node_map["output"]
+
+                binary_node = unary_node.args[0]
+
+                # print("input_node is: {}".format(input_node), flush=True)
+                # print("input_node.users is: {}".format(input_node.users), flush=True)
+                # print("weight_node is: {}".format(weight_node), flush=True)
+                # print("weight_node is: {}".format(weight_node.users), flush=True)
+                # print("bias_node is: {}".format(bias_node), flush=True)
+                # print("extra_input is: {}".format(extra_input), flush=True)
+                # print("binary_node is: {}".format(binary_node), flush=True)
+                # print("unary_node is: {}".format(unary_node), flush=True)
+
+                
+
+                assert len(weight_node.users) == 1
+                conv_node = list(weight_node.users)[0]
+
+
+                conv_node_idx, extra_input_node_idx = self._get_input_idx_for_binary_node(
+                    conv_node, binary_node
+                )
+                if (conv_node_idx is None) or (extra_input_node_idx is None):
+                    continue
+                if conv_node != binary_node.args[conv_node_idx]:
+                    raise ValueError(f"{conv_node} doesn't match input of binary node")
+                extra_input_node = binary_node.args[extra_input_node_idx]
+                if (
+                    conv_node.op != "call_function"
+                    or conv_node.target != torch.ops.aten.conv2d.default
+                ):
+                    # No conv node found to be fused with add
+                    continue
+                if _is_annotated([unary_node, binary_node, conv_node]):
+                    continue
+                self._annotate_conv_node_helper(conv_node, False, quantization_config)
+                binary_node_input_qspec_map = {}
+                binary_node_input_qspec_map[extra_input_node] = get_input_act_qspec(
+                    quantization_config
+                )
+                binary_node.meta[QUANT_ANNOTATION_KEY] = _X86InductorQuantizationAnnotation(
+                    input_qspec_map=binary_node_input_qspec_map,
+                    _annotated=True,
+                )
+                unary_node.meta[QUANT_ANNOTATION_KEY] = _X86InductorQuantizationAnnotation(
+                    # TODO<leslie> Remove the annotate of output when oneDNN qconv support fp32 out.
+                    output_qspec=get_output_act_qspec(quantization_config),  # type: ignore[arg-type]
+                    _annotated=True,
+                    _is_output_of_quantized_pattern=True,
+                )
 
     def _annotate_conv2d_binary(
         self, gm: torch.fx.GraphModule, quantization_config: QuantizationConfig
     ) -> None:
-        # Conv2d + add
-        fused_partitions = find_sequential_partitions(
-            gm, [torch.nn.Conv2d, operator.add]
-        )
-        for fused_partition in fused_partitions:
-            conv_partition, binary_partition = fused_partition
-            conv_node, binary_node = self._get_output_nodes_of_partitions(
-                [conv_partition, binary_partition]
-            )
-            conv_node_idx, extra_input_node_idx = self._get_input_idx_for_binary_node(
-                conv_node, binary_node
-            )
-            if (conv_node_idx is None) or (extra_input_node_idx is None):
-                continue
-            if conv_node != binary_node.args[conv_node_idx]:
-                raise ValueError(f"{conv_node} doesn't match input of binary node")
-            extra_input_node = binary_node.args[extra_input_node_idx]
-            assert isinstance(conv_node, Node)
-            if (
-                conv_node.op != "call_function"
-                or conv_node.target != torch.ops.aten.conv2d.default
-            ):
-                # No conv node found to be fused with add
-                continue
-            if _is_annotated([binary_node, conv_node]):
-                continue
-            self._annotate_conv_node_helper(conv_node, False, quantization_config)
-            binary_node_input_qspec_map = {}
-            binary_node_input_qspec_map[extra_input_node] = get_input_act_qspec(
-                quantization_config
-            )
-            binary_node.meta[QUANT_ANNOTATION_KEY] = _X86InductorQuantizationAnnotation(
-                input_qspec_map=binary_node_input_qspec_map,
-                # TODO<leslie> Remove the annotate of output when oneDNN qconv support fp32 out.
-                output_qspec=get_output_act_qspec(quantization_config),  # type: ignore[arg-type]
-                _annotated=True,
-                _is_output_of_quantized_pattern=True,
-            )
+        # print("inside annotate conv binary, gm.graph is: {}".format(gm.graph), flush=True)
+        matcher = SubgraphMatcherWithNameNodeMap(self.conv_add_pattern)
+        matches = matcher.match(gm.graph)
+        # print(matches)
+        # print("__len__(matches) is: {}".format(len(matches)), flush=True)
+
+        matcher = SubgraphMatcherWithNameNodeMap(self.conv_inplace_add_pattern)
+        matches2 = matcher.match(gm.graph)
+        # print(matches2)
+        # print("__len__(matches2) is: {}".format(len(matches2)), flush=True)\
+        
+        for matches in [matches, matches2]:
+            for match in matches:
+                name_node_map = match.name_node_map
+                input_node = name_node_map["input"]
+                weight_node = name_node_map["weight"]
+                bias_node = name_node_map["bias"]
+                extra_input = name_node_map["extra_input"]
+                binary_node = name_node_map["output"]
+
+                # print("input_node is: {}".format(input_node), flush=True)
+                # print("input_node.users is: {}".format(input_node.users), flush=True)
+                # print("weight_node is: {}".format(weight_node), flush=True)
+                # print("weight_node is: {}".format(weight_node.users), flush=True)
+                # print("bias_node is: {}".format(bias_node), flush=True)
+                # print("extra_input is: {}".format(extra_input), flush=True)
+                # print("binary_node is: {}".format(binary_node), flush=True)
+
+                assert len(weight_node.users) == 1
+                conv_node = list(weight_node.users)[0]
+
+                # conv_partition, binary_partition = fused_partition
+                # conv_node, binary_node = self._get_output_nodes_of_partitions(
+                #     [conv_partition, binary_partition]
+                # )
+                conv_node_idx, extra_input_node_idx = self._get_input_idx_for_binary_node(
+                    conv_node, binary_node
+                )
+                if (conv_node_idx is None) or (extra_input_node_idx is None):
+                    continue
+                if conv_node != binary_node.args[conv_node_idx]:
+                    raise ValueError(f"{conv_node} doesn't match input of binary node")
+                extra_input_node = binary_node.args[extra_input_node_idx]
+                assert isinstance(conv_node, Node)
+                if (
+                    conv_node.op != "call_function"
+                    or conv_node.target != torch.ops.aten.conv2d.default
+                ):
+                    # No conv node found to be fused with add
+                    continue
+                if _is_annotated([binary_node, conv_node]):
+                    continue
+                self._annotate_conv_node_helper(conv_node, False, quantization_config)
+                binary_node_input_qspec_map = {}
+                binary_node_input_qspec_map[extra_input_node] = get_input_act_qspec(
+                    quantization_config
+                )
+                binary_node.meta[QUANT_ANNOTATION_KEY] = _X86InductorQuantizationAnnotation(
+                    input_qspec_map=binary_node_input_qspec_map,
+                    # TODO<leslie> Remove the annotate of output when oneDNN qconv support fp32 out.
+                    output_qspec=get_output_act_qspec(quantization_config),  # type: ignore[arg-type]
+                    _annotated=True,
+                    _is_output_of_quantized_pattern=True,
+                )
 
     def _annotate_conv2d_unary(
         self, gm: torch.fx.GraphModule, quantization_config: QuantizationConfig
     ) -> None:
-        fused_partitions = find_sequential_partitions(
-            gm, [torch.nn.Conv2d, torch.nn.ReLU]
-        )
-        for fused_partition in fused_partitions:
-            conv_partition, unary_partition = fused_partition
-            conv_node, unary_node = self._get_output_nodes_of_partitions(
-                [conv_partition, unary_partition]
-            )
-            if (
-                conv_node.op != "call_function"
-                or conv_node.target != torch.ops.aten.conv2d.default
-            ):
-                continue
-            if _is_annotated([unary_node, conv_node]):
-                continue
-            self._annotate_conv_node_helper(conv_node, False, quantization_config)
-            unary_node.meta[QUANT_ANNOTATION_KEY] = _X86InductorQuantizationAnnotation(
-                # TODO<leslie> Remove the annotate of output when oneDNN qconv support fp32 out.
-                output_qspec=get_output_act_qspec(quantization_config),  # type: ignore[arg-type]
-                _annotated=True,
-                _is_output_of_quantized_pattern=True,
-            )
+
+        # print("gm.graph is: {}".format(gm.graph), flush=True)
+        # print("self.conv_relu_with_bias_pattern is: {}".format(self.conv_relu_with_bias_pattern), flush=True)
+        # print("self.conv_inplace_relu_with_bias_pattern is: {}".format(self.conv_inplace_relu_with_bias_pattern), flush=True)
+        # print("self.conv_inplace_relu_stride_padding_pattern is: {}".format(self.conv_inplace_relu_stride_padding_pattern), flush=True)
+
+        matcher = SubgraphMatcherWithNameNodeMap(self.conv_relu_with_bias_pattern)
+        matches1 = matcher.match(gm.graph)
+        # print(matches1)
+        # print("__len__(matches1) is: {}".format(len(matches1)), flush=True)
+
+        matcher = SubgraphMatcherWithNameNodeMap(self.conv_inplace_relu_with_bias_pattern)
+        matches2 = matcher.match(gm.graph)
+        # print(matches2)
+        # print("__len__(matches2) is: {}".format(len(matches2)), flush=True)
+
+        matcher = SubgraphMatcherWithNameNodeMap(self.conv_inplace_relu_stride_padding_pattern)
+        matches3 = matcher.match(gm.graph)
+        # print(matches3)
+        # print("__len__(matches3) is: {}".format(len(matches3)), flush=True)
+
+        for matches in [matches1, matches2, matches3]:
+            for match in matches:
+                name_node_map = match.name_node_map
+                input_node = name_node_map["input"]
+                weight_node = name_node_map["weight"]
+                bias_node = name_node_map["bias"]
+                unary_node = name_node_map["output"]
+
+                # print("input_node is: {}".format(input_node), flush=True)
+                # print("input_node.users is: {}".format(input_node.users), flush=True)
+                # print("weight_node is: {}".format(weight_node), flush=True)
+                # print("weight_node is: {}".format(weight_node.users), flush=True)
+                # print("bias_node is: {}".format(bias_node), flush=True)
+                # print("unary_node is: {}".format(unary_node), flush=True)
+
+                assert len(weight_node.users) == 1
+                conv_node = list(weight_node.users)[0]
+
+
+                if (
+                    conv_node.op != "call_function"
+                    or conv_node.target != torch.ops.aten.conv2d.default
+                ):
+                    continue
+                if _is_annotated([unary_node, conv_node]):
+                    continue
+                self._annotate_conv_node_helper(conv_node, False, quantization_config)
+                unary_node.meta[QUANT_ANNOTATION_KEY] = _X86InductorQuantizationAnnotation(
+                    # TODO<leslie> Remove the annotate of output when oneDNN qconv support fp32 out.
+                    output_qspec=get_output_act_qspec(quantization_config),  # type: ignore[arg-type]
+                    _annotated=True,
+                    _is_output_of_quantized_pattern=True,
+                )
 
     def _annotate_conv2d(
         self, gm: torch.fx.GraphModule, quantization_config: QuantizationConfig
