@@ -178,19 +178,20 @@ def _get_input_output_quantized_filter():
                     == torch.ops.quantized_decomposed.dequantize_per_tensor.default
                 ):
                     input_dq_node = original_node
-            # output node is not a separate node in the list of nodes seen in the matçh
-            # it is a node in the node.users list of the last node.
-            if (
-                len(pattern_node.users) == 1
-                and list(pattern_node.users.keys())[0].op == "output"
-            ):
-                output_node = list(original_node.users.keys())[0]
-                if (
-                    output_node.target
-                    == torch.ops.quantized_decomposed.quantize_per_tensor.default
-                ):
-                    output_q_node = original_node
-        return (input_dq_node is not None) and (output_q_node is not None)
+            # # output node is not a separate node in the list of nodes seen in the matçh
+            # # it is a node in the node.users list of the last node.
+            # if (
+            #     len(pattern_node.users) == 1
+            #     and list(pattern_node.users.keys())[0].op == "output"
+            # ):
+            #     output_node = list(original_node.users.keys())[0]
+            #     if (
+            #         output_node.target
+            #         == torch.ops.quantized_decomposed.quantize_per_tensor.default
+            #     ):
+            #         output_q_node = original_node
+        # return (input_dq_node is not None) and (output_q_node is not None)
+        return (input_dq_node is not None)
 
     return _input_output_quantized_filter
 
@@ -534,6 +535,38 @@ def _update_conv_input_qspec_map_after_replacement(original_node: Node, replacem
         input_qspec_map[replacement_node.args[2]] = all_configs[2][1]
     replacement_node.meta["quantization_annotation"].input_qspec_map = input_qspec_map
 
+def _update_add_input_qspec_map_after_replacement(original_node: Node, replacement_node: Node):
+    """
+    Update the `input_qspec_map` in the annotation after subgraph rewriting.
+
+    The original annotation referred to the nodes in the original graph,
+    so the keys in the `input_qspec_map` will need to be updated to reflect
+    the corresponding nodes in the replacement graph.
+    """
+    assert original_node.target == operator.getitem
+    assert replacement_node.target == operator.getitem
+
+    if len(list(replacement_node.users)) != 1:
+        return
+    user_node = list(replacement_node.users)[0]
+    if user_node.target not in [torch.ops.aten.add_.Tensor, torch.ops.aten.add.Tensor]:
+        return
+    if "quantization_annotation" not in user_node.meta:
+        return
+    original_input_qspec_map = user_node.meta["quantization_annotation"].input_qspec_map
+    input_qspec_map = {}
+    # get the list of configs, it should be ordered as input, weight, bias
+    # note: this is really hacky, we need a better solution, hopefully
+    # in subgraph_rewriter, issue tracking the problem: https://github.com/pytorch/pytorch/issues/101820
+    all_configs = list(original_input_qspec_map.items())
+    if len(all_configs) != 1:
+        # For conv-add fusion, we only expect one extra input edge be annotated
+        return
+    if original_node not in all_configs[0]:
+        return
+    input_qspec_map[replacement_node] = all_configs[0][1]
+    user_node.meta["quantization_annotation"].input_qspec_map = input_qspec_map
+
 def _update_special_qspecs_after_replacement(
     node: Node,
     original_to_replacement_node: Dict[Node, Node],
@@ -660,6 +693,13 @@ def _fuse_conv_bn_qat_helper(m: GraphModule, is_cuda: bool) -> GraphModule:
                 _copy_over_literal_conv_args(original_node, replacement_node)
                 # Step (3c): Update old references in the conv node's input_qspec_map
                 _update_conv_input_qspec_map_after_replacement(original_node, replacement_node)
+
+            if original_node.target == operator.getitem:
+                # Step (3d): Update old references in the add node's input_qspec_map
+                # If this conv bn connected to a add node which will break the annotation of add,
+                # since the node name changed after pattern replacement
+                _update_add_input_qspec_map_after_replacement(original_node, replacement_node)
+
             all_original_to_replacement_nodes[original_node] = replacement_node
 
     # Step (3c): Update old references in the special qspecs for all nodes in the graph

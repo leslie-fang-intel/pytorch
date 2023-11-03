@@ -332,6 +332,11 @@ def _maybe_insert_input_observers_for_node(
     """
     # Look through every input arg.  If that arg's target dtype does not
     # match the current node's target dtype, insert an observer.
+
+    # if node.name == "add":
+    #     # import pdb;pdb.set_trace()
+    #     print("key node is: {}".format(node), flush=True)
+
     new_args = []
     for arg in node.args:
         new_arg = _maybe_insert_input_observer_for_arg_or_kwarg(
@@ -431,8 +436,12 @@ def prepare(
     edge_or_node_to_group_id = _get_edge_or_node_to_group_id(edge_or_node_to_qspec)
     obs_or_fq_map = _get_obs_or_fq_map(edge_or_node_to_group_id, edge_or_node_to_qspec, is_qat)
 
+
     for node in nodes_before_observation:
         # TODO: simplify logic for inserting observers
+        # print(node.name, flush=True)
+        # if node.name == "add":
+        #     import pdb;pdb.set_trace()
         _maybe_insert_input_and_output_observers_for_node(node, model, obs_or_fq_map, is_qat)
 
     model = GraphModule(model, model.graph)

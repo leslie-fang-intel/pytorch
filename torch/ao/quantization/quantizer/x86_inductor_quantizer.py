@@ -477,7 +477,7 @@ class X86InductorQuantizer(Quantizer):
             )
             unary_node.meta[QUANT_ANNOTATION_KEY] = _X86InductorQuantizationAnnotation(
                 # TODO<leslie> Remove the annotate of output in QAT when qat util support pattern matcher.
-                output_qspec=get_output_act_qspec(quantization_config),  # type: ignore[arg-type]
+                # output_qspec=get_output_act_qspec(quantization_config),  # type: ignore[arg-type]
                 _annotated=True,
                 _is_output_of_quantized_pattern=True,
             )
@@ -532,7 +532,7 @@ class X86InductorQuantizer(Quantizer):
             binary_node.meta[QUANT_ANNOTATION_KEY] = _X86InductorQuantizationAnnotation(
                 input_qspec_map=binary_node_input_qspec_map,
                 # TODO<leslie> Remove the annotate of output in QAT when qat util support pattern matcher.
-                output_qspec=get_output_act_qspec(quantization_config),  # type: ignore[arg-type]
+                # output_qspec=get_output_act_qspec(quantization_config),  # type: ignore[arg-type]
                 _annotated=True,
                 _is_output_of_quantized_pattern=True,
             )
@@ -569,7 +569,7 @@ class X86InductorQuantizer(Quantizer):
             self._annotate_conv_node_helper(conv_node, False, quantization_config)
             unary_node.meta[QUANT_ANNOTATION_KEY] = _X86InductorQuantizationAnnotation(
                 # TODO<leslie> Remove the annotate of output in QAT when qat util support pattern matcher.
-                output_qspec=get_output_act_qspec(quantization_config),  # type: ignore[arg-type]
+                # output_qspec=get_output_act_qspec(quantization_config),  # type: ignore[arg-type]
                 _annotated=True,
                 _is_output_of_quantized_pattern=True,
             )
@@ -604,7 +604,7 @@ class X86InductorQuantizer(Quantizer):
                 QUANT_ANNOTATION_KEY
             ] = _X86InductorQuantizationAnnotation(
                 # TODO<leslie> Remove the annotate of output in QAT when qat util support pattern matcher.
-                output_qspec=get_output_act_qspec(quantization_config),  # type: ignore[arg-type]
+                # output_qspec=get_output_act_qspec(quantization_config),  # type: ignore[arg-type]
                 _annotated=True,
                 _is_output_of_quantized_pattern=True,
             )

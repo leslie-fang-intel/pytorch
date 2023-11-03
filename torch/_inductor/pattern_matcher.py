@@ -1135,6 +1135,11 @@ class PatternMatcherPass:
                         entry.apply(m, graph, node)
                         counters["inductor"]["pattern_matcher_count"] += 1
                         counters["inductor"]["pattern_matcher_nodes"] += len(m.nodes)
+
+                        # print("---------------------", flush=True)
+                        # print(counters["inductor"]["pattern_matcher_count"], flush=True)
+                        # print(counters["inductor"]["pattern_matcher_nodes"], flush=True)
+                        # print(m.nodes, flush=True)
         return count
 
     def clear(self):
