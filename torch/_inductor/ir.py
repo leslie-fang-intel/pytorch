@@ -5129,7 +5129,8 @@ class ConvolutionBinaryInplace(ExternKernelAlloc):
             constant_args=constant_args,
         )
         mark_node_as_mutating(packed, inputs[1])
-        return packed
+        # return packed
+        return packed.inputs[0]
 
 
 class MKLPackedLinear(ExternKernelAlloc):
