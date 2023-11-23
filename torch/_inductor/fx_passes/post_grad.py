@@ -84,6 +84,11 @@ def post_grad_passes(gm: torch.fx.GraphModule, is_inference: bool):
             patterns.apply(gm.graph)
         if is_inference:
             inference_patterns.apply(gm.graph)
+        
+        print("gm.graph is: {}".format(gm.graph), flush=True)
+        from torch.fx.passes.graph_drawer import FxGraphDrawer
+        g = FxGraphDrawer(gm, "shuffnetv2")
+        g.get_dot_graph().write_svg("/home/jianan/leslie/torch_inductor_lz/after_fusion.svg")
 
     if config.post_grad_custom_post_pass is not None:
         config.post_grad_custom_post_pass(gm.graph)

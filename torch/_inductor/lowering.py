@@ -844,6 +844,7 @@ def repeat(x, repeats):
 def view(x, sizes):
     assert isinstance(x, TensorBox)
     assert isinstance(sizes, (list, tuple))
+    print("create reshape", flush=True)
     return TensorBox(View.create(x.data, sizes))
 
 
