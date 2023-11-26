@@ -95,6 +95,9 @@ def post_grad_passes(gm: torch.fx.GraphModule, is_inference: bool):
 
     fake_tensor_updater.incremental_update()
 
+
+    print("after post grad fusion gm.graph is: {}".format(gm.graph), flush=True)
+
     # Keep this last, since it introduces mutation. Look at
     # ./fx_passes/README.md for a discussion of mutation invariants.
     reinplace_inplaceable_ops(gm.graph)
@@ -666,6 +669,9 @@ def reinplace_inplaceable_ops(graph):
             ):
                 src = src.args[0]
             copy_args_to_copy_nodes[(dst, src)] = node
+            if node.args[0].op != "placeholder":
+                print("node is: {}".format(node.name), flush=True)
+                print("node.args[0] is: {}".format(node.args[0].name), flush=True)
             assert node.args[0].op == "placeholder"
             mutated_inputs.add(node.args[0])
 

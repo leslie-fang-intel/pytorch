@@ -53,4 +53,22 @@ def _move_exported_model_to_eval(model: torch.fx.GraphModule):
     QAT users should call this before performing inference on the model.
     """
     _replace_dropout_for_eval(model)
+    print("---- inside move model to eval ----", flush=True)
+    for node in model.graph.nodes:
+        if node.target == torch.ops.aten._native_batch_norm_legit.default:
+            print("----- hit node -----", flush=True)
+            graph = model.graph
+            with graph.inserting_before(node):
+                print("len(node.args) is: {}".format(len(node.args)), flush=True)
+                print(node.args[-3], flush=True)
+                new_args = node.args[0:-3] + node.args[-2:]
+                print("len(new_args) is: {}".format(len(new_args)), flush=True)
+                new_node = graph.call_function(
+                    torch.ops.aten._native_batch_norm_legit_no_training.default,
+                    args=new_args,
+                    kwargs=node.kwargs,
+                )
+                node.replace_all_uses_with(new_node)
+    model.graph.eliminate_dead_code()
+    model.recompile()       
     return model
