@@ -972,9 +972,9 @@ class TestPatternMatcher(TestPatternMatcherBase):
             def __init__(self, use_bias):
                 super().__init__()
                 self.linear = torch.nn.Linear(4, 4, use_bias)
-                self.unary_fn = torch.nn.ReLU()
+                self.unary_fn = torch.nn.GELU()
                 self.linear2 = torch.nn.Linear(4, 4, use_bias)
-                self.unary_fn2 = torch.nn.ReLU()
+                self.unary_fn2 = torch.nn.GELU()
 
             def forward(self, x):
                 tmp = self.unary_fn(self.linear(x))
