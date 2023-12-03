@@ -926,12 +926,74 @@ def _register_quantization_reshape():
     )
 
 
+def _register_quantized_permute_lowering(
+    pattern,
+    computation_op,
+):
+    @register_lowering_pattern(
+        pattern,
+        extra_check=_is_input_output_same_scale_zp(aten.permute.default),
+    )
+    def qpermute(match: Match, *args, **kwargs):
+        qx = kwargs["x"]
+        shape = kwargs["shape"]
+        counters["inductor"]["qpermute_matcher_count"] += 1
+        counters["inductor"]["qpermute_matcher_nodes"] += len(match.nodes)
+        return L[computation_op](qx, shape)
+
+    return qpermute
+
+
+def _register_quantization_permute():
+    dequantize_reshape_pattern = CallFunction(
+        torch.ops.aten.permute.default,
+        dequantize_per_tensor_activation_pattern,
+        KeywordArg("shape"),
+    )
+    _register_quantized_permute_lowering(
+        generate_pattern_with_output_quant(dequantize_reshape_pattern),
+        aten.permute,
+    )
+
+
+def _register_quantized_clone_lowering(
+    pattern,
+    computation_op,
+):
+    @register_lowering_pattern(
+        pattern,
+        extra_check=_is_input_output_same_scale_zp(aten.clone.default),
+    )
+    def qclone(match: Match, *args, **kwargs):
+        qx = kwargs["x"]
+        memory_format = kwargs["memory_format"]
+        counters["inductor"]["qpermute_matcher_count"] += 1
+        counters["inductor"]["qpermute_matcher_nodes"] += len(match.nodes)
+        return L[computation_op](qx, memory_format=memory_format)
+
+    return qclone
+
+
+def _register_quantization_clone():
+    dequantize_reshape_pattern = CallFunction(
+        torch.ops.aten.clone.default,
+        dequantize_per_tensor_activation_pattern,
+        memory_format=KeywordArg("memory_format"),
+    )
+    _register_quantized_clone_lowering(
+        generate_pattern_with_output_quant(dequantize_reshape_pattern),
+        aten.clone,
+    )
+
+
 def _register_quantization_lowerings():
     _register_quantization_unary_fusion()
     _register_quantization_binary_fusion()
     _register_quantization_maxpool2d()
     _register_quantization_cat()
     _register_quantization_reshape()
+    _register_quantization_permute()
+    _register_quantization_clone()
 
 
 def _is_valid_dequant_promotion_pattern(dtype=torch.float32):
