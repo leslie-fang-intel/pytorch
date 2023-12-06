@@ -3,7 +3,7 @@ import functools
 import itertools
 import operator
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Set, Tuple
 
 import torch
 import torch.nn.functional as F
@@ -31,6 +31,8 @@ from torch.ao.quantization.quantizer.xnnpack_quantizer_utils import (
     OperatorConfig,
     OperatorPatternType,
     QuantizationConfig,
+    _get_module_type_filter,
+    _get_not_module_type_or_name_filter,
 )
 from torch.fx import Node
 from torch.fx.passes.utils.source_matcher_utils import (
@@ -227,6 +229,7 @@ class X86InductorQuantizer(Quantizer):
         super().__init__()
         self.global_config: QuantizationConfig = None  # type: ignore[assignment]
         self.operator_type_config: Dict[str, Optional[QuantizationConfig]] = {}
+        self.module_type_config: Dict[Callable, Optional[QuantizationConfig]] = {}
 
     @classmethod
     def get_supported_quantization_configs(cls) -> List[QuantizationConfig]:
@@ -260,13 +263,24 @@ class X86InductorQuantizer(Quantizer):
         self.operator_type_config[operator_type] = quantization_config
         return self
 
+    def set_module_type(
+        self, module_type: Callable, quantization_config: QuantizationConfig
+    ):
+        """Set quantization_config for a submodule with type: `module_type`, for example:
+        quantizer.set_module_name(Sub) or quantizer.set_module_name(nn.Linear), it will quantize all supported operator/operator
+        patterns in the submodule with this module type with the given `quantization_config`
+        """
+        self.module_type_config[module_type] = quantization_config
+        return self
+
     def _annotate_conv_node_helper(
         self,
         conv_node: torch.fx.Node,
         annotate_output: bool,
-        quantization_config: QuantizationConfig,
+        quantization_config: Optional[QuantizationConfig],
     ) -> None:
         """Helper function to annotate the conv node"""
+        assert quantization_config is not None
         input_qspec_map = {}
         input_node = conv_node.args[0]
         assert isinstance(input_node, Node)
@@ -293,9 +307,10 @@ class X86InductorQuantizer(Quantizer):
         self,
         linear_node: torch.fx.Node,
         annotate_output: bool,
-        quantization_config: QuantizationConfig,
+        quantization_config: Optional[QuantizationConfig],
     ) -> None:
         """Helper function to annotate the linear node"""
+        assert quantization_config is not None
         input_qspec_map = {}
         assert linear_node.target in (torch.ops.aten.linear.default,)
         has_bias = len(linear_node.args) == 3
@@ -387,28 +402,40 @@ class X86InductorQuantizer(Quantizer):
         we need to annotate the output of this pattern.
         """
 
-        config = self.global_config
+        # config = self.global_config
 
         # Step1: Recipe of fusion patterns like conv/linear.
-        if config.is_qat:
+        if self.global_config and self.global_config.is_qat:
             # Annotate QAT specific pattern: mainly due to BN not folded in prepare_qat
-            self._annotate_qat_conv2d_fusion_pattern(model, config)
+            self._annotate_qat_conv2d_fusion_pattern(model, self.global_config)
 
-        self._annotate_conv2d_fusion_pattern(model, config)
+        # self._annotate_conv2d_fusion_pattern(model, config)
 
-        # Step2: Recipe to propagate annotation for patterns beside conv/linear.
-        # Go through all the nodes from start to end.
-        # Recipe refer to https://github.com/intel/intel-extension-for-pytorch/blob/
-        # 90d19323d96afc53fcc22ba5a7bb3fb07fdd6c1c/intel_extension_for_pytorch/quantization/_recipe.py#L538
-        for node in model.graph.nodes:
-            self._annotation_propagation_quantizable_pattern(node, config)
+        tp_list = list(self.module_type_config.keys())
+        for module_type, config in self.module_type_config.items():
+            self._annotate_conv2d_fusion_pattern(
+                model, config, _get_module_type_filter(module_type)
+            )
+        self._annotate_conv2d_fusion_pattern(
+            model,
+            self.global_config,
+            _get_not_module_type_or_name_filter(tp_list, []),
+        )
 
-        # Step3: For quantizable ops, such as maxpool2d, we need to quantize its output if it is quantized
-        # in inputs. So, we can fuse dq-operator-q into a quantized op.
-        # Refer to https://github.com/intel/intel-extension-for-pytorch/blob/
-        # 90d19323d96afc53fcc22ba5a7bb3fb07fdd6c1c/intel_extension_for_pytorch/quantization/_recipe.py#L487
-        for node in model.graph.nodes:
-            self._annotate_output_for_int8_in_int8_out_pattern(node, config)
+        if self.global_config:
+            # Step2: Recipe to propagate annotation for patterns beside conv/linear.
+            # Go through all the nodes from start to end.
+            # Recipe refer to https://github.com/intel/intel-extension-for-pytorch/blob/
+            # 90d19323d96afc53fcc22ba5a7bb3fb07fdd6c1c/intel_extension_for_pytorch/quantization/_recipe.py#L538
+            for node in model.graph.nodes:
+                self._annotation_propagation_quantizable_pattern(node, self.global_config)
+
+            # Step3: For quantizable ops, such as maxpool2d, we need to quantize its output if it is quantized
+            # in inputs. So, we can fuse dq-operator-q into a quantized op.
+            # Refer to https://github.com/intel/intel-extension-for-pytorch/blob/
+            # 90d19323d96afc53fcc22ba5a7bb3fb07fdd6c1c/intel_extension_for_pytorch/quantization/_recipe.py#L487
+            for node in model.graph.nodes:
+                self._annotate_output_for_int8_in_int8_out_pattern(node, self.global_config)
 
         return model
 
@@ -624,14 +651,19 @@ class X86InductorQuantizer(Quantizer):
             _mark_nodes_as_annotated(nodes_to_mark_annotated)
 
     def _annotate_conv2d_fusion_pattern(
-        self, model: torch.fx.GraphModule, config: QuantizationConfig
+        self,
+        model: torch.fx.GraphModule,
+        config: Optional[QuantizationConfig],
+        filter_fn: Optional[Callable[[Node], bool]] = None,
     ):
-        self._annotate_conv2d_binary_unary(model, config)
-        self._annotate_conv2d_binary(model, config)
-        self._annotate_conv2d_unary(model, config)
-        self._annotate_conv2d(model, config)
-        self._annotate_linear_unary(model, config)
-        self._annotate_linear(model, config)
+        if config is None:
+            return model
+        # self._annotate_conv2d_binary_unary(model, config)
+        # self._annotate_conv2d_binary(model, config)
+        # self._annotate_conv2d_unary(model, config)
+        self._annotate_conv2d(model, config, filter_fn)
+        # self._annotate_linear_unary(model, config)
+        self._annotate_linear(model, config, filter_fn)
 
     def _annotate_conv2d_binary_unary(
         self, gm: torch.fx.GraphModule, quantization_config: QuantizationConfig
@@ -755,10 +787,13 @@ class X86InductorQuantizer(Quantizer):
             )
 
     def _annotate_conv2d(
-        self, gm: torch.fx.GraphModule, quantization_config: QuantizationConfig
+        self,
+        gm: torch.fx.GraphModule,
+        quantization_config: Optional[QuantizationConfig],
+        filter_fn: Optional[Callable[[Node], bool]] = None,
     ) -> None:
         conv_partitions = get_source_partitions(
-            gm.graph, [torch.nn.Conv2d, torch.nn.functional.conv2d]
+            gm.graph, [torch.nn.Conv2d, torch.nn.functional.conv2d], filter_fn
         )
         conv_partitions = list(itertools.chain(*conv_partitions.values()))
         for conv_partition in conv_partitions:
@@ -930,10 +965,13 @@ class X86InductorQuantizer(Quantizer):
         return
 
     def _annotate_linear(
-        self, gm: torch.fx.GraphModule, quantization_config: QuantizationConfig
+        self,
+        gm: torch.fx.GraphModule,
+        quantization_config: Optional[QuantizationConfig],
+        filter_fn: Optional[Callable[[Node], bool]] = None,
     ) -> None:
         linear_partitions = get_source_partitions(
-            gm.graph, [torch.nn.Linear, torch.nn.functional.linear]
+            gm.graph, [torch.nn.Linear, torch.nn.functional.linear], filter_fn
         )
         linear_partitions = list(itertools.chain(*linear_partitions.values()))
         for partition in linear_partitions:

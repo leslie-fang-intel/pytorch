@@ -282,6 +282,45 @@ class TestHelperModules:
                 tmp = self.bn(self.conv(x))
                 return tmp + self.bn2(self.conv2(tmp))
 
+    class TestSetModuleType(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.conv = torch.nn.Conv2d(
+                in_channels=3,
+                out_channels=3,
+                kernel_size=3,
+                stride=1,
+                padding=1,
+                bias=True,
+            )
+            self.conv2 = torch.nn.Conv2d(
+                in_channels=3,
+                out_channels=3,
+                kernel_size=3,
+                stride=1,
+                padding=1,
+                bias=True,
+            )
+            self.conv3 = torch.nn.Conv2d(
+                in_channels=3,
+                out_channels=3,
+                kernel_size=3,
+                stride=1,
+                padding=1,
+                bias=True,
+            )
+            self.relu = torch.nn.ReLU()
+            self.relu2 = torch.nn.ReLU()
+            self.avgpool = torch.nn.AdaptiveAvgPool2d((1, 1))
+            self.fc = torch.nn.Linear(3, 16)
+
+        def forward(self, x):
+            tmp = self.relu(self.conv(x))
+            tmp = self.relu2(self.conv2(tmp) + self.conv3(tmp))
+            tmp = self.avgpool(tmp)
+            tmp = torch.flatten(tmp, 1)
+            return self.fc(tmp)
+
 class X86InductorQuantTestCase(QuantizationTestCase):
     def _test_quantizer(
         self,
@@ -1199,3 +1238,26 @@ class TestQuantizePT2EX86Inductor(X86InductorQuantTestCase):
                 node_list,
                 is_qat=True,
             )
+
+    def test_set_module_type_only_linear_annotate(self):
+        quantizer = X86InductorQuantizer()
+        quantization_config = xiq.get_default_x86_inductor_quantization_config()
+        # We only want to annotate Linear type
+        quantizer.set_module_type(torch.nn.Linear, quantization_config)
+        with override_quantized_engine("x86"):
+            m = TestHelperModules.TestSetModuleType().eval()
+            example_inputs = (torch.randn(1, 3, 16, 16),)
+            node_occurrence = {
+                torch.ops.aten.conv2d.default: 3,
+                torch.ops.aten.linear.default: 1,
+                # input and output for the linear
+                torch.ops.quantized_decomposed.quantize_per_tensor.default: 1,
+                torch.ops.quantized_decomposed.dequantize_per_tensor.default: 1,
+            }
+            node_list = [
+                # only the linear is quantized
+                torch.ops.quantized_decomposed.quantize_per_tensor.default,
+                torch.ops.quantized_decomposed.dequantize_per_tensor.default,
+                torch.ops.aten.linear.default,
+            ]
+            self._test_quantizer(m, example_inputs, quantizer, node_occurrence, node_list)

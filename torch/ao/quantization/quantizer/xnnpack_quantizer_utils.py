@@ -908,3 +908,68 @@ def _convert_scalars_to_attrs(model: torch.fx.GraphModule) -> torch.fx.GraphModu
         n.args = tuple(new_args)
     model.recompile()
     return model
+
+
+def _get_module_name_filter(module_name: str):
+    """Get the module_name_filter function for a given module name, the filter accepts
+    a node and checks if the node comes from a module that has certain module name
+
+    For example:
+        node: linear_op = call_function[...](...)  # comes from a module with name blocks.sub.linear1
+
+
+    >> module_name_filter = _get_module_name_filter("blocks.sub")
+    >> print(module_name_filter(node))
+    True  # the node is from "blocks.sub" based on the fully qualified name "blocks.sub.linear1"
+    """
+
+    def module_name_filter(n: Node) -> bool:
+        # example: {
+        #    'L__self___sub': ("L['self'].sub", <class '....Sub'>),
+        #    'L__self___sub_linear': ("L['self'].sub.linear", <class 'torch.nn.modules.linear.Linear'>)
+        # }
+        # get_attr nodes doesn't have nn_module_stack?
+        nn_module_stack = n.meta.get("nn_module_stack", {})
+        names = [
+            n[len("L__self___") :].replace("_", ".") for n in nn_module_stack.keys()
+        ]
+        return module_name in names
+
+    return module_name_filter
+
+
+def _get_module_type_filter(tp: Callable):
+    """Get the module_type_filter function for a given module type, the filter accepts
+    a node and checks if the node comes from a module that has certain module type
+
+    For example:
+        node: linear_op = call_function[...](...)  # comes from a module with type Block -> Sub -> Linear
+
+
+    >> module_type_filter = _get_module_type_filter(Sub)  # submodule with type `Sub`, under the `Block` submodule
+    >> print(module_type_filter(node))
+    True  # the node is from the submodule `Sub` (same for `Block` and `Linear` as well)
+    """
+
+    def module_type_filter(n: Node) -> bool:
+        # example: {
+        #     'L__self___sub': ("L['self'].sub", <class '....Sub'>),
+        #     'L__self___sub_linear': ("L['self'].sub.linear", <class 'torch.nn.modules.linear.Linear'>)
+        # }
+        nn_module_stack = n.meta.get("nn_module_stack", {})
+        types = [t for _, t in nn_module_stack.values()]
+        return tp in types
+
+    return module_type_filter
+
+
+def _get_not_module_type_or_name_filter(
+    tp_list: List[Callable], module_name_list: List[str]
+) -> Callable[[Node], bool]:
+    module_type_filters = [_get_module_type_filter(tp) for tp in tp_list]
+    module_name_list_filters = [_get_module_name_filter(m) for m in module_name_list]
+
+    def not_module_type_or_name_filter(n: Node) -> bool:
+        return not any(f(n) for f in module_type_filters + module_name_list_filters)
+
+    return not_module_type_or_name_filter
