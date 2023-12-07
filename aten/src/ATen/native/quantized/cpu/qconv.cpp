@@ -1421,10 +1421,14 @@ static at::Tensor _quantized_convolution_onednn(
   bool has_unary_post_op = unary_attr.has_value() && unary_attr.value() != "none";
   // has_accum_postop_sum: extra input besides the conv to do conv post op sum fusion.
   bool has_accum_postop_sum = has_binary_post_op && binary_attr.value() == "sum";
+  // has_accum_postop_binary_add: extra input besides the conv to do conv post op binary_add fusion.
+  // For Binary_Add, we expect below 6 input/output dtype cases
+  // for Conv-Input [int8] - Extra_Input [fp32, bf16] - Output [int8, fp32, bf16]
+  bool has_accum_postop_binary_add = has_binary_post_op && binary_attr.value() == "binary_add";
 
-  if (has_accum_postop_sum && (fp32_output || bfloat16_output)) {
-    TORCH_CHECK(accum_scale == 1.0,  " (ONEDNN): fp32 or bf16 output, accum_scale must be 1.0.");
-    TORCH_CHECK(accum_zero_point == 0,  " (ONEDNN): fp32 or bf16 output, accum_zero_point must be 0");
+  if ((has_accum_postop_sum && (fp32_output || bfloat16_output)) || (has_accum_postop_binary_add)) {
+    TORCH_CHECK(accum_scale == 1.0,  " (ONEDNN): expect accum_scale must be 1.0.");
+    TORCH_CHECK(accum_zero_point == 0,  " (ONEDNN): expect accum_zero_point must be 0");
     TORCH_CHECK((accum.value().scalar_type() == c10::kFloat) || (accum.value().scalar_type() == c10::kBFloat16), "The accum tensor should be KFloat or KBFloat.");
   }
 
@@ -1592,12 +1596,17 @@ static at::Tensor _quantized_convolution_onednn(
     return output;
   }
   ideep::tensor dst;
+  ideep::tensor::desc dst_desc;
   at::Tensor accum_contig;
-  if (has_accum_postop_sum) {
-    auto dst_desc = ideep::tensor::desc(dst_dims, fp32_output ? ideep::tensor::data_type::f32 : (
+  ideep::tensor accum_ideep_tensor;  // Used for Binary_add
+  if (has_accum_postop_sum || has_accum_postop_binary_add) {
+    dst_desc = ideep::tensor::desc(dst_dims, fp32_output ? ideep::tensor::data_type::f32 : (
       bfloat16_output ? ideep::tensor::data_type::bf16 : src_data_type),
         kSpatialDim == 2 ? ideep::format_tag::nhwc : ideep::format_tag::ndhwc);
     accum_contig = accum.value().contiguous(kSpatialDim == 2 ? c10::MemoryFormat::ChannelsLast : c10::MemoryFormat::ChannelsLast3d);
+  }
+
+  if (has_accum_postop_sum) {
     if (fp32_output || bfloat16_output) {
       TORCH_CHECK((output.scalar_type() == c10::kFloat) || (output.scalar_type() == c10::kBFloat16), "The output tensor should be KFloat or KBFloat.");
       if (accum_contig.scalar_type() != output.scalar_type()) {
@@ -1610,6 +1619,9 @@ static at::Tensor _quantized_convolution_onednn(
     // When fused with sum, the dst tensor will share the data ptr as the accum tensor.
     dst.init(dst_desc, accum_contig.data_ptr());
   } else {
+    // 2 Cases
+    // Case 1: post op binary_add
+    // Case 2: post op unary fusion
     if (fp32_output || bfloat16_output) {
       // Conv without add: int8-in, fp32-output
       dst = ideep::tensor({dst_dims, fp32_output ? ideep::tensor::data_type::f32 : ideep::tensor::data_type::bf16, {output.strides().cbegin(), output.strides().cend()}},
@@ -1619,7 +1631,9 @@ static at::Tensor _quantized_convolution_onednn(
                         output.data_ptr());
     }
   }
+
   ideep::attr_t op_attr;
+  ideep::post_ops po;
   // attr
   if (has_accum_postop_sum) {
     op_attr = (has_unary_post_op && unary_attr.value()=="relu") ? ideep::attr_t::residual_with_sum_zero_point() : ideep::attr_t::fuse_sum();
@@ -1629,6 +1643,14 @@ static at::Tensor _quantized_convolution_onednn(
     // The true scale and zero point is stored in ideep::scale_t(scale_size, inv_output_scale) and dst_zero_points.
     dst.set_scale(accum_ideep_scale);
     dst.set_zero_point(accum_ideep_zero_points);
+  } else if (has_accum_postop_binary_add) {
+    accum_ideep_tensor = at::native::itensor_from_tensor(accum_contig);
+    auto accum_ideep_tensor_desc = accum_ideep_tensor.get_desc();
+    po.append_binary(ideep::algorithm::binary_add, accum_ideep_tensor_desc);
+    if (has_unary_post_op && unary_attr.value()=="relu") {
+      po.append_eltwise(ideep::algorithm::eltwise_relu, 0.f, 0.f);
+    }
+    op_attr.set_post_ops(po);
   } else {
     if (has_unary_post_op && unary_attr.value()=="relu") {
       op_attr = ideep::attr_t::fuse_relu();
@@ -1663,7 +1685,11 @@ static at::Tensor _quantized_convolution_onednn(
   ideep::tensor expected_weight = packed_weight.reorder_if_differ_in(expected_weight_desc);
 
   // Computation
-  ideep::convolution_forward::compute<false, false>(params, src, expected_weight, expected_bias, dst);
+  if (has_accum_postop_binary_add) {
+    ideep::convolution_forward::compute_binary<false, false>(params, src, accum_ideep_tensor, expected_weight, expected_bias, dst);
+  } else {
+    ideep::convolution_forward::compute<false, false>(params, src, expected_weight, expected_bias, dst);
+  }
 
   if (is_1d) {
     output.squeeze_(quant_utils::kConv1dSqueezeDim + 2);
@@ -1881,7 +1907,8 @@ class QConvoneDNN final {
 #if AT_MKLDNN_ENABLED()
     // Conv2D post op check
     TORCH_CHECK(
-      act.dim() == 4 && binary_attr == "sum" && (
+      act.dim() == 4 && (
+        binary_attr == "sum" || binary_attr == "binary_add") && (
         !unary_attr.has_value() ||
         (unary_attr.has_value() &&
           (
@@ -1889,7 +1916,7 @@ class QConvoneDNN final {
           )
         )
       ),
-      "post_op sum or post_op sum_relu is supported for quantized pointwise conv2d. Got binary_post_op: ",
+      "post_op sum, sum_relu or binary_add, binary_add_relu is supported for quantized pointwise conv2d. Got binary_post_op: ",
       binary_attr,
       " unary_post_op: ",
       unary_attr.has_value() ? unary_attr.value() : "none",

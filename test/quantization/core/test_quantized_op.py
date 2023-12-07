@@ -6496,6 +6496,7 @@ class TestQuantizedConv(TestCase):
         if fp32_output or bfloat16_output:
             Y_scale = 1.0
             Y_zero_point = 0
+        if fp32_output or bfloat16_output or post_op.binary_attr == "binary_add":
             X2_scale = 1.0
             X2_zero_point = 0
         batch_size = 3
@@ -6538,7 +6539,7 @@ class TestQuantizedConv(TestCase):
         result_ref = conv_op(X)
         X2_q = None
 
-        if post_op.binary_attr == "sum":
+        if post_op.binary_attr in ["sum", "binary_add"]:
             (X_value_min, X_value_max) = (0, 4)
             X2_init = torch.randint(
                 X_value_min, X_value_max, result_ref.size(), device=device
@@ -6599,15 +6600,17 @@ class TestQuantizedConv(TestCase):
             X_q_cpu_tensor.size(),
         )
 
-        if post_op.binary_attr == "sum":
-            X2_q_cpu_tensor = X2_q.int_repr()
+        if post_op.binary_attr in ["sum", "binary_add"]:
+            X2_input = (
+                X2_q.int_repr()
+                if (post_op.binary_attr == "sum" and qconv_output_dtype is None)
+                else X2_q.dequantize().to(qconv_x2_dtype)
+            )
             Y_q_cpu_tensor = qconv(
                 X_q_cpu_tensor,
                 X_scale,
                 X_zero_point,
-                X2_q_cpu_tensor
-                if qconv_output_dtype is None
-                else X2_q.dequantize().to(qconv_x2_dtype),
+                X2_input,
                 X2_scale,
                 X2_zero_point,
                 packed_weight,
@@ -7116,6 +7119,173 @@ class TestQuantizedConv(TestCase):
                 post_op=pointwise_post_op,
                 use_channelwise=use_channelwise,
                 X2_zero_point=X2_zero_point,
+                qconv_output_dtype=output_dtype,
+                qconv_x2_dtype=qconv_x2_dtype,
+            )
+
+    # Test qconv with post op binary add
+    @skipIfNoONEDNN
+    def test_qconv2d_binary_add_pt2e(self):
+        groups_list = [1, 3]
+        input_channels_per_group = 2
+        output_channels_per_group = 2
+        input_feature_map_shape = (10, 10)
+        kernels = (3, 3)
+        strides = (2, 2)
+        pads = (1, 1)
+        dilations = (1, 1)
+        W_scale = [1.5]
+        W_zero_point = [-3]
+        use_bias_list = [False, True]
+        use_channelwise_list = [False, True]
+        qconv_x2_dtype_list = [torch.float32, torch.bfloat16]
+        output_dtype_list = [None]
+        options = itertools.product(
+            groups_list, use_bias_list, use_channelwise_list, qconv_x2_dtype_list, output_dtype_list
+        )
+        for groups, use_bias, use_channelwise, qconv_x2_dtype, output_dtype in options:
+            qconv = torch.ops.onednn.qconv2d_pointwise.binary
+            qconv_prepack = torch.ops.onednn.qconv_prepack
+            conv_op = torch.nn.Conv2d(
+                input_channels_per_group * groups,
+                output_channels_per_group * groups,
+                kernels,
+                strides,
+                pads,
+                dilations,
+                groups,
+            )
+            pointwise_post_op = PointwisePostOp(binary_attr="binary_add")
+            self._test_qconv_impl_cpu_tensor(
+                qconv,
+                qconv_prepack,
+                conv_op,
+                input_channels_per_group=input_channels_per_group,
+                input_feature_map_shape=input_feature_map_shape,
+                output_channels_per_group=output_channels_per_group,
+                groups=groups,
+                kernels=kernels,
+                strides=strides,
+                pads=pads,
+                dilations=dilations,
+                W_scale=W_scale,
+                W_zero_point=W_zero_point,
+                use_bias=use_bias,
+                post_op=pointwise_post_op,
+                use_channelwise=use_channelwise,
+                qconv_output_dtype=output_dtype,
+                qconv_x2_dtype=qconv_x2_dtype,
+            )
+
+    # Test qconv with post op binary add and relu
+    @skipIfNoONEDNN
+    def test_qconv2d_binary_add_relu_pt2e(self):
+        groups_list = [1, 3]
+        input_channels_per_group = 2
+        output_channels_per_group = 2
+        input_feature_map_shape = (10, 10)
+        kernels = (3, 3)
+        strides = (2, 2)
+        pads = (1, 1)
+        dilations = (1, 1)
+        W_scale = [1.5]
+        W_zero_point = [-3]
+        use_bias_list = [False, True]
+        use_channelwise_list = [False, True]
+        qconv_x2_dtype_list = [torch.float32, torch.bfloat16]
+        output_dtype_list = [None]
+        options = itertools.product(
+            groups_list, use_bias_list, use_channelwise_list, qconv_x2_dtype_list, output_dtype_list
+        )
+        for groups, use_bias, use_channelwise, qconv_x2_dtype, output_dtype in options:
+            qconv = torch.ops.onednn.qconv2d_pointwise.binary
+            qconv_prepack = torch.ops.onednn.qconv_prepack
+            conv_op = torch.nn.Conv2d(
+                input_channels_per_group * groups,
+                output_channels_per_group * groups,
+                kernels,
+                strides,
+                pads,
+                dilations,
+                groups,
+            )
+            pointwise_post_op = PointwisePostOp(binary_attr="binary_add", unary_attr="relu")
+            self._test_qconv_impl_cpu_tensor(
+                qconv,
+                qconv_prepack,
+                conv_op,
+                input_channels_per_group=input_channels_per_group,
+                input_feature_map_shape=input_feature_map_shape,
+                output_channels_per_group=output_channels_per_group,
+                groups=groups,
+                kernels=kernels,
+                strides=strides,
+                pads=pads,
+                dilations=dilations,
+                W_scale=W_scale,
+                W_zero_point=W_zero_point,
+                use_bias=use_bias,
+                post_op=pointwise_post_op,
+                use_channelwise=use_channelwise,
+                qconv_output_dtype=output_dtype,
+                qconv_x2_dtype=qconv_x2_dtype,
+            )
+
+    # Test qconv with post op binary add (relu) with float output
+    @skipIfNoONEDNN
+    def test_qconv2d_binary_add_relu_float_out_pt2e(self):
+        groups_list = [1, 3]
+        input_channels_per_group = 2
+        output_channels_per_group = 2
+        input_feature_map_shape = (10, 10)
+        kernels = (3, 3)
+        strides = (2, 2)
+        pads = (1, 1)
+        dilations = (1, 1)
+        W_scale = [1.5]
+        W_zero_point = [-3]
+        use_bias_list = [False, True]
+        qconv_x2_dtype_list = [torch.float32, torch.bfloat16]
+        output_dtype_list = [torch.float32, torch.bfloat16]
+        use_channelwise = True
+        use_relu_list = [True, False]
+        options = itertools.product(
+            groups_list, use_bias_list, qconv_x2_dtype_list, output_dtype_list, use_relu_list
+        )
+        for groups, use_bias, qconv_x2_dtype, output_dtype, use_relu in options:
+            qconv = torch.ops.onednn.qconv2d_pointwise.binary
+            qconv_prepack = torch.ops.onednn.qconv_prepack
+            conv_op = torch.nn.Conv2d(
+                input_channels_per_group * groups,
+                output_channels_per_group * groups,
+                kernels,
+                strides,
+                pads,
+                dilations,
+                groups,
+            )
+            pointwise_post_op = (
+                PointwisePostOp(binary_attr="binary_add", unary_attr="relu")
+                if use_relu
+                else PointwisePostOp(binary_attr="binary_add")
+            )
+            self._test_qconv_impl_cpu_tensor(
+                qconv,
+                qconv_prepack,
+                conv_op,
+                input_channels_per_group=input_channels_per_group,
+                input_feature_map_shape=input_feature_map_shape,
+                output_channels_per_group=output_channels_per_group,
+                groups=groups,
+                kernels=kernels,
+                strides=strides,
+                pads=pads,
+                dilations=dilations,
+                W_scale=W_scale,
+                W_zero_point=W_zero_point,
+                use_bias=use_bias,
+                post_op=pointwise_post_op,
+                use_channelwise=use_channelwise,
                 qconv_output_dtype=output_dtype,
                 qconv_x2_dtype=qconv_x2_dtype,
             )
