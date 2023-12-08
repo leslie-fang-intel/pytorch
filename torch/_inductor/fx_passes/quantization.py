@@ -665,7 +665,7 @@ def _register_quantization_binary_fusion():
             _register_quantized_conv_binary_lowering(
                 patterns,
                 0,  # pass_number
-                torch.ops.onednn.qconv2d_pointwise.binary,  # computation_op
+                torch.ops.onednn.qconv2d_pointwise_.binary,  # computation_op
                 None,  # output_dtype
                 binary_unary_attr,  # binary_unary_attr
             )
@@ -691,7 +691,7 @@ def _register_quantization_binary_fusion():
                 _register_quantized_conv_binary_lowering(
                     patterns,
                     0,  # pass_number
-                    torch.ops.onednn.qconv2d_pointwise.binary,  # computation_op
+                    torch.ops.onednn.qconv2d_pointwise_.binary,  # computation_op
                     # Note that for int8-mixed-bf16 and non-inplace add, because we have
                     # q-dq inserted at extra input of add, so the non-inplace add has bf16 and fp32 inputs,
                     # the output dtype will be float32.
@@ -703,7 +703,7 @@ def _register_quantization_binary_fusion():
                 _register_quantized_conv_binary_lowering(
                     patterns,
                     1,  # pass_number
-                    torch.ops.onednn.qconv2d_pointwise.binary,  # computation_op
+                    torch.ops.onednn.qconv2d_pointwise_.binary,  # computation_op
                     torch.float32,
                     binary_unary_attr,  # binary_unary_attr
                 )
@@ -725,7 +725,7 @@ def _register_quantization_binary_fusion():
             _register_quantized_conv_binary_lowering(
                 patterns,
                 1 if int8_mixed_bf16_with_inplace_add else 2,  # pass_number
-                torch.ops.onednn.qconv2d_pointwise.binary,  # computation_op
+                torch.ops.onednn.qconv2d_pointwise_.binary,  # computation_op
                 # Same output dtype setting as conv-add-relu pattern
                 torch.bfloat16 if int8_mixed_bf16_with_inplace_add else torch.float32,
                 binary_unary_attr,  # binary_unary_attr

@@ -892,7 +892,7 @@ class GraphLowering(torch.fx.Interpreter):
                                 torch.ops.mkldnn._linear_pointwise.binary,
                                 torch.ops.aten.mkldnn_rnn_layer.default,
                                 torch.ops.onednn.qconv2d_pointwise.default,
-                                torch.ops.onednn.qconv2d_pointwise.binary,
+                                torch.ops.onednn.qconv2d_pointwise_.binary,
                                 torch.ops.onednn.qlinear_pointwise.default,
                             ]
                             if torch._C.has_mkl:

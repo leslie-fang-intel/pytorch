@@ -5911,7 +5911,7 @@ class QConvPointWisePT2E(ExternKernelAlloc):
         )
 
 
-class QConvPointWiseBinaryPT2E(ExternKernelAlloc):
+class QConvPointWiseBinaryInplacePT2E(ExternKernelAlloc):
     def __init__(
         self,
         layout,
@@ -5935,11 +5935,11 @@ class QConvPointWiseBinaryPT2E(ExternKernelAlloc):
             inputs,
             constant_args,
             None,
-            kernel="torch.ops.onednn.qconv2d_pointwise.binary",
-            cpp_kernel="onednn::qconv2d_pointwise",
+            kernel="torch.ops.onednn.qconv2d_pointwise_.binary",
+            cpp_kernel="onednn::qconv2d_pointwise_",
         )
         self.cpp_kernel_overload_name = "binary"
-        self.cpp_kernel_key = "qconv2d_pointwise_binary"
+        self.cpp_kernel_key = "qconv2d_pointwise_binary_"
         self.cpp_op_schema = """
             at::Tensor(
                 at::Tensor act,
@@ -6105,11 +6105,15 @@ class QConvPointWiseBinaryPT2E(ExternKernelAlloc):
             # if output_dtype is not None, the output buf should be dtype output_dtype instead of uint8.
             kernel_layout.dtype = output_dtype
 
-        return QConvPointWiseBinaryPT2E(
-            layout=kernel_layout,
+        packed = QConvPointWiseBinaryInplacePT2E(
+            layout=NoneLayout(accum.get_device()),
             inputs=inputs,
             constant_args=constant_args,
         )
+
+        mark_node_as_mutating(packed, accum)
+
+        return accum
 
 
 class QLinearPointwisePT2E(ExternKernelAlloc):

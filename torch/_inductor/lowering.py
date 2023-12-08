@@ -1257,6 +1257,7 @@ def register_onednn_fusion_ops():
             torch.ops.mkldnn._linear_pointwise,
             aten.mkldnn_rnn_layer.default,
             torch.ops.onednn.qconv2d_pointwise,
+            torch.ops.onednn.qconv2d_pointwise_,
         ]
 
         @register_lowering(torch.ops.mkldnn._convolution_pointwise)
@@ -1481,7 +1482,7 @@ def register_onednn_fusion_ops():
             )
 
         @register_lowering(
-            torch.ops.onednn.qconv2d_pointwise.binary, type_promotion_kind=None
+            torch.ops.onednn.qconv2d_pointwise_.binary, type_promotion_kind=None
         )
         def qconvolution_binary(
             x: TensorBox,
@@ -1508,7 +1509,7 @@ def register_onednn_fusion_ops():
             unary_algorithmm,
         ):
             return TensorBox.create(
-                ir.QConvPointWiseBinaryPT2E.create(
+                ir.QConvPointWiseBinaryInplacePT2E.create(
                     x,
                     x_scale,
                     x_zp,
