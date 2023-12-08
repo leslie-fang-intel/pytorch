@@ -56,6 +56,8 @@ pass_patterns = [
     PatternMatcherPass(),
     PatternMatcherPass(),
     PatternMatcherPass(),
+    PatternMatcherPass(),
+    PatternMatcherPass(),
 ]
 # patterns applied only in inference
 inference_patterns = PatternMatcherPass()

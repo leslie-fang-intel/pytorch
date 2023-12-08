@@ -492,15 +492,23 @@ def _register_quantized_conv_binary_lowering(
     def qconv_binary(match: Match, *args, **kwargs):
         output_dtype = match.output_node().meta.get("val").dtype
         assert output_dtype in [torch.uint8, torch.float32, torch.bfloat16]
-        assert binary_unary_attr.binary_op_name in ["sum"]
+        assert binary_unary_attr.binary_op_name in ["sum", "binary_add"]
         x, x_scale, x_zp = kwargs["x"], kwargs["x_scale"], kwargs["x_zp"]
         accum = (
             kwargs["accum"]
-            if output_dtype == torch.uint8
+            if (output_dtype == torch.uint8 and binary_unary_attr.binary_op_name == "sum")
             else kwargs["accum_after_dequant"]
         )
-        accum_scale = kwargs["accum_scale"] if output_dtype == torch.uint8 else 1.0
-        accum_zp = kwargs["accum_zp"] if output_dtype == torch.uint8 else 0
+        accum_scale = (
+            kwargs["accum_scale"]
+            if (output_dtype == torch.uint8 and binary_unary_attr.binary_op_name == "sum")
+            else 1.0
+        )
+        accum_zp = (
+            kwargs["accum_zp"]
+            if (output_dtype == torch.uint8 and binary_unary_attr.binary_op_name == "sum")
+            else 0
+        )
         packed_weight, w_scale, w_zp = (
             kwargs["packed_weight"],
             kwargs["w_scale"],
@@ -750,7 +758,7 @@ def _register_quantization_binary_fusion():
             ) in binary_replace_float_out_patterns.items():
                 _register_quantized_conv_binary_lowering(
                     patterns,
-                    0 if int8_mixed_bf16_with_inplace_add else 1,  # pass_number
+                    0 if int8_mixed_bf16_with_inplace_add else 2,  # pass_number
                     torch.ops.onednn.qconv2d_pointwise.binary,  # computation_op
                     binary_unary_attr,  # binary_unary_attr
                 )
@@ -777,7 +785,7 @@ def _register_quantization_binary_fusion():
             ) in binary_replace_float_out_patterns.items():
                 _register_quantized_conv_binary_lowering(
                     patterns,
-                    1 if int8_mixed_bf16_with_inplace_add else 2,  # pass_number
+                    1 if int8_mixed_bf16_with_inplace_add else 3,  # pass_number
                     torch.ops.onednn.qconv2d_pointwise.binary,  # computation_op
                     binary_unary_attr,  # binary_unary_attr
                 )
@@ -792,8 +800,183 @@ def _register_quantization_binary_fusion():
         _register_quantization_post_op_sum_unary_helper(
             int8_mixed_bf16_with_inplace_add=True
         )
+    
+    def _register_quantization_post_op_binary_add_unary():
+            # Priority 1 to match: QConv2d Binary or Binary-Unary pattern with int8 output
+            #    QConv2d       
+            #            add
+            #       optional(relu) if register unary post op
+            #       optional(to_fp32)
+            #             q
+            # Fuse this pattern to QConv2d_binary_add_(relu)
+
+            # cases = [
+            #     False, torch.float32,
+            #     False, torch.bfloat16,
+            #     True, torch.bfloat16,
+            # ]
+
+            binary_replace_patterns = {
+                BinaryUnaryAttr(
+                    "binary_add", 1.0, "none", [], ""
+                ): generate_pattern_with_output_quant(
+                    generate_pattern_with_binary(
+                        aten.add.Tensor,
+                        dequantize_qconv_pt2e_pattern,
+                        KeywordArg("accum_after_dequant"),
+                    ),
+                    torch.float32,
+                ),
+                BinaryUnaryAttr(
+                    "binary_add", 1.0, "relu", [], ""
+                ): generate_pattern_with_output_quant(
+                    generate_pattern_with_unary(
+                        generate_pattern_with_binary(
+                            aten.add.Tensor,
+                            dequantize_qconv_pt2e_pattern,
+                            KeywordArg("accum_after_dequant"),
+                        ),
+                        aten.relu.default,
+                    ),
+                    torch.float32,
+                ),
+
+                # Int8-mixed-bf16, outplace add
+                BinaryUnaryAttr(
+                    "binary_add", 1.0, "none", [], ""
+                ): generate_pattern_with_output_quant(
+                    generate_pattern_with_binary(
+                        aten.add.Tensor,
+                        dequantize_qconv_pt2e_pattern,
+                        KeywordArg("accum_after_dequant"),
+                    ),
+                    torch.bfloat16,
+                ),
+                BinaryUnaryAttr(
+                    "binary_add", 1.0, "relu", [], ""
+                ): generate_pattern_with_output_quant(
+                    generate_pattern_with_unary(
+                        generate_pattern_with_binary(
+                            aten.add.Tensor,
+                            dequantize_qconv_pt2e_pattern,
+                            KeywordArg("accum_after_dequant"),
+                        ),
+                        aten.relu.default,
+                    ),
+                    torch.bfloat16,
+                ),
+
+                # Int8-mixed-bf16, inplace add, extra_input of add is float32
+                BinaryUnaryAttr(
+                    "binary_add", 1.0, "none", [], ""
+                ): generate_pattern_with_output_quant(
+                    generate_pattern_with_binary(
+                        aten.add.Tensor,
+                        dequantize_qconv_pt2e_pattern,
+                        KeywordArg("accum_after_dequant"),
+                        int8_mixed_bf16_with_inplace_add=True,
+                    ),
+                    torch.bfloat16,
+                ),
+                BinaryUnaryAttr(
+                    "binary_add", 1.0, "relu", [], ""
+                ): generate_pattern_with_output_quant(
+                    generate_pattern_with_unary(
+                        generate_pattern_with_binary(
+                            aten.add.Tensor,
+                            dequantize_qconv_pt2e_pattern,
+                            KeywordArg("accum_after_dequant"),
+                            int8_mixed_bf16_with_inplace_add=True,
+                        ),
+                        aten.relu.default,
+                    ),
+                    torch.bfloat16,
+                ),
+            }
+
+            for binary_unary_attr, patterns in binary_replace_patterns.items():
+                _register_quantized_conv_binary_lowering(
+                    patterns,
+                    1,  # pass_number
+                    torch.ops.onednn.qconv2d_pointwise.binary,  # computation_op
+                    binary_unary_attr,  # binary_unary_attr
+                )
+
+            # Priority 2 to match: QConv2d Binary-Unary pattern with fp32/bfloat16 output
+            #    QConv2d
+            #            add
+            #            relu
+            # Fuse this pattern to QConv2d_binary_add_relu
+            binary_replace_float_out_patterns = {
+                BinaryUnaryAttr(
+                    "binary_add", 1.0, "relu", [], ""
+                ): generate_pattern_with_unary(
+                    generate_pattern_with_binary(
+                        aten.add.Tensor,
+                        dequantize_qconv_pt2e_pattern,
+                        KeywordArg("accum_after_dequant"),
+                    ),
+                    aten.relu.default,
+                ),
+                BinaryUnaryAttr(
+                    "binary_add", 1.0, "relu", [], ""
+                ): generate_pattern_with_unary(
+                    generate_pattern_with_binary(
+                        aten.add.Tensor,
+                        dequantize_qconv_pt2e_pattern,
+                        KeywordArg("accum_after_dequant"),
+                        int8_mixed_bf16_with_inplace_add=True,
+                    ),
+                    aten.relu.default,
+                ),
+            }
+
+            for (
+                binary_unary_attr,
+                patterns,
+            ) in binary_replace_float_out_patterns.items():
+                _register_quantized_conv_binary_lowering(
+                    patterns,
+                    3,  # pass_number
+                    torch.ops.onednn.qconv2d_pointwise.binary,  # computation_op
+                    binary_unary_attr,  # binary_unary_attr
+                )
+
+            # Priority 3: QConv2d Binary pattern with fp32/bfloat16 output
+            #    QConv2d
+            #            add
+            # Fuse this pattern to QConv2d_sum
+            binary_replace_float_out_patterns = {
+                BinaryUnaryAttr(
+                    "binary_add", 1.0, "none", [], ""
+                ): generate_pattern_with_binary(
+                    aten.add.Tensor,
+                    dequantize_qconv_pt2e_pattern,
+                    KeywordArg("accum_after_dequant"),
+                ),
+                BinaryUnaryAttr(
+                    "binary_add", 1.0, "none", [], ""
+                ): generate_pattern_with_binary(
+                    aten.add.Tensor,
+                    dequantize_qconv_pt2e_pattern,
+                    KeywordArg("accum_after_dequant"),
+                    int8_mixed_bf16_with_inplace_add=True,
+                ),
+            }
+
+            for (
+                binary_unary_attr,
+                patterns,
+            ) in binary_replace_float_out_patterns.items():
+                _register_quantized_conv_binary_lowering(
+                    patterns,
+                    4,  # pass_number
+                    torch.ops.onednn.qconv2d_pointwise.binary,  # computation_op
+                    binary_unary_attr,  # binary_unary_attr
+                )
 
     _register_quantization_post_op_sum_unary()
+    _register_quantization_post_op_binary_add_unary()
 
 
 def _is_valid_quantized_maxpool2d_optimization_pattern():
