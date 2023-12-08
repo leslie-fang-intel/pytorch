@@ -629,9 +629,7 @@ class TestPatternMatcher(TestPatternMatcherBase):
                     counters["inductor"]["qconv2d_weight_prepack_matcher_count"], 4
                 )
                 # 2. Qconv2d Binary Unary fusion in post-grad fusion pass * 2
-                self.assertEqual(
-                    counters["inductor"]["qconv2d_binary_matcher_count"], 2
-                )
+                self.assertEqual(counters["inductor"]["qconv2d_sum_matcher_count"], 2)
 
             self._test_common(
                 mod,
@@ -702,9 +700,7 @@ class TestPatternMatcher(TestPatternMatcherBase):
 
             def matcher_check_fn():
                 # Shouldn't hit conv binary fusion
-                self.assertEqual(
-                    counters["inductor"]["qconv2d_binary_matcher_count"], 0
-                )
+                self.assertEqual(counters["inductor"]["qconv2d_sum_matcher_count"], 0)
 
             self._test_common(
                 mod,
@@ -876,8 +872,8 @@ class TestPatternMatcher(TestPatternMatcherBase):
             # 2. Qconv2d Binary fusion in post-grad fusion pass * 1
             #    [qconv2d_pointwise_default_1, convert_element_type_5, sub_2, mul_5, add_3, mul_6, round_4, add_4,
             #     clamp_min_3, clamp_max_3, convert_element_type_6]
-            self.assertEqual(counters["inductor"]["qconv2d_binary_matcher_count"], 1)
-            self.assertEqual(counters["inductor"]["qconv2d_binary_matcher_nodes"], 11)
+            self.assertEqual(counters["inductor"]["qconv2d_sum_matcher_count"], 1)
+            self.assertEqual(counters["inductor"]["qconv2d_sum_matcher_nodes"], 11)
 
         self._test_common(
             mod,
@@ -936,8 +932,8 @@ class TestPatternMatcher(TestPatternMatcherBase):
             # 2. Qconv2d Binary fusion in post-grad fusion pass * 1
             #    [qconv2d_pointwise_default_1, convert_element_type_5, sub_2, mul_5, add_3, relu, mul_6, round_4, add_4,
             #     clamp_min_3, clamp_max_3, convert_element_type_6]
-            self.assertEqual(counters["inductor"]["qconv2d_binary_matcher_count"], 1)
-            self.assertEqual(counters["inductor"]["qconv2d_binary_matcher_nodes"], 12)
+            self.assertEqual(counters["inductor"]["qconv2d_sum_matcher_count"], 1)
+            self.assertEqual(counters["inductor"]["qconv2d_sum_matcher_nodes"], 12)
 
         self._test_common(
             mod,
@@ -997,8 +993,8 @@ class TestPatternMatcher(TestPatternMatcherBase):
             )
             # 3. Qconv2d Binary fusion in post-grad fusion pass * 1
             #    [qconv2d_pointwise_default_1, add_3]
-            self.assertEqual(counters["inductor"]["qconv2d_binary_matcher_count"], 1)
-            self.assertEqual(counters["inductor"]["qconv2d_binary_matcher_nodes"], 2)
+            self.assertEqual(counters["inductor"]["qconv2d_sum_matcher_count"], 1)
+            self.assertEqual(counters["inductor"]["qconv2d_sum_matcher_nodes"], 2)
 
         self._test_common(
             mod,
