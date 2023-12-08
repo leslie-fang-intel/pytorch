@@ -72,6 +72,15 @@ quantization_inplace_add_fn_list = [
     lambda x, y: x.add_(y),
 ]
 
+class QuantizationTestConfig:
+    def __init__(
+        self,
+        is_qat: bool = False,
+        annotate_extra_input_of_binary_node: bool = True,
+    ):
+        self.is_qat = is_qat
+        self.annotate_extra_input_of_binary_node = annotate_extra_input_of_binary_node
+
 
 @config.patch({"freezing": True})
 class TestPatternMatcherBase(TestCase):
@@ -89,20 +98,26 @@ class TestPatternMatcherBase(TestCase):
 
         return tuple(clone(x) for x in inputs)
 
-    def _generate_qdq_quantized_model(self, mod, inputs, is_qat=False):
-        maybe_no_grad = contextlib.nullcontext() if is_qat else torch.no_grad()
+    def _generate_qdq_quantized_model(
+        self,
+        mod,
+        inputs,
+        quantization_test_config=QuantizationTestConfig(),
+    ):
+        maybe_no_grad = contextlib.nullcontext() if quantization_test_config.is_qat else torch.no_grad()
         with maybe_no_grad:
             export_model = capture_pre_autograd_graph(
                 mod,
                 inputs,
             )
             quantizer = X86InductorQuantizer()
+            quantizer._set_annotate_extra_input_of_binary_node(quantization_test_config.annotate_extra_input_of_binary_node)
             quantizer.set_global(
-                xiq.get_default_x86_inductor_quantization_config(is_qat=is_qat)
+                xiq.get_default_x86_inductor_quantization_config(is_qat=quantization_test_config.is_qat)
             )
             prepare_model = (
                 prepare_qat_pt2e(export_model, quantizer)
-                if is_qat
+                if quantization_test_config.is_qat
                 else prepare_pt2e(export_model, quantizer)
             )
             prepare_model(*inputs)
@@ -120,7 +135,7 @@ class TestPatternMatcherBase(TestCase):
         rtol=1.3e-6,
         check_autocast=False,
         check_quantization=False,
-        is_qat=False,
+        quantization_test_config=QuantizationTestConfig(),
         matcher_check_fn=None,
     ):
         counters.clear()
@@ -133,7 +148,11 @@ class TestPatternMatcherBase(TestCase):
             maybe_autocast = torch.cpu.amp.autocast()
             atol, rtol = 1e-2, 1e-2
         if check_quantization:
-            convert_model = self._generate_qdq_quantized_model(mod, inputs, is_qat)
+            convert_model = self._generate_qdq_quantized_model(
+                mod,
+                inputs,
+                quantization_test_config,
+            )
             with torch.no_grad(), maybe_autocast:
                 _ = torch.compile(convert_model)(*inputs)
                 if matcher_count is not None:
@@ -712,6 +731,58 @@ class TestPatternMatcher(TestPatternMatcherBase):
     @skipIfNoDynamoSupport
     @skipIfNoONEDNN
     @skipIfRocm
+    def test_qconv2d_add_3(self):
+        class M(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.conv = torch.nn.Conv2d(
+                    in_channels=3, out_channels=32, kernel_size=3, stride=1, padding=1
+                )
+                self.conv2 = torch.nn.Conv2d(
+                    in_channels=32, out_channels=32, kernel_size=3, stride=1, padding=1
+                )
+                self.conv3 = torch.nn.Conv2d(
+                    in_channels=32, out_channels=32, kernel_size=3, stride=1, padding=1
+                )
+                self.maxpool = torch.nn.MaxPool2d(1)
+
+
+            def forward(self, x):
+                x1 = self.conv(x)
+                conv_out2 = self.conv2(x1)
+                # print("conv_out2.size() is: {}".format(conv_out2.size()), flush=True)
+                res = torch.add(conv_out2, x1)
+                res = self.conv3(res)
+                other2 = torch.pow(x1, 2)
+                # print("res.size() is: {}".format(res.size()), flush=True)
+                # print("other2.size() is: {}".format(other2.size()), flush=True)
+                res = res / other2
+                return res
+
+        mod = M().eval()
+        v = torch.randn((1, 3, 8, 8), dtype=torch.float32, requires_grad=False).add(
+            1
+        )
+
+        # mod(v)
+
+        # return
+
+        def matcher_check_fn():
+            # Shouldn't hit conv binary fusion
+            self.assertEqual(counters["inductor"]["qconv2d_sum_matcher_count"], 0)
+
+        self._test_common(
+            mod,
+            (v,),
+            check_quantization=True,
+            quantization_test_config=QuantizationTestConfig(annotate_extra_input_of_binary_node=False),
+            matcher_check_fn=matcher_check_fn,
+        )
+
+    @skipIfNoDynamoSupport
+    @skipIfNoONEDNN
+    @skipIfRocm
     def test_qat_qconv2d(self):
         r"""
         This testcase will quantize a single Conv2d module with qat flow.
@@ -750,7 +821,7 @@ class TestPatternMatcher(TestPatternMatcherBase):
             mod,
             (v,),
             check_quantization=True,
-            is_qat=True,
+            quantization_test_config=QuantizationTestConfig(is_qat=True),
             matcher_check_fn=matcher_check_fn,
         )
 
@@ -792,7 +863,7 @@ class TestPatternMatcher(TestPatternMatcherBase):
             mod,
             (v,),
             check_quantization=True,
-            is_qat=True,
+            quantization_test_config=QuantizationTestConfig(is_qat=True),
             matcher_check_fn=matcher_check_fn,
         )
 
@@ -879,7 +950,7 @@ class TestPatternMatcher(TestPatternMatcherBase):
             mod,
             (v,),
             check_quantization=True,
-            is_qat=True,
+            quantization_test_config=QuantizationTestConfig(is_qat=True),
             matcher_check_fn=matcher_check_fn,
         )
 
@@ -939,7 +1010,7 @@ class TestPatternMatcher(TestPatternMatcherBase):
             mod,
             (v,),
             check_quantization=True,
-            is_qat=True,
+            quantization_test_config=QuantizationTestConfig(is_qat=True),
             matcher_check_fn=matcher_check_fn,
         )
 
@@ -1905,7 +1976,7 @@ class TestDynamicPatternMatcher(TestPatternMatcherBase):
             mod,
             (v,),
             check_quantization=True,
-            is_qat=True,
+            quantization_test_config=QuantizationTestConfig(is_qat=True),
             matcher_check_fn=matcher_check_fn,
         )
 

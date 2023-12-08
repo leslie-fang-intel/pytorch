@@ -437,9 +437,7 @@ def _is_valid_quantized_conv_binary_optimization_pattern(binary_unary_attr):
                 break
         assert extra_input_node is not None
         if output_dtype in [torch.float32, torch.bfloat16]:
-            if (not isinstance(extra_input_node, torch.fx.Node)) or (
-                extra_input_node.target != aten.mul.Tensor
-            ):
+            if (not isinstance(extra_input_node, torch.fx.Node)):
                 return False
 
         if binary_unary_attr and binary_unary_attr.binary_op_name == "sum":
@@ -458,6 +456,11 @@ def _is_valid_quantized_conv_binary_optimization_pattern(binary_unary_attr):
                 if output_dtype == torch.uint8
                 else extra_input_node
             )
+
+            # print("output_dtype is: {}".format(output_dtype), flush=True)
+            # print("_check_node is: {}".format(_check_node), flush=True)
+            # print("_skip_check_user_node is: {}".format(_skip_check_user_node), flush=True)
+            # print("len(_check_node.users) is: {}".format(len(_check_node.users)), flush=True)
 
             if len(_check_node.users) > 1 and not all(
                 (

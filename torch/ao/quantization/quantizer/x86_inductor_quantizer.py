@@ -227,6 +227,13 @@ class X86InductorQuantizer(Quantizer):
         super().__init__()
         self.global_config: QuantizationConfig = None  # type: ignore[assignment]
         self.operator_type_config: Dict[str, Optional[QuantizationConfig]] = {}
+        self.annotate_extra_input_of_binary_node = True
+
+    def _set_annotate_extra_input_of_binary_node(self, status):
+        self.annotate_extra_input_of_binary_node = status
+    
+    def _get_annotate_extra_input_of_binary_node(self,):
+        return self.annotate_extra_input_of_binary_node
 
     @classmethod
     def get_supported_quantization_configs(cls) -> List[QuantizationConfig]:
@@ -468,9 +475,10 @@ class X86InductorQuantizer(Quantizer):
             self._annotate_conv_node_helper(conv_node, False, quantization_config)
 
             binary_node_input_qspec_map = {}
-            binary_node_input_qspec_map[extra_input_node] = get_input_act_qspec(
-                quantization_config
-            )
+            if self.annotate_extra_input_of_binary_node:
+                binary_node_input_qspec_map[extra_input_node] = get_input_act_qspec(
+                    quantization_config
+                )
             binary_node.meta[QUANT_ANNOTATION_KEY] = _X86InductorQuantizationAnnotation(
                 input_qspec_map=binary_node_input_qspec_map,
                 _annotated=True,
@@ -528,9 +536,10 @@ class X86InductorQuantizer(Quantizer):
             self._annotate_conv_node_helper(conv_node, False, quantization_config)
 
             binary_node_input_qspec_map = {}
-            binary_node_input_qspec_map[extra_input_node] = get_input_act_qspec(
-                quantization_config
-            )
+            if self.annotate_extra_input_of_binary_node:
+                binary_node_input_qspec_map[extra_input_node] = get_input_act_qspec(
+                    quantization_config
+                )
             binary_node.meta[QUANT_ANNOTATION_KEY] = _X86InductorQuantizationAnnotation(
                 input_qspec_map=binary_node_input_qspec_map,
                 # TODO<leslie> Remove the annotate of output in QAT when qat util support pattern matcher.
@@ -666,9 +675,10 @@ class X86InductorQuantizer(Quantizer):
                 continue
             self._annotate_conv_node_helper(conv_node, False, quantization_config)
             binary_node_input_qspec_map = {}
-            binary_node_input_qspec_map[extra_input_node] = get_input_act_qspec(
-                quantization_config
-            )
+            if self.annotate_extra_input_of_binary_node:
+                binary_node_input_qspec_map[extra_input_node] = get_input_act_qspec(
+                    quantization_config
+                )
             binary_node.meta[QUANT_ANNOTATION_KEY] = _X86InductorQuantizationAnnotation(
                 input_qspec_map=binary_node_input_qspec_map,
                 _annotated=True,
@@ -712,9 +722,10 @@ class X86InductorQuantizer(Quantizer):
                 continue
             self._annotate_conv_node_helper(conv_node, False, quantization_config)
             binary_node_input_qspec_map = {}
-            binary_node_input_qspec_map[extra_input_node] = get_input_act_qspec(
-                quantization_config
-            )
+            if self.annotate_extra_input_of_binary_node:
+                binary_node_input_qspec_map[extra_input_node] = get_input_act_qspec(
+                    quantization_config
+                )
             binary_node.meta[QUANT_ANNOTATION_KEY] = _X86InductorQuantizationAnnotation(
                 input_qspec_map=binary_node_input_qspec_map,
                 _annotated=True,
