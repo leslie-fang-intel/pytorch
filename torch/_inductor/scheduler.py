@@ -1377,6 +1377,16 @@ class Scheduler:
             return reachable_names
 
         def add_user(used_by_name, user_node, can_inplace=False, is_weak=False):
+            node_list = name_to_users[rename(used_by_name)]
+            def _is_same_node(src_node):
+                if src_node.node == user_node and src_node.can_inplace ==can_inplace and src_node.is_weak ==is_weak:
+                    return True
+                return False
+            
+            for node in node_list:
+                if _is_same_node(node):
+                    return
+
             name_to_users[rename(used_by_name)].append(
                 NodeUser(user_node, can_inplace, is_weak)
             )
@@ -1425,6 +1435,10 @@ class Scheduler:
                 #     print("------------ hit -interesting -----------", flush=True)
                 # print("len(name_to_users[alt_name] is: {}".format(len(name_to_users[alt_name])), flush=True)
                 for other_node in name_to_users[alt_name]:
+
+                    if isinstance(node.node, ir.ConvolutionBinaryInplace):
+                        print("other_node is: {}".format(other_node), flush=True)
+    
                     # this node must run after all prior readers
                     other_name = rename(other_node.get_name())
                     known_dep_node_names = dep_closure(node.get_name())
