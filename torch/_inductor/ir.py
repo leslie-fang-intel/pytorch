@@ -5350,7 +5350,11 @@ class ConvolutionBinaryInplace(ExternKernelAlloc):
             inputs=inputs,
             constant_args=constant_args,
         )
+        
         mark_node_as_mutating(packed, inputs[1])
+        # V.graph.mark_buffer_mutated(inputs[1].get_name())
+        
+        
         # This op mutates in place which means that the result is not the
         # target but rather the input that is being mutated
         # init reorders the inputs, so inputs[1] becomes packed.inputs[0]

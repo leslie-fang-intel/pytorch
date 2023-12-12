@@ -681,6 +681,8 @@ class SchedulerNode(BaseSchedulerNode):
             self._body,
         ) = node.simplify_and_reorder()
 
+        print("---- Inside the init of SchedulerNode ----", flush=True)
+
         self.group = (node.get_device(), group_fn(self._sizes))
 
         if isinstance(node, ir.TemplateBuffer):
@@ -1228,7 +1230,10 @@ class Scheduler:
         # in codegen we only use buf0, never buf1
         self.mutation_renames = {}
 
+        print("---- start to compute_dependencies ----", flush=True)
         self.compute_dependencies()
+        print("---- Finish to compute_dependencies ----", flush=True)
+
         self.topological_sort_schedule()
         self.dead_node_elimination()
         if config.reorder_for_compute_comm_overlap:
@@ -1378,8 +1383,13 @@ class Scheduler:
 
         unbacked_symbol_to_origin_node = {}
 
+        print("--- hit checkpoint 1 -----", flush=True)
+
         for node in self.nodes:
             log.debug("scheduling %s", node.node)
+            print("scheduling node.get_name() is: {}".format(node.get_name()), flush=True)
+            
+            print("---- check point 1.1", flush=True)
 
             # unbacked symbols don't follow ordinary buffer dependencies, so
             # we track their def/uses separately
@@ -1397,6 +1407,8 @@ class Scheduler:
                     s in unbacked_symbol_to_origin_node
                 ), f"{s} not in {unbacked_symbol_to_origin_node}"
                 node.add_fake_dep(StarDep(unbacked_symbol_to_origin_node[s].get_name()))
+            
+            print("---- check point 1.2", flush=True)
 
             # a node will mutate either 0 or 1 buffers
             assert len(node.get_mutations()) <= 1
@@ -1405,6 +1417,13 @@ class Scheduler:
                 # this node must run after the prior writer
                 add_user(alt_name, node)
                 node.add_mutation_dep(StarDep(alt_name))
+                # print(type(name_to_users[alt_name]), flush=True)
+                if isinstance(node.node, ir.ConvolutionBinaryInplace):
+                    print("node is: {}".format(node.debug_str_extra()), flush=True)
+                    print("len(name_to_users[alt_name] is: {}".format(len(name_to_users[alt_name])), flush=True)
+                # if isinstance(getattr(node.node, 'kernel', None), torch.ops.mkldnn._convolution_pointwise_.binary):
+                #     print("------------ hit -interesting -----------", flush=True)
+                # print("len(name_to_users[alt_name] is: {}".format(len(name_to_users[alt_name])), flush=True)
                 for other_node in name_to_users[alt_name]:
                     # this node must run after all prior readers
                     other_name = rename(other_node.get_name())
@@ -1414,6 +1433,8 @@ class Scheduler:
                         # we don't need to insert an extra dep.
                         node.add_mutation_dep(WeakDep(other_name))
                         add_user(other_name, node, is_weak=True)
+            
+            print("---- check point 1.3", flush=True)
 
             # add normal non-mutation dependencies
             for read in node.read_writes.reads:
@@ -1429,6 +1450,8 @@ class Scheduler:
                 self.mutation_real_name[node.get_name()] = self.mutation_real_name.get(
                     alt_name, alt_name
                 )
+
+        print("--- hit checkpoint 2 -----", flush=True)
 
         # make sure outputs aren't dead-code-eliminated
         for node_name in V.graph.get_output_names():
