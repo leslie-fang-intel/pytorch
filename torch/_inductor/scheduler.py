@@ -1372,6 +1372,16 @@ class Scheduler:
             return reachable_names
 
         def add_user(used_by_name, user_node, can_inplace=False, is_weak=False):
+
+            node_list = name_to_users[rename(used_by_name)]
+            def _is_same_node(src_node):
+                if src_node.node == user_node and src_node.can_inplace ==can_inplace and src_node.is_weak ==is_weak:
+                    return True
+                return False
+            for node in node_list:
+                if _is_same_node(node):
+                    return
+
             name_to_users[rename(used_by_name)].append(
                 NodeUser(user_node, can_inplace, is_weak)
             )
