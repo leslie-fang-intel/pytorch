@@ -386,22 +386,29 @@ if torch._C._has_mkldnn:
         # ancestor node of compute_node.
         def _is_ancestor_node(_current_node, _ancestor_node):
             # Check whether _ancestor_node is the ancestor node of current node
-            if _current_node == _ancestor_node:
-                return True
-            elif isinstance(_current_node, torch.fx.Node):
-                if (
-                    _current_node.op == "placeholder"
-                    or _current_node.op == "output"
-                    or _current_node.op == "get_attr"
-                ):
-                    return False
+            work_list = []
+            work_list.append(_current_node)
+            visited = set()
+            while len(work_list) != 0:
+                # We prefer first-in first-out in this case
+                _current_node = work_list.pop(0)
+                visited.add(_current_node)
+                if _current_node == _ancestor_node:
+                    return True
+                elif isinstance(_current_node, torch.fx.Node):
+                    if (
+                        _current_node.op == "placeholder"
+                        or _current_node.op == "output"
+                        or _current_node.op == "get_attr"
+                    ):
+                        continue
+                    else:
+                        for input in _current_node.all_input_nodes:
+                            if input not in visited:
+                                work_list.append(input)
                 else:
-                    return any(
-                        _is_ancestor_node(input, _ancestor_node)
-                        for input in _current_node.all_input_nodes
-                    )
-            else:
-                return False
+                    continue
+            return False
 
         return [
             user
