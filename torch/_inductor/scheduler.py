@@ -1563,9 +1563,9 @@ class Scheduler:
         while again:
             updated_nodes = []
             for node in self.nodes:
-                if node.get_name() == "buf288":
-                    print("--- try eliminate ----", flush=True)
-                    print(node.get_name(), flush=True)
+                # if node.get_name() == "buf291":
+                #     print("--- try eliminate buf291 ----", flush=True)
+                #     print(node.get_name(), flush=True)
 
                 def can_eliminate_user(user: NodeUser):
                     return user.is_weak or user.get_name() in V.graph.removed_buffers
@@ -1573,7 +1573,8 @@ class Scheduler:
                 can_eliminate = not node.has_side_effects() and all(
                     can_eliminate_user(u) for u in node.users
                 )
-                if node.get_name() == "buf288":
+                if node.get_name() == "buf291":
+                    print("buf291", flush=True)
                     print(node.has_side_effects(), flush=True)
                     # print(all(can_eliminate_user(u) for u in node.users), flush=True)
                     for  u in node.users:
@@ -1581,16 +1582,16 @@ class Scheduler:
                         print("can_eliminate_user(u) is: {}".format(can_eliminate_user(u)), flush=True)
                     print("--- try eliminate can_eliminate is: {}----".format(can_eliminate), flush=True)
 
-                if node.get_name() == "buf289":
-                    print("buf289 can_eliminate is: {}".format(can_eliminate), flush=True)
+                if node.get_name() == "buf292":
+                    print("buf292 can_eliminate is: {}".format(can_eliminate), flush=True)
                     for  u in node.users:
                         print("u is: {}".format(u), flush=True)
                         print("can_eliminate_user(u) is: {}".format(can_eliminate_user(u)), flush=True)
                     print("--- try eliminate can_eliminate is: {}----".format(can_eliminate), flush=True)
 
-                    if len(node.users) == 1 and isinstance(node.users[0].node, torch._inductor.scheduler.OutputNode):
-                        if node.get_name() != V.graph.graph_outputs[0].data.name:
-                            can_eliminate = True
+                if len(node.users) == 1 and isinstance(node.users[0].node, torch._inductor.scheduler.OutputNode):
+                    if node.get_name() != V.graph.graph_outputs[0].data.name:
+                        can_eliminate = True
 
 
                 if not can_eliminate:
