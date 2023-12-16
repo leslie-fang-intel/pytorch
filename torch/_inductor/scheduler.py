@@ -1256,7 +1256,13 @@ class Scheduler:
         self.create_foreach_nodes()
         self.topological_sort_schedule()
         self.logged_slow_fusion = set()
+        for node in self.nodes:
+            if node.get_name() == "buf289":
+                print("--- 2--- still has buf289 ----", flush=True)
         self.fuse_nodes()
+        for node in self.nodes:
+            if node.get_name() == "buf289":
+                print("--- 3 --- still has buf289 ----", flush=True)
         if config.reorder_for_compute_comm_overlap:
             # Refresh node_users and inverse_users to reflect fused nodes
             self.compute_node_users()
@@ -1557,6 +1563,9 @@ class Scheduler:
         while again:
             updated_nodes = []
             for node in self.nodes:
+                if node.get_name() == "buf288":
+                    print("--- try eliminate ----", flush=True)
+                    print(node.get_name(), flush=True)
 
                 def can_eliminate_user(user: NodeUser):
                     return user.is_weak or user.get_name() in V.graph.removed_buffers
@@ -1564,6 +1573,25 @@ class Scheduler:
                 can_eliminate = not node.has_side_effects() and all(
                     can_eliminate_user(u) for u in node.users
                 )
+                if node.get_name() == "buf288":
+                    print(node.has_side_effects(), flush=True)
+                    # print(all(can_eliminate_user(u) for u in node.users), flush=True)
+                    for  u in node.users:
+                        print("u is: {}".format(u), flush=True)
+                        print("can_eliminate_user(u) is: {}".format(can_eliminate_user(u)), flush=True)
+                    print("--- try eliminate can_eliminate is: {}----".format(can_eliminate), flush=True)
+
+                if node.get_name() == "buf289":
+                    print("buf289 can_eliminate is: {}".format(can_eliminate), flush=True)
+                    for  u in node.users:
+                        print("u is: {}".format(u), flush=True)
+                        print("can_eliminate_user(u) is: {}".format(can_eliminate_user(u)), flush=True)
+                    print("--- try eliminate can_eliminate is: {}----".format(can_eliminate), flush=True)
+
+                    if len(node.users) == 1 and isinstance(node.users[0].node, torch._inductor.scheduler.OutputNode):
+                        if node.get_name() != V.graph.graph_outputs[0].data.name:
+                            can_eliminate = True
+
 
                 if not can_eliminate:
                     updated_nodes.append(node)
@@ -1578,6 +1606,10 @@ class Scheduler:
         # Prune any WeakDeps no longer needed
         for node in self.nodes:
             node.prune_weak_deps()
+        
+        for node in self.nodes:
+            if node.get_name() == "buf289":
+                print("--- still has buf289 ----", flush=True)
 
     def topological_sort_schedule(self):
         """
@@ -2216,6 +2248,8 @@ class Scheduler:
     @dynamo_timed
     def codegen(self):
         for node in self.nodes:
+            if node.get_name() == "buf289":
+                print("--- inside codegen has buf289 ----", flush=True) 
             try:
                 log.debug(
                     "Generating code for node %s with estimated runtime %f",
