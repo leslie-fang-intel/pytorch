@@ -2718,15 +2718,45 @@ class MutationLayout(Layout):
             read_writes = src.get_read_writes()
             # print("read_writes is: {}".format(read_writes), flush=True)
 
+        
+        def _ensure_store_index_not_overlap_reads_index():
+            if isinstance(src.data, ComputedBuffer):
+                # <TODO> If read and write has same index, can we skip the copy??
+                read_writes = src.get_read_writes()
+                if len(list(read_writes.writes)) != 1:
+                    return False
+                write = list(read_writes.writes)[0]
+                # write_index = write.index
+
+                return all(
+                    (
+                       read.name != dst.get_name()
+                       or read.index == write.index
+                    )
+                    for read in read_writes.reads
+                )
+            return False
+
         if (
             not isinstance(src, StorageBox)
-            or src.is_user_of(dst.get_name())
+            or (
+                src.is_user_of(dst.get_name())
+                and not _ensure_store_index_not_overlap_reads_index()
+            )
             or src.is_zero_elements()
         ):
             need_copy = True
         else:
             src.realize()
             need_copy = not isinstance(src.get_layout(), FlexibleLayout)
+
+
+
+        # For debug
+        # need_copy = need_copy and src.get_name() == "buf288"
+
+
+
 
         if need_copy and not unsafe_alias:
             src = Pointwise.create(
