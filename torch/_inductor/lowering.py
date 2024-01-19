@@ -1046,6 +1046,32 @@ def pointwise_cat(inputs, dim=0):
         ranges=new_size,
     )
 
+@register_lowering(aten.native_group_norm, type_promotion_kind=None)
+def native_group_norm(
+    input: TensorBox,
+    weight: Optional[TensorBox],
+    bias: Optional[TensorBox],
+    batch_size: int,
+    num_channels: int,
+    flattened_inner_size: int,
+    num_groups: int,
+    eps: float,
+)  -> Tuple[TensorBox, TensorBox, TensorBox]:
+    input.realize()
+    if len(input.get_size()) == 4:
+        inputs, _ = require_channels_last(aten.native_group_norm, input)
+        input = inputs[0]
+
+    return fallback_handler(aten.native_group_norm.default)(
+        input,
+        weight,
+        bias,
+        batch_size,
+        num_channels,
+        flattened_inner_size,
+        num_groups,
+        eps,
+    )
 
 @register_lowering(aten.cat)
 def cat(inputs, dim=0):

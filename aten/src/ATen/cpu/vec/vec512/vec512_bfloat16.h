@@ -936,6 +936,28 @@ Vectorized<BFloat16> inline fmadd(const Vectorized<BFloat16>& a,
   return cvtfp32_bf16(o1, o2);
 }
 
+template<>
+inline void transpose_mxn<BFloat16, 32, 32>(
+    const BFloat16* src,
+    int64_t ld_src,
+    BFloat16* dst,
+    int64_t ld_dst) {
+
+    // std::cout<<"hit bfloat16 transpose_mxn 32 32"<<std::endl;
+    return;
+}
+
+template<>
+inline void transpose_mxn<BFloat16, 16, 16>(
+    const BFloat16* src,
+    int64_t ld_src,
+    BFloat16* dst,
+    int64_t ld_dst) {
+
+    // std::cout<<"hit bfloat16 transpose_mxn 16 16"<<std::endl;
+    return;
+}
+
 template <>
 class Vectorized<Half>: public Vectorized16<Half> {
 public:
