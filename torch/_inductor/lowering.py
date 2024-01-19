@@ -1046,10 +1046,56 @@ def pointwise_cat(inputs, dim=0):
         ranges=new_size,
     )
 
+@register_lowering(aten.silu, type_promotion_kind=None)
+def silu(input: TensorBox) -> TensorBox:
+    input.realize()
+    if len(input.get_size()) == 4:
+        inputs, _ = require_channels_last(aten.silu, input)
+        input = inputs[0]
+    return fallback_handler(aten.silu.default)(input)
+
+@register_lowering(aten.native_group_norm, type_promotion_kind=None)
+def native_group_norm(
+    input: TensorBox,
+    weight: Optional[TensorBox],
+    bias: Optional[TensorBox],
+    batch_size: int,
+    num_channels: int,
+    flattened_inner_size: int,
+    num_groups: int,
+    eps: float,
+)  -> Tuple[TensorBox, TensorBox, TensorBox]:
+    # print("hit the native group norm lowering", flush=True)
+    input.realize()
+    if len(input.get_size()) == 4:
+        inputs, _ = require_channels_last(aten.native_group_norm, input)
+        # print("inputs is: {}".format(inputs), flush=True)
+        input = inputs[0]
+        # print("input is: {}".format(input), flush=True)
+
+    return fallback_handler(aten.native_group_norm.default)(
+        input,
+        weight,
+        bias,
+        batch_size,
+        num_channels,
+        flattened_inner_size,
+        num_groups,
+        eps,
+    )
+
+    # return output_box
+    # return_box =         return pytree.tree_map(
+    #         TensorBox.create,
+    #         ir.FallbackKernel.create(aten.native_dropout.default, x, p, train),
+    #     )
+    # return return_box
+
 
 @register_lowering(aten.cat)
 def cat(inputs, dim=0):
-    if all(input.get_dtype() is torch.uint8 for input in inputs):
+    # if all(input.get_dtype() is torch.uint8 for input in inputs):
+    if True:
         # TODO <leslie> Remove this fallback when we support vectorization
         # code gen with uint8 data type directly.
         for input in inputs:

@@ -94,6 +94,7 @@ def post_grad_passes(gm: torch.fx.GraphModule, is_inference: bool):
                 gm.graph,
                 "Apply split cat pattern matcher PatternMatcherPass in post grad.",
             )
+        print("gm.graph after post grad is: {}".format(gm.graph), flush=True)
         if is_inference:
             inference_patterns.apply(gm.graph)
 

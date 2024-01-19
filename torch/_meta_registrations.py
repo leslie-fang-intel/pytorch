@@ -2147,6 +2147,40 @@ def meta_conv(
     return out
 
 
+@register_meta(torch.ops.aten.native_group_norm.default)
+def meta_native_group_norm(
+    input,
+    weight,
+    bias,
+    batch_size,
+    num_channels,
+    flattened_inner_size,
+    num_groups,
+    eps,
+):
+    output_shape = list(input.shape)
+    out = input.new_empty(output_shape, dtype=input.dtype)
+    if len(out.size()) == 4:
+        out_memory_format = torch.channels_last if input.is_contiguous(memory_format=torch.channels_last) else torch.contiguous_format
+        out = out.to(memory_format=out_memory_format)
+    # <TODO> Verify the mean_shape and var_shape calculation
+    mean_shape = [batch_size, num_groups, 1, 1]
+    var_shape = [batch_size, num_groups, 1, 1]
+    mean = input.new_empty(mean_shape, dtype=torch.float32)
+    var = input.new_empty(var_shape, dtype=torch.float32)
+    return out, mean, var
+
+@register_meta(torch.ops.aten.silu.default)
+def meta_silu(
+    input,
+):
+    output_shape = list(input.shape)
+    out = input.new_empty(output_shape, dtype=input.dtype)
+    if len(out.size()) == 4:
+        out_memory_format = torch.channels_last if input.is_contiguous(memory_format=torch.channels_last) else torch.contiguous_format
+        out = out.to(memory_format=out_memory_format)
+    return out
+
 if torch._C._has_mkldnn:
     _meta_lib_dont_use_me_use_register_meta_for_mkldnn = torch.library.Library(
         "mkldnn", "IMPL", "Meta"

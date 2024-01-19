@@ -6439,6 +6439,8 @@ class StorageBox(MutableBox):
             data=self.data,
         )
         self.data.name = V.graph.register_buffer(self.data)
+        # if self.data.name == "buf0":
+        #     breakpoint()
         self.data.origins = self.origins
         self.data.origin_node = origin_node
         self.data.traceback = traceback

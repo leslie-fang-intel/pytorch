@@ -263,11 +263,11 @@ def mish_backward(grad_output: Tensor, input: Tensor):
     return grad_output * (input_tanh_softplus + out)
 
 
-@register_decomposition(aten.silu)
-@out_wrapper()
-@pw_cast_for_opmath
-def silu(self: Tensor) -> Tensor:
-    return self * torch.sigmoid(self)
+# @register_decomposition(aten.silu)
+# @out_wrapper()
+# @pw_cast_for_opmath
+# def silu(self: Tensor) -> Tensor:
+#     return self * torch.sigmoid(self)
 
 
 @register_decomposition(aten.silu_backward)

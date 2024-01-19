@@ -7,6 +7,8 @@
 #include <ATen/cpu/vec/vec_base.h>
 #include <c10/util/irange.h>
 
+#include <iostream>
+
 #if defined(CPU_CAPABILITY_AVX512) && !defined(_MSC_VER)
 #include <sleef.h>
 #endif
@@ -934,6 +936,28 @@ Vectorized<BFloat16> inline fmadd(const Vectorized<BFloat16>& a,
   auto o1 = _mm512_fmadd_ps(a_lo, b_lo, c_lo);
   auto o2 = _mm512_fmadd_ps(a_hi, b_hi, c_hi);
   return cvtfp32_bf16(o1, o2);
+}
+
+template<>
+inline void transpose_mxn<BFloat16, 32, 32>(
+    const BFloat16* src,
+    int64_t ld_src,
+    BFloat16* dst,
+    int64_t ld_dst) {
+
+    // std::cout<<"hit bfloat16 transpose_mxn 32 32"<<std::endl;
+    return;
+}
+
+template<>
+inline void transpose_mxn<BFloat16, 16, 16>(
+    const BFloat16* src,
+    int64_t ld_src,
+    BFloat16* dst,
+    int64_t ld_dst) {
+
+    // std::cout<<"hit bfloat16 transpose_mxn 16 16"<<std::endl;
+    return;
 }
 
 template <>
