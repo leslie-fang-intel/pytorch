@@ -6,6 +6,7 @@
 #include <ATen/cpu/vec/intrinsics.h>
 #include <ATen/cpu/vec/vec_base.h>
 #include <c10/util/irange.h>
+#include <iostream>
 
 #if defined(CPU_CAPABILITY_AVX512) && !defined(_MSC_VER)
 #include <sleef.h>
@@ -934,6 +935,330 @@ Vectorized<BFloat16> inline fmadd(const Vectorized<BFloat16>& a,
   auto o1 = _mm512_fmadd_ps(a_lo, b_lo, c_lo);
   auto o2 = _mm512_fmadd_ps(a_hi, b_hi, c_hi);
   return cvtfp32_bf16(o1, o2);
+}
+
+static inline void core_transpose_16x16_block(__m512i r[], __m512i u[]) {
+  // a0a1 b0b1 a2a3 b2b3 a8a9 b8b9 a10a11 b10b11   e0e1 f0f1 e2e3 f2f3 e8e9 f8f9
+  // e10e11 f10f11
+  u[0] = _mm512_unpacklo_epi32(r[0], r[1]);
+  // a4a5 b4b5 a6a7 b6b7 a12a13 b12b13 a14a15 b14b15   e4e5 f4f5 e6e7 f6f7
+  // e12e13 f12f13 e14e15 f14f15
+  u[1] = _mm512_unpackhi_epi32(r[0], r[1]);
+  // c0c1 d0d1 c2c3 d2d3 c8c9 d8d9 c10c11 d10d11   g0g1 h0h1 g2g3 h2h3 g8g9 h8h9
+  // g10g11 h10h11
+  u[2] = _mm512_unpacklo_epi32(r[2], r[3]);
+  // c4c5 d4b5 c6c7 d6b7 c12c13 d12d13 c14c15 d14d15   g4g5 h4h5 g6g7 h6h7
+  // g12g13 h12h13 g14g15 h14h15
+  u[3] = _mm512_unpackhi_epi32(r[2], r[3]);
+  // i j  m n
+  u[4] = _mm512_unpacklo_epi32(r[4], r[5]);
+  u[5] = _mm512_unpackhi_epi32(r[4], r[5]);
+  // k l  o p
+  u[6] = _mm512_unpacklo_epi32(r[6], r[7]);
+  u[7] = _mm512_unpackhi_epi32(r[6], r[7]);
+
+  // a0a1 b0b1 c0c1 d0d1 a8a9 b8b9 c8c9 d8d9  e0e1 f0f1 g0g1 h0h1 e8e9 f8f9 g8g9
+  // h8h9
+  r[0] = _mm512_unpacklo_epi64(u[0], u[2]);
+  // a2a3 b2b3 c2c3 d2d3 a10a11 b10b11 c10c11 d10d11  e2e3 f2f3 g2g3 h2h3 e10e11
+  // f10f11 g10g11 h10h11
+  r[1] = _mm512_unpackhi_epi64(u[0], u[2]);
+  // a4a5 b4b5 c4c5 d4b5 a12a13 b12b13 c12c13 d12d13
+  r[2] = _mm512_unpacklo_epi64(u[1], u[3]);
+  // a6a7 b6b7 c6c7 d6b7 a14a15 b14b15 c14c15 d14d15
+  r[3] = _mm512_unpackhi_epi64(u[1], u[3]);
+  // i j k l m n o p
+  r[4] = _mm512_unpacklo_epi64(u[4], u[6]);
+  r[5] = _mm512_unpackhi_epi64(u[4], u[6]);
+  r[6] = _mm512_unpacklo_epi64(u[5], u[7]);
+  r[7] = _mm512_unpackhi_epi64(u[5], u[7]);
+
+  __m512i const1 = _mm512_set_epi32(
+      0x00370035,
+      0x00330031,
+      0x00270025,
+      0x00230021,
+      0x00170015,
+      0x00130011,
+      0x00070005,
+      0x00030001,
+      0x00360034,
+      0x00320030,
+      0x00260024,
+      0x00220020,
+      0x00160014,
+      0x00120010,
+      0x00060004,
+      0x00020000);
+  __m512i const2 = _mm512_set_epi32(
+      0x003f003d,
+      0x003b0039,
+      0x002f002d,
+      0x002b0029,
+      0x001f001d,
+      0x001b0019,
+      0x000f000d,
+      0x000b0009,
+      0x003e003c,
+      0x003a0038,
+      0x002e002c,
+      0x002a0028,
+      0x001e001c,
+      0x001a0018,
+      0x000e000c,
+      0x000a0008);
+
+  // merge values from two regs
+  u[0] = _mm512_permutex2var_epi16(r[0], const1, r[4]); // 0-- 1--
+  u[4] = _mm512_permutex2var_epi16(r[0], const2, r[4]); // 8-- 9--
+  u[2] = _mm512_permutex2var_epi16(r[2], const1, r[6]); // 4-- 5--
+  u[6] = _mm512_permutex2var_epi16(r[2], const2, r[6]); // 12-- 13--
+  u[1] = _mm512_permutex2var_epi16(r[1], const1, r[5]); // 2-- 3--
+  u[5] = _mm512_permutex2var_epi16(r[1], const2, r[5]); // 10-- 11--
+  u[3] = _mm512_permutex2var_epi16(r[3], const1, r[7]); // 6-- 7--
+  u[7] = _mm512_permutex2var_epi16(r[3], const2, r[7]); // 14-- 15--
+}
+
+// Code referred to FBGEMM:
+// https://github.com/pytorch/FBGEMM/blob/39a423e4ad1a04b77fea81c7d09c3e6f8984fae9/src/UtilsAvx512.cc#L1483-L1607
+template<>
+inline void transpose_mxn<BFloat16, 16, 16>(
+    const BFloat16* src,
+    int64_t ld_src,
+    BFloat16* dst,
+    int64_t ld_dst) {
+  // std::cout<<"hit transpose_mxn BFloat16 16 16"<<std::endl;
+  __m512i r[8];
+
+  // load from src to registers
+  // a: a0  a1  a2  a3  a4  a5  a6  a7  a8  a9  a10 a11 a12 a13 a14 a15
+  // b: b0  b1  b2  b3  b4  b5  b6  b7  b8  b9  b10 b11 b12 b13 b14 b15
+  // c: c0  c1  c2  c3  c4  c5  c6  c7  c8  c9  c10 c11 c12 c13 c14 c15
+  // d: d0  d1  d2  d3  d4  d5  d6  d7  d8  d9  d10 d11 d12 d13 d14 d15
+  // e: e0  e1  e2  e3  e4  e5  e6  e7  e8  e9  e10 e11 e12 e13 e14 e15
+  // f: f0  f1  f2  f3  f4  f5  f6  f7  f8  f9  f10 f11 f12 f13 f14 f15
+  // g: g0  g1  g2  g3  g4  g5  g6  g7  g8  g9  g10 g11 g12 g13 g14 g15
+  // h: h0  h1  h2  h3  h4  h5  h6  h7  h8  h9  h10 h11 h12 h13 h14 h15
+  // i: i0  i1  i2  i3  i4  i5  i6  i7  i8  i9  i10 i11 i12 i13 i14 i15
+  // j: j0  j1  j2  j3  j4  j5  j6  j7  j8  j9  j10 j11 j12 j13 j14 j15
+  // k: k0  k1  k2  k3  k4  k5  k6  k7  k8  k9  k10 k11 k12 k13 k14 k15
+  // l: l0  l1  l2  l3  l4  l5  l6  l7  l8  l9  l10 l11 l12 l13 l14 l15
+  // m: m0  m1  m2  m3  m4  m5  m6  m7  m8  m9  m10 m11 m12 m13 m14 m15
+  // n: n0  n1  n2  n3  n4  n5  n6  n7  n8  n9  n10 n11 n12 n13 n14 n15
+  // o: o0  o1  o2  o3  o4  o5  o6  o7  o8  o9  o10 o11 o12 o13 o14 o15
+  // p: p0  p1  p2  p3  p4  p5  p6  p7  p8  p9  p10 p11 p12 p13 p14 p15
+  __m256i t00 =
+    _mm256_loadu_si256(reinterpret_cast<const __m256i*>(src + 0 * ld_src));
+  __m256i t01 =
+      _mm256_loadu_si256(reinterpret_cast<const __m256i*>(src + 1 * ld_src));
+  __m256i t02 =
+      _mm256_loadu_si256(reinterpret_cast<const __m256i*>(src + 2 * ld_src));
+  __m256i t03 =
+      _mm256_loadu_si256(reinterpret_cast<const __m256i*>(src + 3 * ld_src));
+  __m256i t04 =
+      _mm256_loadu_si256(reinterpret_cast<const __m256i*>(src + 4 * ld_src));
+  __m256i t05 =
+      _mm256_loadu_si256(reinterpret_cast<const __m256i*>(src + 5 * ld_src));
+  __m256i t06 =
+      _mm256_loadu_si256(reinterpret_cast<const __m256i*>(src + 6 * ld_src));
+  __m256i t07 =
+      _mm256_loadu_si256(reinterpret_cast<const __m256i*>(src + 7 * ld_src));
+  __m256i t08 =
+      _mm256_loadu_si256(reinterpret_cast<const __m256i*>(src + 8 * ld_src));
+  __m256i t09 =
+      _mm256_loadu_si256(reinterpret_cast<const __m256i*>(src + 9 * ld_src));
+  __m256i t10 =
+      _mm256_loadu_si256(reinterpret_cast<const __m256i*>(src + 10 * ld_src));
+  __m256i t11 =
+      _mm256_loadu_si256(reinterpret_cast<const __m256i*>(src + 11 * ld_src));
+  __m256i t12 =
+      _mm256_loadu_si256(reinterpret_cast<const __m256i*>(src + 12 * ld_src));
+  __m256i t13 =
+      _mm256_loadu_si256(reinterpret_cast<const __m256i*>(src + 13 * ld_src));
+  __m256i t14 =
+      _mm256_loadu_si256(reinterpret_cast<const __m256i*>(src + 14 * ld_src));
+  __m256i t15 =
+      _mm256_loadu_si256(reinterpret_cast<const __m256i*>(src + 15 * ld_src));
+
+  // a0a1 a2a3 a4a5 a6a7 a8a9 a10a11 a12a13 a14a15
+  // e0e1 e2e3 e4e5 e6e7 e8e9 e10e11 e12e13 e14e15
+  r[0] = _mm512_inserti64x4(_mm512_castsi256_si512(t00), t04, 0x01);
+  // b0-b15
+  // f0-f15
+  r[1] = _mm512_inserti64x4(_mm512_castsi256_si512(t01), t05, 0x01);
+  // c0-c15
+  // g0-g15
+  r[2] = _mm512_inserti64x4(_mm512_castsi256_si512(t02), t06, 0x01);
+  // d0-d15
+  // g0-h15
+  r[3] = _mm512_inserti64x4(_mm512_castsi256_si512(t03), t07, 0x01);
+  // i0-i15
+  // m0-m15
+  r[4] = _mm512_inserti64x4(_mm512_castsi256_si512(t08), t12, 0x01);
+  // j0-j15
+  // n0-n15
+  r[5] = _mm512_inserti64x4(_mm512_castsi256_si512(t09), t13, 0x01);
+  // k0-k15
+  // o0-o15
+  r[6] = _mm512_inserti64x4(_mm512_castsi256_si512(t10), t14, 0x01);
+  // l0-l15
+  // p0-p15
+  r[7] = _mm512_inserti64x4(_mm512_castsi256_si512(t11), t15, 0x01);
+
+  __m512i u[8];
+  core_transpose_16x16_block(r, u);
+
+  _mm256_storeu_si256(
+      reinterpret_cast<__m256i*>(dst + 0 * ld_dst),
+      _mm512_extracti32x8_epi32(u[0], 0x0));
+  _mm256_storeu_si256(
+      reinterpret_cast<__m256i*>(dst + 1 * ld_dst),
+      _mm512_extracti32x8_epi32(u[0], 0x01));
+  _mm256_storeu_si256(
+      reinterpret_cast<__m256i*>(dst + 2 * ld_dst),
+      _mm512_extracti32x8_epi32(u[1], 0x0));
+  _mm256_storeu_si256(
+      reinterpret_cast<__m256i*>(dst + 3 * ld_dst),
+      _mm512_extracti32x8_epi32(u[1], 0x01));
+  _mm256_storeu_si256(
+      reinterpret_cast<__m256i*>(dst + 4 * ld_dst),
+      _mm512_extracti32x8_epi32(u[2], 0x0));
+  _mm256_storeu_si256(
+      reinterpret_cast<__m256i*>(dst + 5 * ld_dst),
+      _mm512_extracti32x8_epi32(u[2], 0x01));
+  _mm256_storeu_si256(
+      reinterpret_cast<__m256i*>(dst + 6 * ld_dst),
+      _mm512_extracti32x8_epi32(u[3], 0x0));
+  _mm256_storeu_si256(
+      reinterpret_cast<__m256i*>(dst + 7 * ld_dst),
+      _mm512_extracti32x8_epi32(u[3], 0x01));
+  _mm256_storeu_si256(
+      reinterpret_cast<__m256i*>(dst + 8 * ld_dst),
+      _mm512_extracti32x8_epi32(u[4], 0x0));
+  _mm256_storeu_si256(
+      reinterpret_cast<__m256i*>(dst + 9 * ld_dst),
+      _mm512_extracti32x8_epi32(u[4], 0x01));
+  _mm256_storeu_si256(
+      reinterpret_cast<__m256i*>(dst + 10 * ld_dst),
+      _mm512_extracti32x8_epi32(u[5], 0x0));
+  _mm256_storeu_si256(
+      reinterpret_cast<__m256i*>(dst + 11 * ld_dst),
+      _mm512_extracti32x8_epi32(u[5], 0x01));
+  _mm256_storeu_si256(
+      reinterpret_cast<__m256i*>(dst + 12 * ld_dst),
+      _mm512_extracti32x8_epi32(u[6], 0x0));
+  _mm256_storeu_si256(
+      reinterpret_cast<__m256i*>(dst + 13 * ld_dst),
+      _mm512_extracti32x8_epi32(u[6], 0x01));
+  _mm256_storeu_si256(
+      reinterpret_cast<__m256i*>(dst + 14 * ld_dst),
+      _mm512_extracti32x8_epi32(u[7], 0x0));
+  _mm256_storeu_si256(
+      reinterpret_cast<__m256i*>(dst + 15 * ld_dst),
+      _mm512_extracti32x8_epi32(u[7], 0x01));
+}
+
+// Code referred to FBGEMM:
+// https://github.com/pytorch/FBGEMM/blob/39a423e4ad1a04b77fea81c7d09c3e6f8984fae9/src/UtilsAvx512.cc#L1388-L1429
+template<>
+inline void transpose_mxn<BFloat16, 32, 32>(
+    const BFloat16* src,
+    int64_t ld_src,
+    BFloat16* dst,
+    int64_t ld_dst) {
+  // std::cout<<"hit transpose_mxn BFloat16 32 32"<<std::endl;
+  __m512i r[32];
+  __m512i d[32];
+
+  // Step 1: Load from memory
+  for (int i = 0; i < 32; ++i) {
+    r[i] = _mm512_loadu_si512(reinterpret_cast<const __m512i*>(src + i* ld_src));
+  }
+
+  // Step 2:
+  for (int i = 0; i < 16; ++i) {
+    d[i * 2] = _mm512_unpacklo_epi16(r[i * 2], r[i * 2 + 1]);
+    d[i * 2 + 1] = _mm512_unpackhi_epi16(r[i * 2], r[i * 2 + 1]);
+  }
+
+  // Step 3:
+  for (int i = 0; i < 8; ++i) {
+    r[i * 4] = _mm512_unpacklo_epi32(d[i * 4], d[i * 4 + 2]);
+    r[i * 4 + 1] = _mm512_unpackhi_epi32(d[i * 4], d[i * 4 + 2]);
+    r[i * 4 + 2] = _mm512_unpacklo_epi32(d[i * 4 + 1], d[i * 4 + 3]);
+    r[i * 4 + 3] = _mm512_unpackhi_epi32(d[i * 4 + 1], d[i * 4 + 3]);
+  }
+
+  // Step 4:
+  for (int i = 0; i < 4; ++i) {
+    d[i * 8] = _mm512_unpacklo_epi64(r[i * 8], r[i * 8 + 4]);
+    d[i * 8 + 1] = _mm512_unpackhi_epi64(r[i * 8], r[i * 8 + 4]);
+    d[i * 8 + 2] = _mm512_unpacklo_epi64(r[i * 8 + 1], r[i * 8 + 5]);
+    d[i * 8 + 3] = _mm512_unpackhi_epi64(r[i * 8 + 1], r[i * 8 + 5]);
+    d[i * 8 + 4] = _mm512_unpacklo_epi64(r[i * 8 + 2], r[i * 8 + 6]);
+    d[i * 8 + 5] = _mm512_unpackhi_epi64(r[i * 8 + 2], r[i * 8 + 6]);
+    d[i * 8 + 6] = _mm512_unpacklo_epi64(r[i * 8 + 3], r[i * 8 + 7]);
+    d[i * 8 + 7] = _mm512_unpackhi_epi64(r[i * 8 + 3], r[i * 8 + 7]);
+  }
+
+  // Step 5:
+  __m512i const1 = _mm512_set_epi64(
+      0x000000000000000d,
+      0x000000000000000c,
+      0x0000000000000005,
+      0x0000000000000004,
+      0x0000000000000009,
+      0x0000000000000008,
+      0x0000000000000001,
+      0x0000000000000000);
+  __m512i const2 = _mm512_set_epi64(
+      0x000000000000000f,
+      0x000000000000000e,
+      0x0000000000000007,
+      0x0000000000000006,
+      0x000000000000000b,
+      0x000000000000000a,
+      0x0000000000000003,
+      0x0000000000000002);
+  
+  for (int i = 0; i < 8; ++i) {
+    r[i] = _mm512_permutex2var_epi64(d[i], /*idx*/const1, d[i + 8]);
+    r[i + 8] = _mm512_permutex2var_epi64(d[i], /*idx*/const2, d[i + 8]);
+
+    r[i + 16] = _mm512_permutex2var_epi64(d[i + 16], /*idx*/const1, d[i + 16 + 8]);
+    r[i + 16 + 8] = _mm512_permutex2var_epi64(d[i + 16], /*idx*/const2, d[i + 16 + 8]);
+  }
+
+  // Step 6:
+  __m512i const3 = _mm512_set_epi64(
+      0x000000000000000b,
+      0x000000000000000a,
+      0x0000000000000009,
+      0x0000000000000008,
+      0x0000000000000003,
+      0x0000000000000002,
+      0x0000000000000001,
+      0x0000000000000000);
+  __m512i const4 = _mm512_set_epi64(
+      0x000000000000000f,
+      0x000000000000000e,
+      0x000000000000000d,
+      0x000000000000000c,
+      0x0000000000000007,
+      0x0000000000000006,
+      0x0000000000000005,
+      0x0000000000000004);
+
+  for (int i = 0; i < 16; ++i) {
+    d[i] = _mm512_permutex2var_epi64(r[i], /*idx*/const3, r[i + 16]);
+    d[i + 16] = _mm512_permutex2var_epi64(r[i], /*idx*/const4, r[i + 16]);
+  }
+
+  // Step 7: Store back
+  for (int i = 0; i < 32; ++i) {
+    _mm512_storeu_si512(dst + i* ld_dst, d[i]);
+  }
+
 }
 
 template <>

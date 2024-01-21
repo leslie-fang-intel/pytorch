@@ -7,6 +7,7 @@
 #include <ATen/cpu/vec/vec_base.h>
 #include <c10/macros/Macros.h>
 #include <c10/util/irange.h>
+#include <iostream>
 
 namespace at {
 namespace vec {
@@ -536,6 +537,208 @@ public:
   Vectorized<int16_t> lt(const Vectorized<int16_t>& other) const;
   Vectorized<int16_t> le(const Vectorized<int16_t>& other) const;
 };
+
+template<>
+inline void transpose_mxn<int16_t, 32, 32>(
+    const int16_t* src,
+    int64_t ld_src,
+    int16_t* dst,
+    int64_t ld_dst) {
+  // std::cout<<"hit transpose_mxn int16_t 32 32"<<std::endl;
+  // load from src to registers
+
+  __m512i r[32];
+  __m512i d[32];
+
+  // Step 1: Load the matrix
+  // r[0][0] ... r[0][31]
+  // r[1][0] ... r[1][31]
+  // r[2][0] ... r[2][31]
+  // ...
+  // r[31][0] ... r[31][31]
+  
+  for (int i = 0; i < 32; ++i) {
+    r[i] = _mm512_loadu_si512(reinterpret_cast<const __m512i*>(src + i* ld_src));
+  }
+
+  // std::cout<<"---- after step 1 ----"<<std::endl;
+  // for (int i=0;i<32;i++) {
+  //   int16_t val[32];
+  //   memcpy(val, &r[i], sizeof(val));
+  //   // for (int j=0;j<32;j++) {
+  //   //   std::cout<< val[j] <<std::endl;
+  //   // }
+  //   printf("Numerical 10: %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u \n",
+  //         val[0], val[1], val[2], val[3], val[4], val[5],
+  //         val[6], val[7], val[8], val[9], val[10], val[11], val[12], val[13],
+  //         val[14], val[15], val[16], val[17], val[18], val[19], val[20], val[21],
+  //         val[22], val[23], val[24], val[25], val[26], val[27], val[28], val[29],
+  //         val[30], val[31]);
+
+  //   // printf("Numerical 10: %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u \n",
+  //   //       val[0], val[1], val[2], val[3], val[4], val[5],
+  //   //       val[6], val[7], val[8], val[9], val[10], val[11], val[12], val[13],
+  //   //       val[14], val[15]);
+  // }
+
+  // Step 2:
+  for (int i = 0; i < 16; ++i) {
+    d[i * 2] = _mm512_unpacklo_epi16(r[i * 2], r[i * 2 + 1]);
+    d[i * 2 + 1] = _mm512_unpackhi_epi16(r[i * 2], r[i * 2 + 1]);
+  }
+
+  // std::cout<<"---- after step 2 ----"<<std::endl;
+  // for (int i=0;i<32;i++) {
+  //   int16_t val[32];
+  //   memcpy(val, &d[i], sizeof(val));
+  //   // for (int j=0;j<32;j++) {
+  //   //   std::cout<< val[j] <<std::endl;
+  //   // }
+  //   printf("Numerical 10: %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u \n",
+  //          val[0], val[1], val[2], val[3], val[4], val[5],
+  //          val[6], val[7], val[8], val[9], val[10], val[11], val[12], val[13],
+  //          val[14], val[15], val[16], val[17], val[18], val[19], val[20], val[21],
+  //          val[22], val[23], val[24], val[25], val[26], val[27], val[28], val[29],
+  //          val[30], val[31]);
+  // }
+
+  // Step 3:
+  for (int i = 0; i < 8; ++i) {
+    r[i * 4] = _mm512_unpacklo_epi32(d[i * 4], d[i * 4 + 2]);
+    r[i * 4 + 1] = _mm512_unpackhi_epi32(d[i * 4], d[i * 4 + 2]);
+    r[i * 4 + 2] = _mm512_unpacklo_epi32(d[i * 4 + 1], d[i * 4 + 3]);
+    r[i * 4 + 3] = _mm512_unpackhi_epi32(d[i * 4 + 1], d[i * 4 + 3]);
+  }
+
+  // std::cout<<"---- after step 3 ----"<<std::endl;
+  // for (int i=0;i<32;i++) {
+  //   int16_t val[32];
+  //   memcpy(val, &r[i], sizeof(val));
+  //   // for (int j=0;j<32;j++) {
+  //   //   std::cout<< val[j] <<std::endl;
+  //   // }
+  //   printf("Numerical 10: %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u \n",
+  //          val[0], val[1], val[2], val[3], val[4], val[5],
+  //          val[6], val[7], val[8], val[9], val[10], val[11], val[12], val[13],
+  //          val[14], val[15], val[16], val[17], val[18], val[19], val[20], val[21],
+  //          val[22], val[23], val[24], val[25], val[26], val[27], val[28], val[29],
+  //          val[30], val[31]);
+  // }
+
+  // Step 4:
+  for (int i = 0; i < 4; ++i) {
+    d[i * 8] = _mm512_unpacklo_epi64(r[i * 8], r[i * 8 + 4]);
+    d[i * 8 + 1] = _mm512_unpackhi_epi64(r[i * 8], r[i * 8 + 4]);
+    d[i * 8 + 2] = _mm512_unpacklo_epi64(r[i * 8 + 1], r[i * 8 + 5]);
+    d[i * 8 + 3] = _mm512_unpackhi_epi64(r[i * 8 + 1], r[i * 8 + 5]);
+    d[i * 8 + 4] = _mm512_unpacklo_epi64(r[i * 8 + 2], r[i * 8 + 6]);
+    d[i * 8 + 5] = _mm512_unpackhi_epi64(r[i * 8 + 2], r[i * 8 + 6]);
+    d[i * 8 + 6] = _mm512_unpacklo_epi64(r[i * 8 + 3], r[i * 8 + 7]);
+    d[i * 8 + 7] = _mm512_unpackhi_epi64(r[i * 8 + 3], r[i * 8 + 7]);
+  }
+
+  // std::cout<<"---- after step 4 ----"<<std::endl;
+  // for (int i=0;i<32;i++) {
+  //   int16_t val[32];
+  //   memcpy(val, &d[i], sizeof(val));
+  //   // for (int j=0;j<32;j++) {
+  //   //   std::cout<< val[j] <<std::endl;
+  //   // }
+  //   printf("Numerical 10: %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u \n",
+  //          val[0], val[1], val[2], val[3], val[4], val[5],
+  //          val[6], val[7], val[8], val[9], val[10], val[11], val[12], val[13],
+  //          val[14], val[15], val[16], val[17], val[18], val[19], val[20], val[21],
+  //          val[22], val[23], val[24], val[25], val[26], val[27], val[28], val[29],
+  //          val[30], val[31]);
+  // }
+
+  // Step 5:
+  __m512i const1 = _mm512_set_epi64(
+      0x000000000000000d,
+      0x000000000000000c,
+      0x0000000000000005,
+      0x0000000000000004,
+      0x0000000000000009,
+      0x0000000000000008,
+      0x0000000000000001,
+      0x0000000000000000);
+  __m512i const2 = _mm512_set_epi64(
+      0x000000000000000f,
+      0x000000000000000e,
+      0x0000000000000007,
+      0x0000000000000006,
+      0x000000000000000b,
+      0x000000000000000a,
+      0x0000000000000003,
+      0x0000000000000002);
+  
+  for (int i = 0; i < 8; ++i) {
+    r[i] = _mm512_permutex2var_epi64(d[i], /*idx*/const1, d[i + 8]);
+    r[i + 8] = _mm512_permutex2var_epi64(d[i], /*idx*/const2, d[i + 8]);
+
+    r[i + 16] = _mm512_permutex2var_epi64(d[i + 16], /*idx*/const1, d[i + 16 + 8]);
+    r[i + 16 + 8] = _mm512_permutex2var_epi64(d[i + 16], /*idx*/const2, d[i + 16 + 8]);
+  }
+
+  // std::cout<<"---- after step 5 ----"<<std::endl;
+  // for (int i=0;i<32;i++) {
+  //   int16_t val[32];
+  //   memcpy(val, &r[i], sizeof(val));
+  //   // for (int j=0;j<32;j++) {
+  //   //   std::cout<< val[j] <<std::endl;
+  //   // }
+  //   printf("Numerical 10: %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u \n",
+  //          val[0], val[1], val[2], val[3], val[4], val[5],
+  //          val[6], val[7], val[8], val[9], val[10], val[11], val[12], val[13],
+  //          val[14], val[15], val[16], val[17], val[18], val[19], val[20], val[21],
+  //          val[22], val[23], val[24], val[25], val[26], val[27], val[28], val[29],
+  //          val[30], val[31]);
+  // }
+
+
+  // Step 5:
+  __m512i const3 = _mm512_set_epi64(
+      0x000000000000000b,
+      0x000000000000000a,
+      0x0000000000000009,
+      0x0000000000000008,
+      0x0000000000000003,
+      0x0000000000000002,
+      0x0000000000000001,
+      0x0000000000000000);
+  __m512i const4 = _mm512_set_epi64(
+      0x000000000000000f,
+      0x000000000000000e,
+      0x000000000000000d,
+      0x000000000000000c,
+      0x0000000000000007,
+      0x0000000000000006,
+      0x0000000000000005,
+      0x0000000000000004);
+
+  for (int i = 0; i < 16; ++i) {
+    d[i] = _mm512_permutex2var_epi64(r[i], /*idx*/const3, r[i + 16]);
+    d[i + 16] = _mm512_permutex2var_epi64(r[i], /*idx*/const4, r[i + 16]);
+  }
+
+  // std::cout<<"---- after step 6 ----"<<std::endl;
+  // for (int i=0;i<32;i++) {
+  //   int16_t val[32];
+  //   memcpy(val, &d[i], sizeof(val));
+  //   printf("Numerical 10: %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u \n",
+  //          val[0], val[1], val[2], val[3], val[4], val[5],
+  //          val[6], val[7], val[8], val[9], val[10], val[11], val[12], val[13],
+  //          val[14], val[15], val[16], val[17], val[18], val[19], val[20], val[21],
+  //          val[22], val[23], val[24], val[25], val[26], val[27], val[28], val[29],
+  //          val[30], val[31]);
+  // }
+
+  // Step 6: Store back
+  for (int i = 0; i < 32; ++i) {
+    _mm512_storeu_si512(dst + i* ld_dst, d[i]);
+  }
+
+}
 
 template <typename T>
 class Vectorized8 : public Vectorizedi {
