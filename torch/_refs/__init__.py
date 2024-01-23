@@ -2683,6 +2683,10 @@ def broadcast_to(a: TensorLikeType, size: ShapeType) -> TensorLikeType:
 def cat(tensors: TensorSequenceType, dim: int = 0) -> TensorLikeType:
     def cat_compute_output_memory_format(inputs):
         format = None
+
+        if py_any(utils.suggest_memory_format(t) == torch.channels_last for t in inputs):
+            return torch.channels_last
+
         for t in inputs:
             f = utils.suggest_memory_format(t)
             if f == torch.contiguous_format:
