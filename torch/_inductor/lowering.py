@@ -55,6 +55,7 @@ from .utils import (
     is_pointwise_use,
     pad_listlike,
     sympy_product,
+    parallel_num_threads,
 )
 from .virtualized import ops, V
 
@@ -3178,6 +3179,7 @@ def scatter_fallback(
             and isinstance(src, TensorBox)
             and src.get_device() == torch.device("cpu")
             and config.cpp.fallback_scatter_reduce_sum
+            and (config.cpp.dynamic_threads or parallel_num_threads() != 1)
         )
         or (reduce == reduce_ty and self.get_dtype() in {torch.bool, torch.int64})
         or torch.are_deterministic_algorithms_enabled()
