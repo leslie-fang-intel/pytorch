@@ -478,3 +478,73 @@ def dequantize_per_channel_meta(
     assert axis < input.dim(), f"Expecting axis to be < {input.dim()}"
     _quant_min_max_bounds_check(quant_min, quant_max, dtype)
     return torch.empty_like(input, dtype=torch.float32)
+
+quantized_decomposed_lib.define(
+    "fake_quant_per_channel(Tensor input, Tensor scales, Tensor zero_points, int axis, "
+    "int quant_min, int quant_max, ScalarType dtype) -> Tensor")
+
+@impl(quantized_decomposed_lib, "fake_quant_per_channel", "CompositeExplicitAutograd")
+def fake_quant_per_channel(
+        input: torch.Tensor,
+        scales: torch.Tensor,
+        zero_points: torch.Tensor,
+        axis: int,
+        quant_min: int,
+        quant_max: int,
+        dtype: torch.dtype
+) -> torch.Tensor:
+    input, permute_axis_list = _permute_to_axis_zero(input, axis)
+    original_input_size = input.size()
+    input = input.view(original_input_size[0], -1)
+    res = torch.clamp(
+        torch.round(input * (1.0 / scales).unsqueeze(1)) + zero_points.unsqueeze(1),
+        quant_min,
+        quant_max
+    )
+    # res = res.to(dtype).to(torch.float32)
+    res = (input - zero_points.unsqueeze(1)) * scales.unsqueeze(1)
+    res = res.view(original_input_size)
+    out = res.permute(tuple(permute_axis_list))
+    return out
+
+@impl(quantized_decomposed_lib, "fake_quant_per_channel", "Meta")
+def fake_quant_per_channel_meta(
+        input: torch.Tensor,
+        scales: torch.Tensor,
+        zero_points: torch.Tensor,
+        axis: int,
+        quant_min: int,
+        quant_max: int,
+        dtype: torch.dtype
+) -> torch.Tensor:
+    # return torch.empty_like(input, requires_grad=True)
+    return torch.empty_like(input)
+
+quantized_decomposed_lib.define(
+    "test_backward(Tensor input, Tensor scales, Tensor zero_points, int axis, "
+    "int quant_min, int quant_max, ScalarType dtype) -> Tensor")
+
+@impl(quantized_decomposed_lib, "test_backward", "CompositeExplicitAutograd")
+def test_backward(
+        input: torch.Tensor,
+        scales: torch.Tensor,
+        zero_points: torch.Tensor,
+        axis: int,
+        quant_min: int,
+        quant_max: int,
+        dtype: torch.dtype
+) -> torch.Tensor:
+    return input * scales + zero_points
+
+@impl(quantized_decomposed_lib, "test_backward", "Meta")
+def test_backward_mata(
+        input: torch.Tensor,
+        scales: torch.Tensor,
+        zero_points: torch.Tensor,
+        axis: int,
+        quant_min: int,
+        quant_max: int,
+        dtype: torch.dtype
+) -> torch.Tensor:
+    # return torch.empty_like(input, requires_grad=True)
+    return torch.empty_like(input)
