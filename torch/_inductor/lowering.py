@@ -282,6 +282,7 @@ def _register_lowering(
             x == "out" for x in kwargs.keys()
         ), "out= ops aren't yet supported"
         # kwargs tensors not supported yet unless it's a fallback op
+
         assert not any(isinstance(x, TensorBox) for x in kwargs.values()) or all(
             fn in fallbacks for fn in aten_fn
         )
@@ -4781,6 +4782,65 @@ def var_(x, axis=None, *, correction=None, keepdim=False):
         x, axis=axis, correction=correction, keepdim=keepdim, return_mean=False
     )
 
+fallback__softmax = fallback_handler(
+    aten._softmax.default,
+    add_to_fallback_set=False,
+)
+
+@register_lowering(aten._softmax.default)
+def _softmax_default(x, dim: int, half_to_float: bool):
+    print("--- hit the lowering of softmax ----", flush=True)
+    assert ir.get_device_type(x) == "cpu"
+    assert x.get_dtype() == torch.bfloat16
+    return fallback__softmax(x, dim, half_to_float)
+
+    # Below are the POC of Softmax Pointwise lowering
+    # # After we enable the decompose of softmax, below will be dummy code and never should be hit
+
+    # # only handle input dim 4
+    # # softmax along the last dim
+    # assert len(x.get_size()) == 4
+    # assert dim == -1
+    
+    # x_f32 = to_dtype(x, torch.float32)
+    # x_loader = x_f32.make_loader()
+
+    # # Loop 1: Calculate the max val
+    # max_buf = reduce_amax(x_f32, dim)
+    # max_val_loader = max_buf.make_loader()
+
+    # # Loop 2: Calculate the sum val
+    # def inner_fn(idx):
+    #     x_val = x_loader(idx)
+    #     max_val_idx = (idx[0], idx[1], idx[2])
+    #     max_val = max_val_loader(max_val_idx)
+    #     sub_val = ops.sub(x_val, max_val)
+    #     exp_val = ops.exp(sub_val)
+    #     return exp_val
+    # res_after_exp = Pointwise.create(
+    #     device=x_f32.get_device(),
+    #     dtype=torch.float32,
+    #     inner_fn=inner_fn,
+    #     ranges=x_f32.get_size(),
+    # )
+    # sum_buf = sum_(res_after_exp, dim, keepdims=True)
+
+    # # Loop 3: Calculate the div val
+    # res_after_exp_loader = res_after_exp.make_loader()
+    # sum_buf_loader = sum_buf.make_loader()
+    # def inner_fn2(idx):
+    #     res_after_exp_val = res_after_exp_loader(idx)
+    #     sum_buf_idx = (idx[0], idx[1], idx[2], 1)
+    #     sum_val = sum_buf_loader(sum_buf_idx)
+    #     val = ops.div(res_after_exp_val, sum_val)
+    #     return val
+    # res = Pointwise.create(
+    #     device=x_f32.get_device(),
+    #     dtype=torch.float32,
+    #     inner_fn=inner_fn2,
+    #     ranges=x_f32.get_size(),
+    # )
+    # return to_dtype(res, torch.bfloat16)
 
 @register_lowering(aten.var_mean)
 def var_mean(x, axis=None, *, correction=None, keepdim=False):

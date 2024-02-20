@@ -720,6 +720,71 @@ if torch._C._has_mkldnn:
                     unary_attr=UnaryAttr("relu"),
                 )
 
+
+    def _register_extra_pointwise_lowerings():
+        act_fp32 = CallFunction(
+            prims.convert_element_type.default,
+            KeywordArg("act"), 
+            KeywordArg("act_to_fp32_dtype"),
+            _users = 2,
+        )
+        exp = CallFunction(
+            aten.exp.default,
+            CallFunction(
+                aten.sub.Tensor,
+                act_fp32,
+                CallFunction(
+                    aten.amax.default,
+                    act_fp32,
+                    KeywordArg("softmax_dim"),
+                    Arg(),
+                ),
+            ),
+            _users = 2,
+        )
+        softmax_bf16_pattern = CallFunction(
+            prims.convert_element_type.default,
+            CallFunction(
+                aten.div.Tensor,
+                exp,
+                CallFunction(
+                    aten.sum.dim_IntList,
+                    exp,
+                    Arg(),
+                    Arg(),
+                ),   
+            ),
+            KeywordArg("output_to_bf16_dtype"),
+        )
+
+        def _is_valid_softmax_fallback_pattern():
+            def fn(match):
+                act_node_val = match.kwargs["act"].meta.get("val")
+                if (
+                    act_node_val.device != torch.device("cpu")
+                    or act_node_val.dtype != torch.bfloat16
+                    or match.kwargs["act_to_fp32_dtype"] != torch.float32
+                    or match.kwargs["output_to_bf16_dtype"] != torch.bfloat16
+                    or match.kwargs["softmax_dim"] != [-1]
+                ):
+                    # Only for CPU and BFloat16 input
+                    # Output Convert back to BFloat16
+                    # Softmax along the last dim
+                    return False
+                return True
+            return fn
+    
+        @register_lowering_pattern(
+            softmax_bf16_pattern,
+            extra_check=_is_valid_softmax_fallback_pattern(),
+        )
+        def fn(match, *args, **kwargs):
+            print("---- hit the bfloat16 softmax pattern matcher ----", flush=True)
+            return L[aten._softmax.default](kwargs["act"], kwargs["softmax_dim"][0], False)
+
+        return fn
+
+
     def _recover_linear():
         # convert reshape+linear+reshape to a single linear for applying fusion path.
         @register_freezing_graph_pattern(
@@ -1195,6 +1260,7 @@ if torch._C._has_mkldnn:
             _register_binary_unary_fusion()
             _register_binary_fusion()
             _register_quantization_lowerings()
+            _register_extra_pointwise_lowerings()
 
     @functools.lru_cache(None)
     def _mkldnn_weight_pack_init():
