@@ -490,6 +490,12 @@ class CallFunction(_TargetArgsExpr):
 
     op = "call_function"
 
+class GetAttr(_TargetArgsExpr):
+    """
+    Matches a call_function node in the FX graphs: `fns[i](*args, **kwargs)`
+    """
+
+    op = "get_attr"
 
 class CallMethod(_TargetArgsExpr):
     """
@@ -1310,7 +1316,7 @@ def fx_to_pattern(
     class Converter(torch.fx.Interpreter):
         call_method = _not_implemented
         call_module = _not_implemented
-        get_attr = _not_implemented
+        # get_attr = _not_implemented
 
         def placeholder(self, target, args, kwargs):
             n = next(argnum)
@@ -1334,6 +1340,10 @@ def fx_to_pattern(
                 args = [process_arg(a) for a in args]
                 kwargs = {k: process_arg(a) for k, a in kwargs.items()}
             return CallFunction(target, *args, **kwargs)
+
+        def get_attr(self, target, args, kwargs):
+            print("--- hit the get_attr node ----", flush=True)
+            return GetAttr(target, *args, **kwargs)
 
         def run_node(self, n):
             rv = super().run_node(n)
