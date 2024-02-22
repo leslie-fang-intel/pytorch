@@ -118,7 +118,11 @@ at::Tensor& PackedLinearWeight::apply_impl(
   at::DimVector out_sizes(input.sizes());
   out_sizes.back() = N;
   // Resize output Tensor
+  bool origin_algo = at::globalContext().deterministicAlgorithms();
+  bool origin_algo_warn_only = at::globalContext().deterministicAlgorithmsWarnOnly();
+  at::globalContext().setDeterministicAlgorithms(false, true);
   output.resize_(out_sizes);
+  at::globalContext().setDeterministicAlgorithms(origin_algo, origin_algo_warn_only);
 
   // Allocate a buffer for fbgemmPacked to use
   auto buffer = at::empty(out_sizes, output.options().dtype(at::kInt));
