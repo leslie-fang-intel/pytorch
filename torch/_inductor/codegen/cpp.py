@@ -3584,7 +3584,7 @@ class CppKernelProxy(CppKernel):
                         could_vec = could_vec and vec_checker.simd_vec
                         if not could_vec:
                             break
-                could_vec = False
+                # could_vec = False
                 if could_vec:
                     if len(tiling_indices) == 1:
                         return [tiling_factor], tiling_indices
@@ -3724,7 +3724,7 @@ class CppScheduling(BaseScheduling):
         if lazy_code_gen:
             # TODO<Leslie> Add the condition check instead of the buf
             self._lazy_cpp_kernel_proxy_list.append(cpp_kernel_proxy)
-            if nodes[0].get_name() == "buf1":
+            if nodes[0].get_name() == "buf3":
                 print("---- Start the lazy codegen ----", flush=True)
                 kernel_group.finalize_kernel(self._lazy_cpp_kernel_proxy_list, nodes)
                 self._lazy_cpp_kernel_proxy_list = []
