@@ -1738,6 +1738,12 @@ class CppKernel(Kernel):
         )
 
     def codegen_loops_impl(self, loop_nest, code, worksharing):
+
+        loop_nest_list = None
+        if isinstance(loop_nest, List):
+            loop_nest_list = loop_nest
+            loop_nest = loop_nest_list[0]
+
         threads = parallel_num_threads()
         assert self.call_ranges is not None
         par_depth = self.decide_parallel_depth(
@@ -1819,159 +1825,204 @@ class CppKernel(Kernel):
                         gen_kernel(kernels[0])
 
             stack.enter_context(code.indent())
-            if loop_nest.root:
-                gen_loops(loop_nest.root)
+            if loop_nest_list:
+                def gen_loop_list(loop_nest_root_list):
+                    for loops in loop_nest_root_list:
+                        for loop in loops:
+                            assert loop.inner
+                            gen_loops(loop.inner, loop.is_reduction())
+
+                def gen_loops_root_list(loop_nest_root_list: List[List[LoopLevel]], in_reduction=False):
+                    with contextlib.ExitStack() as stack_outer:
+                        loops = loop_nest_root_list[0]
+                        if loops:
+                            loop = loops[0]
+                            if loop.is_reduction() and not in_reduction:
+                                reduction_prefix = get_reduction_code_buffer(
+                                    loops, is_suffix=False
+                                )
+                                if reduction_prefix:
+                                    stack_outer.enter_context(code.indent())
+                                code.splice(reduction_prefix)
+                            if loop_nest.is_reduction_only() and loop.parallel:
+                                worksharing.parallel(threads)
+
+                        loop = loops[0]
+                        with contextlib.ExitStack() as stack:
+                            # Generate the outer for loop
+                            loop_lines = loop.lines()
+                            if loop_lines is None:
+                                return
+                            code.writelines(loop_lines)
+                            stack.enter_context(code.indent())
+                            # Generate the inner loops one by one
+                            gen_loop_list(loop_nest_root_list)
+
+                        if loops:
+                            loop = loops[0]
+                            if loop_nest.is_reduction_only() and loop.parallel:
+                                worksharing.close()
+                            if loop.is_reduction() and not in_reduction:
+                                code.splice(
+                                    get_reduction_code_buffer(loops, is_suffix=True)
+                                )
+                assert loop_nest.root
+                loop_nest_root_list = []
+                # For POC, we will have more strict restrict
+                for loop_nest in loop_nest_list:
+                    assert loop_nest.root is not None
+                    assert len(loop_nest.root) == 1
+                    assert isinstance(loop_nest.root[0], LoopLevel)
+                    assert loop_nest.root[0].inner is not None
+                    loop_nest_root_list.append(loop_nest.root)
+                gen_loops_root_list(loop_nest_root_list, in_reduction=False)
             else:
-                gen_kernel(loop_nest.kernel)
-
-    def codegen_loops_impl_list(self, loop_nest_list, code, worksharing):
-
-        loop_nest = loop_nest_list[0]
-
-        threads = parallel_num_threads()
-        assert self.call_ranges is not None
-        par_depth = self.decide_parallel_depth(
-            self.call_ranges[: loop_nest.max_parallel_depth()], threads
-        )
-        with contextlib.ExitStack() as stack:
-            if par_depth:
-                if loop_nest.is_reduction_only():
-                    # need to close the worksharing scope to define reduction vars outside it
-                    worksharing.close()
+                if loop_nest.root:
+                    gen_loops(loop_nest.root)
                 else:
-                    worksharing.parallel(threads)
-                loop_nest.mark_parallel(par_depth)
-            elif threads > 1:
-                if worksharing.single():
-                    stack.enter_context(code.indent())
+                    gen_kernel(loop_nest.kernel)
 
-            def gen_kernel(kernel):
-                with contextlib.ExitStack() as stack:
-                    assert kernel
-                    if hasattr(kernel, "codegen_inner_loops"):
-                        code.splice(kernel.preloads)
-                        kernel.codegen_inner_loops(code)
-                        stack.enter_context(code.indent())
-                    code.splice(kernel.loads)
-                    code.splice(kernel.compute)
-                    code.splice(kernel.stores)
-                if hasattr(kernel, "codegen_inner_loops"):
-                    code.splice(kernel.poststores)
+    # def codegen_loops_impl_list(self, loop_nest_list, code, worksharing):
 
-            def get_reduction_code_buffer(loops, is_suffix=True):
-                for loop in loops:
-                    for kernel in loop.get_kernels():
-                        if is_suffix:
-                            return kernel.reduction_suffix
-                        else:
-                            return kernel.reduction_prefix
-                return None
+    #     loop_nest = loop_nest_list[0]
 
-            def gen_loops(loops: List[LoopLevel], in_reduction=False):
-                with contextlib.ExitStack() as stack_outer:
-                    if loops:
-                        loop = loops[0]
-                        if loop.is_reduction() and not in_reduction:
-                            reduction_prefix = get_reduction_code_buffer(
-                                loops, is_suffix=False
-                            )
-                            if reduction_prefix:
-                                stack_outer.enter_context(code.indent())
-                            code.splice(reduction_prefix)
-                        if loop_nest.is_reduction_only() and loop.parallel:
-                            worksharing.parallel(threads)
+    #     threads = parallel_num_threads()
+    #     assert self.call_ranges is not None
+    #     par_depth = self.decide_parallel_depth(
+    #         self.call_ranges[: loop_nest.max_parallel_depth()], threads
+    #     )
+    #     with contextlib.ExitStack() as stack:
+    #         if par_depth:
+    #             if loop_nest.is_reduction_only():
+    #                 # need to close the worksharing scope to define reduction vars outside it
+    #                 worksharing.close()
+    #             else:
+    #                 worksharing.parallel(threads)
+    #             loop_nest.mark_parallel(par_depth)
+    #         elif threads > 1:
+    #             if worksharing.single():
+    #                 stack.enter_context(code.indent())
 
-                    for loop in loops:
-                        gen_loop(loop, in_reduction)
+    #         def gen_kernel(kernel):
+    #             with contextlib.ExitStack() as stack:
+    #                 assert kernel
+    #                 if hasattr(kernel, "codegen_inner_loops"):
+    #                     code.splice(kernel.preloads)
+    #                     kernel.codegen_inner_loops(code)
+    #                     stack.enter_context(code.indent())
+    #                 code.splice(kernel.loads)
+    #                 code.splice(kernel.compute)
+    #                 code.splice(kernel.stores)
+    #             if hasattr(kernel, "codegen_inner_loops"):
+    #                 code.splice(kernel.poststores)
 
-                    if loops:
-                        loop = loops[0]
-                        if loop_nest.is_reduction_only() and loop.parallel:
-                            worksharing.close()
-                        if loop.is_reduction() and not in_reduction:
-                            code.splice(
-                                get_reduction_code_buffer(loops, is_suffix=True)
-                            )
+    #         def get_reduction_code_buffer(loops, is_suffix=True):
+    #             for loop in loops:
+    #                 for kernel in loop.get_kernels():
+    #                     if is_suffix:
+    #                         return kernel.reduction_suffix
+    #                     else:
+    #                         return kernel.reduction_prefix
+    #             return None
 
-            def gen_loop(loop: LoopLevel, in_reduction=False):
-                with contextlib.ExitStack() as stack:
-                    loop_lines = loop.lines()
-                    if loop_lines is None:
-                        return
-                    code.writelines(loop_lines)
-                    stack.enter_context(code.indent())
-                    # generate inner loops or loop body
-                    if loop.inner:
-                        gen_loops(loop.inner, loop.is_reduction())
-                    else:
-                        kernels = loop.get_kernels()
-                        assert len(kernels) == 1
-                        gen_kernel(kernels[0])
+    #         def gen_loops(loops: List[LoopLevel], in_reduction=False):
+    #             with contextlib.ExitStack() as stack_outer:
+    #                 if loops:
+    #                     loop = loops[0]
+    #                     if loop.is_reduction() and not in_reduction:
+    #                         reduction_prefix = get_reduction_code_buffer(
+    #                             loops, is_suffix=False
+    #                         )
+    #                         if reduction_prefix:
+    #                             stack_outer.enter_context(code.indent())
+    #                         code.splice(reduction_prefix)
+    #                     if loop_nest.is_reduction_only() and loop.parallel:
+    #                         worksharing.parallel(threads)
+
+    #                 for loop in loops:
+    #                     gen_loop(loop, in_reduction)
+
+    #                 if loops:
+    #                     loop = loops[0]
+    #                     if loop_nest.is_reduction_only() and loop.parallel:
+    #                         worksharing.close()
+    #                     if loop.is_reduction() and not in_reduction:
+    #                         code.splice(
+    #                             get_reduction_code_buffer(loops, is_suffix=True)
+    #                         )
+
+    #         def gen_loop(loop: LoopLevel, in_reduction=False):
+    #             with contextlib.ExitStack() as stack:
+    #                 loop_lines = loop.lines()
+    #                 if loop_lines is None:
+    #                     return
+    #                 code.writelines(loop_lines)
+    #                 stack.enter_context(code.indent())
+    #                 # generate inner loops or loop body
+    #                 if loop.inner:
+    #                     gen_loops(loop.inner, loop.is_reduction())
+    #                 else:
+    #                     kernels = loop.get_kernels()
+    #                     assert len(kernels) == 1
+    #                     gen_kernel(kernels[0])
             
-            def gen_loop_list(loop_nest_root_list, in_reduction, loop_level_inners):
-                for loops in loop_nest_root_list:
-                    for loop in loops:
-                        assert loop.inner
-                        gen_loops(loop.inner, loop.is_reduction())
+    #         def gen_loop_list(loop_nest_root_list, in_reduction, loop_level_inners):
+    #             for loops in loop_nest_root_list:
+    #                 for loop in loops:
+    #                     assert loop.inner
+    #                     gen_loops(loop.inner, loop.is_reduction())
 
-            def gen_loops_root_list(loop_nest_root_list: List[List[LoopLevel]], in_reduction=False, loop_level_inners=None):
-                with contextlib.ExitStack() as stack_outer:
-                    loops = loop_nest_root_list[0]
-                    if loops:
-                        loop = loops[0]
-                        if loop.is_reduction() and not in_reduction:
-                            reduction_prefix = get_reduction_code_buffer(
-                                loops, is_suffix=False
-                            )
-                            if reduction_prefix:
-                                stack_outer.enter_context(code.indent())
-                            code.splice(reduction_prefix)
-                        if loop_nest.is_reduction_only() and loop.parallel:
-                            worksharing.parallel(threads)
+    #         def gen_loops_root_list(loop_nest_root_list: List[List[LoopLevel]], in_reduction=False, loop_level_inners=None):
+    #             with contextlib.ExitStack() as stack_outer:
+    #                 loops = loop_nest_root_list[0]
+    #                 if loops:
+    #                     loop = loops[0]
+    #                     if loop.is_reduction() and not in_reduction:
+    #                         reduction_prefix = get_reduction_code_buffer(
+    #                             loops, is_suffix=False
+    #                         )
+    #                         if reduction_prefix:
+    #                             stack_outer.enter_context(code.indent())
+    #                         code.splice(reduction_prefix)
+    #                     if loop_nest.is_reduction_only() and loop.parallel:
+    #                         worksharing.parallel(threads)
 
-                    # skip_outer_gen = False
-                    # for loops in loop_nest_root_list:
-                    #     for loop in loops:
-                    #         gen_loop(loop, in_reduction, skip_outer_gen=skip_outer_gen)
-                    #     skip_outer_gen = True
-                    
-                    loop = loops[0]
-                    # gen_loop(loop, in_reduction, loop_level_inners=loop_level_inners)
-                    with contextlib.ExitStack() as stack:
-                        loop_lines = loop.lines()
-                        if loop_lines is None:
-                            return
-                        code.writelines(loop_lines)
-                        stack.enter_context(code.indent())
-                        gen_loop_list(loop_nest_root_list, in_reduction, loop_level_inners=loop_level_inners)
+    #                 loop = loops[0]
+    #                 with contextlib.ExitStack() as stack:
+    #                     loop_lines = loop.lines()
+    #                     if loop_lines is None:
+    #                         return
+    #                     code.writelines(loop_lines)
+    #                     stack.enter_context(code.indent())
+    #                     gen_loop_list(loop_nest_root_list, in_reduction, loop_level_inners=loop_level_inners)
 
-                    if loops:
-                        loop = loops[0]
-                        if loop_nest.is_reduction_only() and loop.parallel:
-                            worksharing.close()
-                        if loop.is_reduction() and not in_reduction:
-                            code.splice(
-                                get_reduction_code_buffer(loops, is_suffix=True)
-                            )
+    #                 if loops:
+    #                     loop = loops[0]
+    #                     if loop_nest.is_reduction_only() and loop.parallel:
+    #                         worksharing.close()
+    #                     if loop.is_reduction() and not in_reduction:
+    #                         code.splice(
+    #                             get_reduction_code_buffer(loops, is_suffix=True)
+    #                         )
 
-            stack.enter_context(code.indent())
-            assert loop_nest.root
+    #         stack.enter_context(code.indent())
+    #         assert loop_nest.root
             
-            loop_nest_root_list = []
-            loop_level_inners = []
-            # For POC, we will have more strict restrict
-            for loop_nest in loop_nest_list:
-                assert loop_nest.root is not None
-                assert len(loop_nest.root) == 1
-                assert isinstance(loop_nest.root[0], LoopLevel)
-                assert loop_nest.root[0].inner is not None
-                loop_nest_root_list.append(loop_nest.root)
-                loop_level_inners.append(loop_nest.root[0].inner)
+    #         loop_nest_root_list = []
+    #         loop_level_inners = []
+    #         # For POC, we will have more strict restrict
+    #         for loop_nest in loop_nest_list:
+    #             assert loop_nest.root is not None
+    #             assert len(loop_nest.root) == 1
+    #             assert isinstance(loop_nest.root[0], LoopLevel)
+    #             assert loop_nest.root[0].inner is not None
+    #             loop_nest_root_list.append(loop_nest.root)
+    #             loop_level_inners.append(loop_nest.root[0].inner)
 
             
 
 
-            gen_loops_root_list(loop_nest_root_list, in_reduction=False, loop_level_inners=loop_level_inners)
+    #         gen_loops_root_list(loop_nest_root_list, in_reduction=False, loop_level_inners=loop_level_inners)
 
 
     def codegen_loops(self, code, worksharing):
@@ -3600,10 +3651,12 @@ class CppKernelProxy(CppKernel):
     
     def codegen_loops_list(self, loop_nest_list, code, worksharing):
         print("---- hit the codegen_loops_list ----", flush=True)
+        # Path 1:
         # for loop_nest in loop_nest_list:
         #     self.codegen_loops_impl(loop_nest, code, worksharing)
-        
-        self.codegen_loops_impl_list(loop_nest_list, code, worksharing)
+
+        # Path 2:
+        self.codegen_loops_impl(loop_nest_list, code, worksharing)
 
 
 class CppScheduling(BaseScheduling):
@@ -3659,23 +3712,21 @@ class CppScheduling(BaseScheduling):
         """
         Turn an set of pre-fused nodes into a C++ kernel.
         """
-        print("nodes is: {}".format(nodes), flush=True)
+        print("Start codegen_nodes nodes is: {}".format(nodes), flush=True)
 
         kernel_group = self.kernel_group
+
         cpp_kernel_proxy = CppKernelProxy(kernel_group)
         cpp_kernel_proxy.codegen_nodes(nodes)
 
         lazy_code_gen = True
 
         if lazy_code_gen:
+            # TODO<Leslie> Add the condition check instead of the buf
             self._lazy_cpp_kernel_proxy_list.append(cpp_kernel_proxy)
-
             if nodes[0].get_name() == "buf1":
-                print("start lazy codegen", flush=True)
+                print("---- Start the lazy codegen ----", flush=True)
                 kernel_group.finalize_kernel(self._lazy_cpp_kernel_proxy_list, nodes)
-                print("finish lazy codegen", flush=True)
-
-                print("clear lazy codegen nodes list", flush=True)
                 self._lazy_cpp_kernel_proxy_list = []
         else:
             kernel_group.finalize_kernel(cpp_kernel_proxy, nodes)
@@ -3719,9 +3770,7 @@ class KernelGroup:
             loop_nest_list = []
             for kernel in new_kernel:
                 loop_nest_list.append(kernel.loop_nest)
-            
             new_kernel[0].codegen_loops_list(loop_nest_list, code, ws)
-
         else:
             new_kernel.codegen_loops(code, ws)
 
