@@ -524,7 +524,20 @@ quantized_decomposed_lib.define(
     "test_backward(Tensor input, Tensor scales, Tensor zero_points, int axis, "
     "int quant_min, int quant_max, ScalarType dtype) -> Tensor")
 
-@impl(quantized_decomposed_lib, "test_backward", "CompositeExplicitAutograd")
+class TestBackward(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, input):
+        with torch._C._AutoDispatchBelowAutograd():
+            res = input ** 2
+        ctx.save_for_backward(res)
+        return res
+
+    @staticmethod
+    def backward(ctx, gy):
+        two_x, = ctx.saved_tensors
+        return gy * two_x.cpu()
+
+@impl(quantized_decomposed_lib, "test_backward", "AutogradCPU")
 def test_backward(
         input: torch.Tensor,
         scales: torch.Tensor,
@@ -534,7 +547,7 @@ def test_backward(
         quant_max: int,
         dtype: torch.dtype
 ) -> torch.Tensor:
-    return input * scales + zero_points
+    return TestBackward.apply(input)
 
 @impl(quantized_decomposed_lib, "test_backward", "Meta")
 def test_backward_mata(
@@ -546,5 +559,4 @@ def test_backward_mata(
         quant_max: int,
         dtype: torch.dtype
 ) -> torch.Tensor:
-    # return torch.empty_like(input, requires_grad=True)
     return torch.empty_like(input)
