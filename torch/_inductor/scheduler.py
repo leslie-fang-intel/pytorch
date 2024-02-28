@@ -2303,7 +2303,11 @@ class Scheduler:
             elif node.is_foreach():
                 self.get_backend(device).codegen_foreach(node)  # type: ignore[possibly-undefined]
             elif isinstance(node, (FusedSchedulerNode, SchedulerNode)):
-                self.get_backend(device).codegen_nodes(node.get_nodes())  # type: ignore[possibly-undefined]
+                from .codegen.cpp import CppScheduling
+                if isinstance(self.get_backend(device), CppScheduling):
+                    self.get_backend(device).codegen_nodes(node.get_nodes(), node != self.nodes[-1])
+                else:
+                    self.get_backend(device).codegen_nodes(node.get_nodes())  # type: ignore[possibly-undefined]
             else:
                 assert isinstance(node, NopKernelSchedulerNode)
                 node.allocate()
