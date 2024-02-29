@@ -2125,7 +2125,6 @@ class Scheduler:
 
     def free_buffers(self):
         """Free any buffers that are no longer needed"""
-        print("--- start to free buffers ----", flush=True)
         for name in sorted(
             self.buffer_names_to_free
             - V.graph.removed_buffers
@@ -2274,22 +2273,6 @@ class Scheduler:
                     node.get_name(),
                 )
 
-            from .codegen.cpp import CppScheduling
-            _device = node.get_device()
-            if isinstance(self.get_backend(_device), CppScheduling):
-                print("lazy kernel len is: {}".format(len(self.get_backend(_device)._lazy_cpp_kernel_proxy_list)), flush=True)
-                print("node.is_template() is: {}".format(node.is_template()), flush=True)
-                print("node.is_extern() is: {}".format(node.is_extern()), flush=True)
-                print("node.is_foreach() is: {}".format(node.is_foreach()), flush=True)
-                print("isinstance(node, (FusedSchedulerNode, SchedulerNode)) is: {}".format(isinstance(node, (FusedSchedulerNode, SchedulerNode))), flush=True)
-                if (
-                    node.is_template()
-                    or node.is_extern()
-                    or node.is_foreach()
-                    or isinstance(node, NopKernelSchedulerNode)
-                ) and (len(self.get_backend(_device)._lazy_cpp_kernel_proxy_list) >= 1):
-                    self.get_backend(_device).force_codegen_all_lazy_nodes()
-
             self.enter_context(node)
 
             if not isinstance(node, NopKernelSchedulerNode):
@@ -2320,10 +2303,7 @@ class Scheduler:
             elif node.is_foreach():
                 self.get_backend(device).codegen_foreach(node)  # type: ignore[possibly-undefined]
             elif isinstance(node, (FusedSchedulerNode, SchedulerNode)):
-                if isinstance(self.get_backend(device), CppScheduling):
-                    self.get_backend(device).codegen_nodes(node.get_nodes(), node != self.nodes[-1])
-                else:
-                    self.get_backend(device).codegen_nodes(node.get_nodes())  # type: ignore[possibly-undefined]
+                self.get_backend(device).codegen_nodes(node.get_nodes())  # type: ignore[possibly-undefined]
             else:
                 assert isinstance(node, NopKernelSchedulerNode)
                 node.allocate()

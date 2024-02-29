@@ -3640,39 +3640,22 @@ class CppScheduling(BaseScheduling):
                 return False
             return True
 
-        # Path1: Do the lazy codegen
-        if lazy_codegen:
-            # Will try if current node can be pushed into self._lazy_cpp_kernel_proxy_list and codegen later
-            if len(self._lazy_cpp_kernel_proxy_list) == 0:
-                self._lazy_cpp_kernel_proxy_list.append(cpp_kernel_proxy)
-                self._lazy_nodes_list.append(nodes)
-            else:
-                if _can_fuse_outer_loop(self._lazy_cpp_kernel_proxy_list, cpp_kernel_proxy):
-                    self._lazy_cpp_kernel_proxy_list.append(cpp_kernel_proxy)
-                    self._lazy_nodes_list.append(nodes)
-                else:
-                    if len(self._lazy_cpp_kernel_proxy_list) > 1:
-                        kernel_group.finalize_kernel(self._lazy_cpp_kernel_proxy_list, self._lazy_nodes_list)
-                    elif len(self._lazy_cpp_kernel_proxy_list) == 1:
-                        kernel_group.finalize_kernel(self._lazy_cpp_kernel_proxy_list[0], self._lazy_nodes_list[0])
-                    self._lazy_cpp_kernel_proxy_list.clear()
-                    self._lazy_nodes_list.clear()
-                    self._lazy_cpp_kernel_proxy_list.append(cpp_kernel_proxy)
-                    self._lazy_nodes_list.append(nodes)
+        if len(self._lazy_cpp_kernel_proxy_list) == 0:
+            self._lazy_cpp_kernel_proxy_list.append(cpp_kernel_proxy)
+            self._lazy_nodes_list.append(nodes)
         else:
-            # Will codegen current node immediately: for example of the last nodes in self.nodes
             if _can_fuse_outer_loop(self._lazy_cpp_kernel_proxy_list, cpp_kernel_proxy):
                 self._lazy_cpp_kernel_proxy_list.append(cpp_kernel_proxy)
                 self._lazy_nodes_list.append(nodes)
-                kernel_group.finalize_kernel(self._lazy_cpp_kernel_proxy_list, self._lazy_nodes_list)
             else:
                 if len(self._lazy_cpp_kernel_proxy_list) > 1:
                     kernel_group.finalize_kernel(self._lazy_cpp_kernel_proxy_list, self._lazy_nodes_list)
                 elif len(self._lazy_cpp_kernel_proxy_list) == 1:
                     kernel_group.finalize_kernel(self._lazy_cpp_kernel_proxy_list[0], self._lazy_nodes_list[0])
-                kernel_group.finalize_kernel(cpp_kernel_proxy, nodes)
-            self._lazy_cpp_kernel_proxy_list.clear()
-            self._lazy_nodes_list.clear()
+                self._lazy_cpp_kernel_proxy_list.clear()
+                self._lazy_nodes_list.clear()
+                self._lazy_cpp_kernel_proxy_list.append(cpp_kernel_proxy)
+                self._lazy_nodes_list.append(nodes)
 
         args_num = self._get_scheduled_num_args()
         if args_num > CppScheduling.MAX_FUSED_KERNEL_ARGS_NUM:
@@ -3688,6 +3671,14 @@ class CppScheduling(BaseScheduling):
         pass
 
     def flush(self):
+        # finalize the kernels lazily
+        if len(self._lazy_cpp_kernel_proxy_list) > 1:
+            self.kernel_group.finalize_kernel(self._lazy_cpp_kernel_proxy_list, self._lazy_nodes_list)
+        elif len(self._lazy_cpp_kernel_proxy_list) == 1:
+            self.kernel_group.finalize_kernel(self._lazy_cpp_kernel_proxy_list[0], self._lazy_nodes_list[0])
+        self._lazy_cpp_kernel_proxy_list.clear()
+        self._lazy_nodes_list.clear()
+
         self.kernel_group.codegen_define_and_call(V.graph.wrapper_code)
         self.get_kernel_group()
         self._set_flush_status(False)
