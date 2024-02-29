@@ -3570,8 +3570,11 @@ class CppScheduling(BaseScheduling):
         return self._can_fuse_horizontal_impl(node1, node2) and not node1.is_reduction()
     
     def force_codegen_all_lazy_nodes(self):
-        assert len(self._lazy_cpp_kernel_proxy_list) == 1
-        self.kernel_group.finalize_kernel(self._lazy_cpp_kernel_proxy_list[0], self._lazy_nodes_list[0])
+        assert len(self._lazy_cpp_kernel_proxy_list) >= 1
+        if len(self._lazy_cpp_kernel_proxy_list) > 1:
+            self.kernel_group.finalize_kernel(self._lazy_cpp_kernel_proxy_list, self._lazy_nodes_list)
+        elif len(self._lazy_cpp_kernel_proxy_list) == 1:
+            self.kernel_group.finalize_kernel(self._lazy_cpp_kernel_proxy_list[0], self._lazy_nodes_list[0])
         self._lazy_cpp_kernel_proxy_list.clear()
         self._lazy_nodes_list.clear()
 
@@ -3625,71 +3628,71 @@ class CppScheduling(BaseScheduling):
             #     return False
             # return True
 
-        # # Path1: Do the lazy codegen
-        # if lazy_codegen:
-        #     # Will try if current node can be pushed into self._lazy_cpp_kernel_proxy_list and codegen later
-        #     if len(self._lazy_cpp_kernel_proxy_list) == 0:
-        #         self._lazy_cpp_kernel_proxy_list.append(cpp_kernel_proxy)
-        #         self._lazy_nodes_list.append(nodes)
-        #     else:
-        #         if _can_fuse_outer_loop(self._lazy_cpp_kernel_proxy_list, cpp_kernel_proxy):
-        #             self._lazy_cpp_kernel_proxy_list.append(cpp_kernel_proxy)
-        #             self._lazy_nodes_list.append(nodes)
-        #         else:
-        #             if len(self._lazy_cpp_kernel_proxy_list) > 1:
-        #                 kernel_group.finalize_kernel(self._lazy_cpp_kernel_proxy_list, self._lazy_nodes_list)
-        #             elif len(self._lazy_cpp_kernel_proxy_list) == 1:
-        #                 kernel_group.finalize_kernel(self._lazy_cpp_kernel_proxy_list[0], self._lazy_nodes_list[0])
-        #             self._lazy_cpp_kernel_proxy_list.clear()
-        #             self._lazy_nodes_list.clear()
-        #             self._lazy_cpp_kernel_proxy_list.append(cpp_kernel_proxy)
-        #             self._lazy_nodes_list.append(nodes)
-        # else:
-        #     # Will codegen current node immediately: for example of the last nodes in self.nodes
-        #     if _can_fuse_outer_loop(self._lazy_cpp_kernel_proxy_list, cpp_kernel_proxy):
-        #         self._lazy_cpp_kernel_proxy_list.append(cpp_kernel_proxy)
-        #         self._lazy_nodes_list.append(nodes)
-        #         kernel_group.finalize_kernel(self._lazy_cpp_kernel_proxy_list, self._lazy_nodes_list)
-        #     else:
-        #         if len(self._lazy_cpp_kernel_proxy_list) > 1:
-        #             kernel_group.finalize_kernel(self._lazy_cpp_kernel_proxy_list, self._lazy_nodes_list)
-        #         elif len(self._lazy_cpp_kernel_proxy_list) == 1:
-        #             kernel_group.finalize_kernel(self._lazy_cpp_kernel_proxy_list[0], self._lazy_nodes_list[0])
-        #         kernel_group.finalize_kernel(cpp_kernel_proxy, nodes)
-        #     self._lazy_cpp_kernel_proxy_list.clear()
-        #     self._lazy_nodes_list.clear()
-
-
-        # Path2: Only Do lazy codegen with depth 1
-        print("lazy_codegen is:{}".format(lazy_codegen), flush=True)
+        # Path1: Do the lazy codegen
         if lazy_codegen:
+            # Will try if current node can be pushed into self._lazy_cpp_kernel_proxy_list and codegen later
             if len(self._lazy_cpp_kernel_proxy_list) == 0:
-                print("--- init once ----", flush=True)
                 self._lazy_cpp_kernel_proxy_list.append(cpp_kernel_proxy)
                 self._lazy_nodes_list.append(nodes)
             else:
-                print("---- go second path -----", flush=True)
-                assert len(self._lazy_cpp_kernel_proxy_list) == 1
-                kernel_group.finalize_kernel(self._lazy_cpp_kernel_proxy_list[0], self._lazy_nodes_list[0])
-                self._lazy_cpp_kernel_proxy_list.clear()
-                self._lazy_nodes_list.clear()
-                self._lazy_cpp_kernel_proxy_list.append(cpp_kernel_proxy)
-                self._lazy_nodes_list.append(nodes)
+                if _can_fuse_outer_loop(self._lazy_cpp_kernel_proxy_list, cpp_kernel_proxy):
+                    self._lazy_cpp_kernel_proxy_list.append(cpp_kernel_proxy)
+                    self._lazy_nodes_list.append(nodes)
+                else:
+                    if len(self._lazy_cpp_kernel_proxy_list) > 1:
+                        kernel_group.finalize_kernel(self._lazy_cpp_kernel_proxy_list, self._lazy_nodes_list)
+                    elif len(self._lazy_cpp_kernel_proxy_list) == 1:
+                        kernel_group.finalize_kernel(self._lazy_cpp_kernel_proxy_list[0], self._lazy_nodes_list[0])
+                    self._lazy_cpp_kernel_proxy_list.clear()
+                    self._lazy_nodes_list.clear()
+                    self._lazy_cpp_kernel_proxy_list.append(cpp_kernel_proxy)
+                    self._lazy_nodes_list.append(nodes)
         else:
-            if len(self._lazy_cpp_kernel_proxy_list) == 0:
-                print("---- shouldn't go this path -----", flush=True)
-                kernel_group.finalize_kernel(cpp_kernel_proxy, nodes)
+            # Will codegen current node immediately: for example of the last nodes in self.nodes
+            if _can_fuse_outer_loop(self._lazy_cpp_kernel_proxy_list, cpp_kernel_proxy):
+                self._lazy_cpp_kernel_proxy_list.append(cpp_kernel_proxy)
+                self._lazy_nodes_list.append(nodes)
+                kernel_group.finalize_kernel(self._lazy_cpp_kernel_proxy_list, self._lazy_nodes_list)
             else:
-                print("---- last node path ----", flush=True)
-                assert len(self._lazy_cpp_kernel_proxy_list) == 1
-                kernel_group.finalize_kernel(self._lazy_cpp_kernel_proxy_list[0], self._lazy_nodes_list[0])
-                self._lazy_cpp_kernel_proxy_list.clear()
-                self._lazy_nodes_list.clear()
+                if len(self._lazy_cpp_kernel_proxy_list) > 1:
+                    kernel_group.finalize_kernel(self._lazy_cpp_kernel_proxy_list, self._lazy_nodes_list)
+                elif len(self._lazy_cpp_kernel_proxy_list) == 1:
+                    kernel_group.finalize_kernel(self._lazy_cpp_kernel_proxy_list[0], self._lazy_nodes_list[0])
                 kernel_group.finalize_kernel(cpp_kernel_proxy, nodes)
-        
+            self._lazy_cpp_kernel_proxy_list.clear()
+            self._lazy_nodes_list.clear()
+
+
+        # # Path2: Only Do lazy codegen with depth 1
+        # print("lazy_codegen is:{}".format(lazy_codegen), flush=True)
+        # if lazy_codegen:
+        #     if len(self._lazy_cpp_kernel_proxy_list) == 0:
+        #         print("--- init once ----", flush=True)
+        #         self._lazy_cpp_kernel_proxy_list.append(cpp_kernel_proxy)
+        #         self._lazy_nodes_list.append(nodes)
+        #     else:
+        #         print("---- go second path -----", flush=True)
+        #         assert len(self._lazy_cpp_kernel_proxy_list) == 1
+        #         kernel_group.finalize_kernel(self._lazy_cpp_kernel_proxy_list[0], self._lazy_nodes_list[0])
+        #         self._lazy_cpp_kernel_proxy_list.clear()
+        #         self._lazy_nodes_list.clear()
+        #         self._lazy_cpp_kernel_proxy_list.append(cpp_kernel_proxy)
+        #         self._lazy_nodes_list.append(nodes)
+        # else:
+        #     if len(self._lazy_cpp_kernel_proxy_list) == 0:
+        #         print("---- shouldn't go this path -----", flush=True)
+        #         kernel_group.finalize_kernel(cpp_kernel_proxy, nodes)
+        #     else:
+        #         print("---- last node path ----", flush=True)
+        #         assert len(self._lazy_cpp_kernel_proxy_list) == 1
+        #         kernel_group.finalize_kernel(self._lazy_cpp_kernel_proxy_list[0], self._lazy_nodes_list[0])
+        #         self._lazy_cpp_kernel_proxy_list.clear()
+        #         self._lazy_nodes_list.clear()
+        #         kernel_group.finalize_kernel(cpp_kernel_proxy, nodes)
+
+
         # # Path 3: No lazt codegen
         # kernel_group.finalize_kernel(cpp_kernel_proxy, nodes)
-
 
 
         # if len(self._lazy_cpp_kernel_proxy_list) > 1:
