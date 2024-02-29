@@ -2312,7 +2312,6 @@ class Scheduler:
 
             self.buffer_names_to_free.update(node.last_usage)
 
-            
             if node.is_template():
                 node, *epilogue = node.get_nodes()
                 self.get_backend(device).codegen_template(node, epilogue)  # type: ignore[possibly-undefined]
@@ -2340,7 +2339,6 @@ class Scheduler:
             if not isinstance(node, NopKernelSchedulerNode):
                 device = node.get_device()
                 if self.get_backend(device).ready_to_flush():
-                    print("---- start to flush ----", flush=True)
                     self.flush()
 
         if self.current_device and self.current_device.type == "cuda":

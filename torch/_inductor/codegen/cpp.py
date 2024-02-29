@@ -3674,48 +3674,7 @@ class CppScheduling(BaseScheduling):
             self._lazy_cpp_kernel_proxy_list.clear()
             self._lazy_nodes_list.clear()
 
-
-        # # Path2: Only Do lazy codegen with depth 1
-        # print("lazy_codegen is:{}".format(lazy_codegen), flush=True)
-        # if lazy_codegen:
-        #     if len(self._lazy_cpp_kernel_proxy_list) == 0:
-        #         print("--- init once ----", flush=True)
-        #         self._lazy_cpp_kernel_proxy_list.append(cpp_kernel_proxy)
-        #         self._lazy_nodes_list.append(nodes)
-        #     else:
-        #         print("---- go second path -----", flush=True)
-        #         assert len(self._lazy_cpp_kernel_proxy_list) == 1
-        #         kernel_group.finalize_kernel(self._lazy_cpp_kernel_proxy_list[0], self._lazy_nodes_list[0])
-        #         self._lazy_cpp_kernel_proxy_list.clear()
-        #         self._lazy_nodes_list.clear()
-        #         self._lazy_cpp_kernel_proxy_list.append(cpp_kernel_proxy)
-        #         self._lazy_nodes_list.append(nodes)
-        # else:
-        #     if len(self._lazy_cpp_kernel_proxy_list) == 0:
-        #         print("---- shouldn't go this path -----", flush=True)
-        #         kernel_group.finalize_kernel(cpp_kernel_proxy, nodes)
-        #     else:
-        #         print("---- last node path ----", flush=True)
-        #         assert len(self._lazy_cpp_kernel_proxy_list) == 1
-        #         kernel_group.finalize_kernel(self._lazy_cpp_kernel_proxy_list[0], self._lazy_nodes_list[0])
-        #         self._lazy_cpp_kernel_proxy_list.clear()
-        #         self._lazy_nodes_list.clear()
-        #         kernel_group.finalize_kernel(cpp_kernel_proxy, nodes)
-
-
-        # # Path 3: No lazt codegen
-        # kernel_group.finalize_kernel(cpp_kernel_proxy, nodes)
-
-
-        # if len(self._lazy_cpp_kernel_proxy_list) > 1:
-        #     print("---- critical part ----", flush=True)
-        #     for idx in range(len(self._lazy_cpp_kernel_proxy_list)):
-        #         print("kernel is: {}".format(self._lazy_cpp_kernel_proxy_list[idx].loop_nest), flush=True)
-        #         for schedule_node in self._lazy_nodes_list[idx]:
-        #             print("schedule_node is: {}".format(schedule_node.debug_str_extra()), flush=True)
-
         args_num = self._get_scheduled_num_args()
-        print("args_num > CppScheduling.MAX_FUSED_KERNEL_ARGS_NUM is: {}".format(args_num > CppScheduling.MAX_FUSED_KERNEL_ARGS_NUM), flush=True)
         if args_num > CppScheduling.MAX_FUSED_KERNEL_ARGS_NUM:
             self._set_flush_status(True)
 
