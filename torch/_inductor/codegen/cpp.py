@@ -3597,23 +3597,72 @@ class CppScheduling(BaseScheduling):
         cpp_kernel_proxy = CppKernelProxy(kernel_group)
         cpp_kernel_proxy.codegen_nodes(nodes)
 
-        def _check_loop_level_attr(left_kernel_proxy, right_kernel_proxy):
+        def _check_loop_level_attr(
+            _out_loop_fusion,
+            left_kernel_proxy,
+            right_kernel_proxy,
+        ):
 
             def _check_outer_loop_levels(_left_kernel_proxy, _right_kernel_proxy):
+                if len(_left_kernel_proxy.loop_nest.root) != 1 or len(_right_kernel_proxy.loop_nest.root) != 1:
+                    return False
+                if not (
+                    _left_kernel_proxy.loop_nest.root[0].kernel is None
+                    and _right_kernel_proxy.loop_nest.root[0].kernel is None
+                ):
+                    return False
                 left_loop_nest_root = _left_kernel_proxy.loop_nest.root[0]
                 right_loop_nest_root = _right_kernel_proxy.loop_nest.root[0]
+
+                def _inner(
+                    _left_loop_nest_root,
+                    _right_loop_nest_root,
+                    _inner_depth,
+                ):
+                    if not (
+                        _left_loop_nest_root.var == _right_loop_nest_root.var
+                        and _left_loop_nest_root.size == _right_loop_nest_root.size
+                        and _left_loop_nest_root.offset == _right_loop_nest_root.offset
+                        and _left_loop_nest_root.steps == _right_loop_nest_root.steps
+                        and (
+                            _left_loop_nest_root.kernel is None
+                            and _right_loop_nest_root.kernel is None
+                        )
+                    ):
+                        return (False, _inner_depth)
+                    
+                    _inner_depth += 1
+                    if (
+                        len(_left_loop_nest_root.inner) == 1
+                        and len(_right_loop_nest_root.inner) == 1
+                        and _left_loop_nest_root.inner[0].kernel is None
+                        and _right_loop_nest_root.inner[0].kernel is None
+                    ):
+                        return _inner(
+                            _left_loop_nest_root.inner[0],
+                            _right_loop_nest_root.inner[0],
+                            _inner_depth,
+                        )
+                    return (True, _inner_depth)
+
+                status, _inner_depth = _inner(left_loop_nest_root, right_loop_nest_root, 0)
+                print("status is: {}".format(status), flush=True)
+                print("_inner_depth is: {}".format(_inner_depth), flush=True)
+                if not status:
+                    return False
+                assert _inner_depth != 0
+                if _out_loop_fusion.out_loop_fusion_depth == 0:
+                    _out_loop_fusion.out_loop_fusion_depth = _inner_depth
+                    return True
                 return (
-                    left_loop_nest_root.var == right_loop_nest_root.var
-                    and left_loop_nest_root.size == right_loop_nest_root.size
-                    and left_loop_nest_root.offset == right_loop_nest_root.offset
-                    and left_loop_nest_root.steps == right_loop_nest_root.steps
-                    and (
-                        left_loop_nest_root.kernel is None
-                        and right_loop_nest_root.kernel is None
-                    )
+                    _out_loop_fusion.out_loop_fusion_depth == _inner_depth
                 )
 
+
             def _check_inner_loop_levels(_left_kernel_proxy, _right_kernel_proxy):
+                if not _check_outer_loop_levels(_left_kernel_proxy, _right_kernel_proxy):
+                    return False
+
                 if len(_left_kernel_proxy.loop_nest.root[0].inner) != len(_right_kernel_proxy.loop_nest.root[0].inner):
                     return False
                 for idx in range(len(_left_kernel_proxy.loop_nest.root[0].inner)):
@@ -3629,15 +3678,9 @@ class CppScheduling(BaseScheduling):
                         return False
                 return True
 
-            return (
-                _check_outer_loop_levels(
-                    left_kernel_proxy,
-                    right_kernel_proxy,
-                )
-                and _check_inner_loop_levels(
-                    left_kernel_proxy,
-                    right_kernel_proxy,
-                )
+            return _check_inner_loop_levels(
+                left_kernel_proxy,
+                right_kernel_proxy,
             )
 
         def _can_fuse_outer_loop(
@@ -3705,8 +3748,9 @@ class CppScheduling(BaseScheduling):
                 and _cpp_kernel_proxy.loop_nest.root[0].parent == None
                 and _out_loop_fusion._lazy_cpp_kernel_proxy_list[-1].loop_nest.root[0].parent == None
                 and _check_loop_level_attr(
-                    _cpp_kernel_proxy,
+                    _out_loop_fusion,
                     _out_loop_fusion._lazy_cpp_kernel_proxy_list[-1],
+                    _cpp_kernel_proxy,
                 )
             ):
                 return False
