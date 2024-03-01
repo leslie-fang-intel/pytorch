@@ -3603,7 +3603,7 @@ class CppScheduling(BaseScheduling):
             right_kernel_proxy,
         ):
 
-            def _check_outer_loop_levels(_left_kernel_proxy, _right_kernel_proxy):
+            def _check_loop_levels(_left_kernel_proxy, _right_kernel_proxy):
                 if len(_left_kernel_proxy.loop_nest.root) != 1 or len(_right_kernel_proxy.loop_nest.root) != 1:
                     return False
                 if not (
@@ -3643,6 +3643,21 @@ class CppScheduling(BaseScheduling):
                             _right_loop_nest_root.inner[0],
                             _inner_depth,
                         )
+                    else:
+                        if len(_left_loop_nest_root.inner) != len(_right_loop_nest_root.inner):
+                            return (False, _inner_depth)
+                        for idx in range(len(_left_loop_nest_root.inner)):
+                            inner_loop1 = _left_loop_nest_root.inner[idx]
+                            inner_loop2 = _right_loop_nest_root.inner[idx]
+                            if not (
+                                inner_loop1.size == inner_loop2.size
+                                and inner_loop1.var == inner_loop2.var
+                                and inner_loop1.offset == inner_loop2.offset
+                                and inner_loop1.steps == inner_loop2.steps
+                                and inner_loop1.collapsed == inner_loop2.collapsed
+                            ):
+                                return (False, _inner_depth)
+
                     return (True, _inner_depth)
 
                 status, _inner_depth = _inner(left_loop_nest_root, right_loop_nest_root, 0)
@@ -3650,35 +3665,16 @@ class CppScheduling(BaseScheduling):
                 print("_inner_depth is: {}".format(_inner_depth), flush=True)
                 if not status:
                     return False
-                assert _inner_depth != 0
-                if _out_loop_fusion.out_loop_fusion_depth == 0:
-                    _out_loop_fusion.out_loop_fusion_depth = _inner_depth
-                    return True
-                return (
-                    _out_loop_fusion.out_loop_fusion_depth == _inner_depth
-                )
+                else:
+                    assert _inner_depth != 0
+                    if _out_loop_fusion.out_loop_fusion_depth == 0:
+                        _out_loop_fusion.out_loop_fusion_depth = _inner_depth
+                        return True
+                    return (
+                        _out_loop_fusion.out_loop_fusion_depth == _inner_depth
+                    )
 
-
-            def _check_inner_loop_levels(_left_kernel_proxy, _right_kernel_proxy):
-                if not _check_outer_loop_levels(_left_kernel_proxy, _right_kernel_proxy):
-                    return False
-
-                if len(_left_kernel_proxy.loop_nest.root[0].inner) != len(_right_kernel_proxy.loop_nest.root[0].inner):
-                    return False
-                for idx in range(len(_left_kernel_proxy.loop_nest.root[0].inner)):
-                    inner_loop1 = _left_kernel_proxy.loop_nest.root[0].inner[idx]
-                    inner_loop2 = _right_kernel_proxy.loop_nest.root[0].inner[idx]
-                    if not (
-                        inner_loop1.size == inner_loop2.size
-                        and inner_loop1.var == inner_loop2.var
-                        and inner_loop1.offset == inner_loop2.offset
-                        and inner_loop1.steps == inner_loop2.steps
-                        and inner_loop1.collapsed == inner_loop2.collapsed
-                    ):
-                        return False
-                return True
-
-            return _check_inner_loop_levels(
+            return _check_loop_levels(
                 left_kernel_proxy,
                 right_kernel_proxy,
             )
