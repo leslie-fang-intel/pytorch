@@ -1838,60 +1838,30 @@ class CppKernel(Kernel):
 
             stack.enter_context(code.indent())
             if outer_loop_fusion:
-                def gen_loop_list(loop_nest_root_list):
-                    for loops in loop_nest_root_list:
-                        for loop in loops:
-                            if len(loop.inner) < 1:
-                                print("---- hit ----", flush=True)
-                            print("loop.inner is: {}".format(loop.inner), flush=True)
-                            assert loop.inner
-                            # if loop.inner:
-                            gen_loops(loop.inner, loop.is_reduction())
+                def gen_loops_with_outer_fusion(loop_nest_root_list: List[List[LoopLevel]]):
+                    with contextlib.ExitStack() as stack:
+                        # Generate the code for outer for_loops
+                        loop_lines = loop_nest_root_list[0][0].lines()
+                        # if loop_lines is None:
+                        #     return
+                        assert loop_lines is not None
+                        code.writelines(loop_lines)
+                        stack.enter_context(code.indent())
+                        # Generate the inner loops one by one
+                        for loops in loop_nest_root_list:
+                            for loop in loops:
+                                assert loop.inner
+                                gen_loops(loop.inner, loop.is_reduction())
 
-                def gen_loops_root_list(loop_nest_root_list: List[List[LoopLevel]], in_reduction=False):
-                    with contextlib.ExitStack() as stack_outer:
-                        loops = loop_nest_root_list[0]
-                        if loops:
-                            loop = loops[0]
-                            if loop.is_reduction() and not in_reduction:
-                                reduction_prefix = get_reduction_code_buffer(
-                                    loops, is_suffix=False
-                                )
-                                if reduction_prefix:
-                                    stack_outer.enter_context(code.indent())
-                                code.splice(reduction_prefix)
-                            if loop_nest.is_reduction_only() and loop.parallel:
-                                worksharing.parallel(threads)
-
-                        loop = loops[0]
-                        with contextlib.ExitStack() as stack:
-                            # Generate the outer for loop
-                            loop_lines = loop.lines()
-                            if loop_lines is None:
-                                return
-                            code.writelines(loop_lines)
-                            stack.enter_context(code.indent())
-                            # Generate the inner loops one by one
-                            gen_loop_list(loop_nest_root_list)
-
-                        if loops:
-                            loop = loops[0]
-                            if loop_nest.is_reduction_only() and loop.parallel:
-                                worksharing.close()
-                            if loop.is_reduction() and not in_reduction:
-                                code.splice(
-                                    get_reduction_code_buffer(loops, is_suffix=True)
-                                )
                 assert loop_nest.root
                 loop_nest_root_list = []
-                # For POC, we will have more strict restrict
                 for loop_nest in loop_nest_list:
                     assert loop_nest.root is not None
                     assert len(loop_nest.root) == 1
                     assert isinstance(loop_nest.root[0], LoopLevel)
                     assert loop_nest.root[0].inner is not None
                     loop_nest_root_list.append(loop_nest.root)
-                gen_loops_root_list(loop_nest_root_list, in_reduction=False)
+                gen_loops_with_outer_fusion(loop_nest_root_list)
             else:
                 if loop_nest.root:
                     gen_loops(loop_nest.root)
@@ -3518,18 +3488,14 @@ class CppKernelProxy(CppKernel):
                 if schedule_log.isEnabledFor(logging.DEBUG):
                     schedule_log.debug("Disabled vectorization: %s", e)
 
-    def codegen_loops(self, code, worksharing):
-        self.codegen_loops_impl(self.loop_nest, code, worksharing)
-    
-    def codegen_loops_list(self, loop_nest_list, code, worksharing):
-        # print("---- hit the codegen_loops_list ----", flush=True)
-        # Path 1:
-        # for loop_nest in loop_nest_list:
-        #     self.codegen_loops_impl(loop_nest, code, worksharing)
-
-        # Path 2:
-        self.codegen_loops_impl(loop_nest_list, code, worksharing, outer_loop_fusion=True)
-
+    def codegen_loops(self, code, worksharing, loop_nest_list=None):
+        outer_loop_fusion = True if loop_nest_list is not None else False        
+        self.codegen_loops_impl(
+            loop_nest_list if outer_loop_fusion else self.loop_nest,
+            code,
+            worksharing,
+            outer_loop_fusion=outer_loop_fusion,
+        )
 
 class CppScheduling(BaseScheduling):
     # ctypes limits the number of args to 1024, refer to:
@@ -3602,15 +3568,6 @@ class CppScheduling(BaseScheduling):
             self._get_outer_loop_fusion_status()
             or not node1.is_reduction()  # not node1.is_reduction() is only needed when not outer loop fusion
         )
-    
-    def force_codegen_all_lazy_nodes(self):
-        assert len(self._lazy_cpp_kernel_proxy_list) >= 1
-        if len(self._lazy_cpp_kernel_proxy_list) > 1:
-            self.kernel_group.finalize_kernel(self._lazy_cpp_kernel_proxy_list, self._lazy_nodes_list)
-        elif len(self._lazy_cpp_kernel_proxy_list) == 1:
-            self.kernel_group.finalize_kernel(self._lazy_cpp_kernel_proxy_list[0], self._lazy_nodes_list[0])
-        self._lazy_cpp_kernel_proxy_list.clear()
-        self._lazy_nodes_list.clear()
 
     def codegen_nodes(self, nodes: List[SchedulerNode]):
         """
@@ -3623,15 +3580,21 @@ class CppScheduling(BaseScheduling):
         cpp_kernel_proxy = CppKernelProxy(kernel_group)
         cpp_kernel_proxy.codegen_nodes(nodes)
 
-        def _index_checker(left_kernel_proxy, right_kernel_proxy):
+        def _check_outer_loop_level_attr(left_kernel_proxy, right_kernel_proxy):
+            left_loop_nest_root = left_kernel_proxy.loop_nest.root[0]
+            right_loop_nest_root = right_kernel_proxy.loop_nest.root[0] 
             return (
-                left_kernel_proxy.loop_nest.root[0].size == right_kernel_proxy.loop_nest.root[0].size
-                and left_kernel_proxy.loop_nest.root[0].var == right_kernel_proxy.loop_nest.root[0].var
-                and left_kernel_proxy.loop_nest.root[0].offset == right_kernel_proxy.loop_nest.root[0].offset
-                and left_kernel_proxy.loop_nest.root[0].steps == right_kernel_proxy.loop_nest.root[0].steps
+                left_loop_nest_root.var == right_loop_nest_root.var
+                and left_loop_nest_root.size == right_loop_nest_root.size
+                and left_loop_nest_root.offset == right_loop_nest_root.offset
+                and left_loop_nest_root.steps == right_loop_nest_root.steps
+                and (
+                    left_loop_nest_root.kernel is None
+                    and right_loop_nest_root.kernel is None
+                )
             )
         
-        def _check_inner(left_kernel_proxy, right_kernel_proxy):
+        def _check_inner_loop_levels(left_kernel_proxy, right_kernel_proxy):
             if len(left_kernel_proxy.loop_nest.root[0].inner) != len(right_kernel_proxy.loop_nest.root[0].inner):
                 return False
             for idx in range(len(left_kernel_proxy.loop_nest.root[0].inner)):
@@ -3709,12 +3672,13 @@ class CppScheduling(BaseScheduling):
                 len(_lazy_cpp_kernel_proxy_list) >= 1
                 and len(_cpp_kernel_proxy.loop_nest.root) == 1
                 and len(_lazy_cpp_kernel_proxy_list[-1].loop_nest.root) == 1
-                and _index_checker(_cpp_kernel_proxy, _lazy_cpp_kernel_proxy_list[-1])
+                and _check_outer_loop_level_attr(_cpp_kernel_proxy, _lazy_cpp_kernel_proxy_list[-1])
                 and _cpp_kernel_proxy.loop_nest.root[0].parent == None
                 and _lazy_cpp_kernel_proxy_list[-1].loop_nest.root[0].parent == None
-                and _check_inner(_cpp_kernel_proxy, _lazy_cpp_kernel_proxy_list[-1])
+                and _check_inner_loop_levels(_cpp_kernel_proxy, _lazy_cpp_kernel_proxy_list[-1])
             ):
                 return False
+
             return True
 
         if len(self._lazy_cpp_kernel_proxy_list) == 0:
@@ -3791,7 +3755,7 @@ class KernelGroup:
             loop_nest_list = []
             for kernel in new_kernel:
                 loop_nest_list.append(kernel.loop_nest)
-            new_kernel[0].codegen_loops_list(loop_nest_list, code, ws)
+            new_kernel[0].codegen_loops(code, ws, loop_nest_list)
         else:
             new_kernel.codegen_loops(code, ws)
 
