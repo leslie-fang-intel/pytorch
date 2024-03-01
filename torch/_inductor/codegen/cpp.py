@@ -3497,6 +3497,21 @@ class CppKernelProxy(CppKernel):
             outer_loop_fusion=outer_loop_fusion,
         )
 
+class OutLoopFusions(object):
+    def __init__(self):
+        self._lazy_cpp_kernel_proxy_list = []
+        self._lazy_nodes_list = []
+        self.out_loop_fusion_depth = 0
+
+    def reset(self):
+        self._lazy_cpp_kernel_proxy_list.clear()
+        self._lazy_nodes_list.clear()
+        self.out_loop_fusion_depth = 0
+    
+    def append(self, cpp_kernel_proxy, nodes):
+        self._lazy_cpp_kernel_proxy_list.append(cpp_kernel_proxy)
+        self._lazy_nodes_list.append(nodes)
+
 class CppScheduling(BaseScheduling):
     # ctypes limits the number of args to 1024, refer to:
     # https://github.com/python/cpython/commit/a285af7e626d1b81cf09f8b2bf7656f100bc1237
@@ -3507,9 +3522,8 @@ class CppScheduling(BaseScheduling):
         self.scheduler = scheduler
         self.get_kernel_group()
         self._ready_to_flush = False
-        self._lazy_cpp_kernel_proxy_list = []
-        self._lazy_nodes_list = []
         self._enable_outer_loop_fusion = False
+        self._out_loop_fusion = OutLoopFusions()
 
     def _set_flush_status(self, status: bool):
         self._ready_to_flush = status
@@ -3575,53 +3589,69 @@ class CppScheduling(BaseScheduling):
         """
         print("Start codegen_nodes nodes is: {}".format(nodes), flush=True)
 
+        if nodes[0].get_name() == "buf4":
+            print("--- hit immm ----", flush=True)
+
         kernel_group = self.kernel_group
 
         cpp_kernel_proxy = CppKernelProxy(kernel_group)
         cpp_kernel_proxy.codegen_nodes(nodes)
 
-        def _check_outer_loop_level_attr(left_kernel_proxy, right_kernel_proxy):
-            left_loop_nest_root = left_kernel_proxy.loop_nest.root[0]
-            right_loop_nest_root = right_kernel_proxy.loop_nest.root[0] 
+        def _check_loop_level_attr(left_kernel_proxy, right_kernel_proxy):
+
+            def _check_outer_loop_levels(_left_kernel_proxy, _right_kernel_proxy):
+                left_loop_nest_root = _left_kernel_proxy.loop_nest.root[0]
+                right_loop_nest_root = _right_kernel_proxy.loop_nest.root[0]
+                return (
+                    left_loop_nest_root.var == right_loop_nest_root.var
+                    and left_loop_nest_root.size == right_loop_nest_root.size
+                    and left_loop_nest_root.offset == right_loop_nest_root.offset
+                    and left_loop_nest_root.steps == right_loop_nest_root.steps
+                    and (
+                        left_loop_nest_root.kernel is None
+                        and right_loop_nest_root.kernel is None
+                    )
+                )
+
+            def _check_inner_loop_levels(_left_kernel_proxy, _right_kernel_proxy):
+                if len(_left_kernel_proxy.loop_nest.root[0].inner) != len(_right_kernel_proxy.loop_nest.root[0].inner):
+                    return False
+                for idx in range(len(_left_kernel_proxy.loop_nest.root[0].inner)):
+                    inner_loop1 = _left_kernel_proxy.loop_nest.root[0].inner[idx]
+                    inner_loop2 = _right_kernel_proxy.loop_nest.root[0].inner[idx]
+                    if not (
+                        inner_loop1.size == inner_loop2.size
+                        and inner_loop1.var == inner_loop2.var
+                        and inner_loop1.offset == inner_loop2.offset
+                        and inner_loop1.steps == inner_loop2.steps
+                        and inner_loop1.collapsed == inner_loop2.collapsed
+                    ):
+                        return False
+                return True
+
             return (
-                left_loop_nest_root.var == right_loop_nest_root.var
-                and left_loop_nest_root.size == right_loop_nest_root.size
-                and left_loop_nest_root.offset == right_loop_nest_root.offset
-                and left_loop_nest_root.steps == right_loop_nest_root.steps
-                and (
-                    left_loop_nest_root.kernel is None
-                    and right_loop_nest_root.kernel is None
+                _check_outer_loop_levels(
+                    left_kernel_proxy,
+                    right_kernel_proxy,
+                )
+                and _check_inner_loop_levels(
+                    left_kernel_proxy,
+                    right_kernel_proxy,
                 )
             )
-        
-        def _check_inner_loop_levels(left_kernel_proxy, right_kernel_proxy):
-            if len(left_kernel_proxy.loop_nest.root[0].inner) != len(right_kernel_proxy.loop_nest.root[0].inner):
-                return False
-            for idx in range(len(left_kernel_proxy.loop_nest.root[0].inner)):
-                inner_loop1 = left_kernel_proxy.loop_nest.root[0].inner[idx]
-                inner_loop2 = right_kernel_proxy.loop_nest.root[0].inner[idx]
-                if not (
-                    inner_loop1.size == inner_loop2.size
-                    and inner_loop1.var == inner_loop2.var
-                    and inner_loop1.offset == inner_loop2.offset
-                    and inner_loop1.steps == inner_loop2.steps
-                    and inner_loop1.collapsed == inner_loop2.collapsed
-                ):
-                    return False
-            
-            return True
 
         def _can_fuse_outer_loop(
-            _lazy_cpp_kernel_proxy_list,
+            _out_loop_fusion,
             _cpp_kernel_proxy,
-            _lazy_nodes_list, # List[List[SchedulerNode], ...]
             _nodes,  # List[SchedulerNode]
         ):
-            # return False  # For Debug
+            # Types hint for debug
+            # _out_loop_fusion._lazy_nodes_list: List[List[SchedulerNode], ...]
+            # _out_loop_fusion._nodes: List[SchedulerNode]
 
             # Step 1: Check the node relationship for fusibility
             # Refer to Scheduler.can_fuse()
-            flatten_lazy_nodes_list, _ = torch.utils._pytree.tree_flatten(_lazy_nodes_list)  # List[SchedulerNode]
+            flatten_lazy_nodes_list, _ = torch.utils._pytree.tree_flatten(_out_loop_fusion._lazy_nodes_list)  # List[SchedulerNode]
             if (
                 not all(isinstance(_lazy_node, SchedulerNode) for _lazy_node in flatten_lazy_nodes_list)
                 or not all(isinstance(_node, SchedulerNode) for _node in _nodes)
@@ -3652,9 +3682,9 @@ class CppScheduling(BaseScheduling):
                     ):
                         return False    
             _node1 = (
-                FusedSchedulerNode(self.scheduler, _lazy_nodes_list[-1])
-                if len(_lazy_nodes_list[-1]) > 1
-                else _lazy_nodes_list[-1][0]
+                FusedSchedulerNode(self.scheduler, _out_loop_fusion._lazy_nodes_list[-1])
+                if len(_out_loop_fusion._lazy_nodes_list[-1]) > 1
+                else _out_loop_fusion._lazy_nodes_list[-1][0]
             )
             _node2 = (
                 FusedSchedulerNode(self.scheduler, _nodes)
@@ -3669,39 +3699,42 @@ class CppScheduling(BaseScheduling):
 
             # Step 2: Check the loop attrtibutions for outer loops' fusibility
             if not (
-                len(_lazy_cpp_kernel_proxy_list) >= 1
+                len(_out_loop_fusion._lazy_cpp_kernel_proxy_list) >= 1
                 and len(_cpp_kernel_proxy.loop_nest.root) == 1
-                and len(_lazy_cpp_kernel_proxy_list[-1].loop_nest.root) == 1
-                and _check_outer_loop_level_attr(_cpp_kernel_proxy, _lazy_cpp_kernel_proxy_list[-1])
+                and len(_out_loop_fusion._lazy_cpp_kernel_proxy_list[-1].loop_nest.root) == 1
                 and _cpp_kernel_proxy.loop_nest.root[0].parent == None
-                and _lazy_cpp_kernel_proxy_list[-1].loop_nest.root[0].parent == None
-                and _check_inner_loop_levels(_cpp_kernel_proxy, _lazy_cpp_kernel_proxy_list[-1])
+                and _out_loop_fusion._lazy_cpp_kernel_proxy_list[-1].loop_nest.root[0].parent == None
+                and _check_loop_level_attr(
+                    _cpp_kernel_proxy,
+                    _out_loop_fusion._lazy_cpp_kernel_proxy_list[-1],
+                )
             ):
                 return False
 
             return True
 
-        if len(self._lazy_cpp_kernel_proxy_list) == 0:
-            self._lazy_cpp_kernel_proxy_list.append(cpp_kernel_proxy)
-            self._lazy_nodes_list.append(nodes)
+        if len(self._out_loop_fusion._lazy_cpp_kernel_proxy_list) == 0:
+            self._out_loop_fusion.append(cpp_kernel_proxy, nodes)
         else:
             if _can_fuse_outer_loop(
-                self._lazy_cpp_kernel_proxy_list,
+                self._out_loop_fusion,
                 cpp_kernel_proxy,
-                self._lazy_nodes_list,
                 nodes,
             ):
-                self._lazy_cpp_kernel_proxy_list.append(cpp_kernel_proxy)
-                self._lazy_nodes_list.append(nodes)
+                self._out_loop_fusion.append(cpp_kernel_proxy, nodes)
             else:
-                if len(self._lazy_cpp_kernel_proxy_list) > 1:
-                    kernel_group.finalize_kernel(self._lazy_cpp_kernel_proxy_list, self._lazy_nodes_list)
-                elif len(self._lazy_cpp_kernel_proxy_list) == 1:
-                    kernel_group.finalize_kernel(self._lazy_cpp_kernel_proxy_list[0], self._lazy_nodes_list[0])
-                self._lazy_cpp_kernel_proxy_list.clear()
-                self._lazy_nodes_list.clear()
-                self._lazy_cpp_kernel_proxy_list.append(cpp_kernel_proxy)
-                self._lazy_nodes_list.append(nodes)
+                if len(self._out_loop_fusion._lazy_cpp_kernel_proxy_list) > 1:
+                    kernel_group.finalize_kernel(
+                        self._out_loop_fusion._lazy_cpp_kernel_proxy_list,
+                        self._out_loop_fusion._lazy_nodes_list,
+                    )
+                elif len(self._out_loop_fusion._lazy_cpp_kernel_proxy_list) == 1:
+                    kernel_group.finalize_kernel(
+                        self._out_loop_fusion._lazy_cpp_kernel_proxy_list[0],
+                        self._out_loop_fusion._lazy_nodes_list[0],
+                    )
+                self._out_loop_fusion.reset()
+                self._out_loop_fusion.append(cpp_kernel_proxy, nodes)
 
         args_num = self._get_scheduled_num_args()
         if args_num > CppScheduling.MAX_FUSED_KERNEL_ARGS_NUM:
@@ -3718,12 +3751,17 @@ class CppScheduling(BaseScheduling):
 
     def flush(self):
         # finalize the kernels lazily
-        if len(self._lazy_cpp_kernel_proxy_list) > 1:
-            self.kernel_group.finalize_kernel(self._lazy_cpp_kernel_proxy_list, self._lazy_nodes_list)
-        elif len(self._lazy_cpp_kernel_proxy_list) == 1:
-            self.kernel_group.finalize_kernel(self._lazy_cpp_kernel_proxy_list[0], self._lazy_nodes_list[0])
-        self._lazy_cpp_kernel_proxy_list.clear()
-        self._lazy_nodes_list.clear()
+        if len(self._out_loop_fusion._lazy_cpp_kernel_proxy_list) > 1:
+            self.kernel_group.finalize_kernel(
+                self._out_loop_fusion._lazy_cpp_kernel_proxy_list,
+                self._out_loop_fusion._lazy_nodes_list,
+            )
+        elif len(self._out_loop_fusion._lazy_cpp_kernel_proxy_list) == 1:
+            self.kernel_group.finalize_kernel(
+                self._out_loop_fusion._lazy_cpp_kernel_proxy_list[0],
+                self._out_loop_fusion._lazy_nodes_list[0],
+            )
+        self._out_loop_fusion.reset()
 
         self.kernel_group.codegen_define_and_call(V.graph.wrapper_code)
         self.get_kernel_group()
@@ -3745,6 +3783,8 @@ class KernelGroup:
 
     def finalize_kernel(self, new_kernel, nodes):
         if isinstance(nodes[0], List):
+            print("--- hit the outer loop fusion ----", flush=True)
+            print(len(nodes), flush=True)
             for _nodes in nodes:
                 self.scheduled_nodes += _nodes
         else:
