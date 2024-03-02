@@ -23,7 +23,7 @@ from torch.utils._sympy.value_ranges import bound_sympy, ValueRanges
 from .. import codecache, config, ir, metrics
 from ..codegen.wrapper import WrapperCodeGen
 from ..optimize_indexing import range_expressable_in_32_bits
-from ..scheduler import BaseScheduling, SchedulerNode, Scheduler, FusedSchedulerNode, BaseSchedulerNode
+from ..scheduler import BaseScheduling, SchedulerNode, FusedSchedulerNode, BaseSchedulerNode
 from ..utils import (
     cache_on_self,
     get_fused_kernel_name,
@@ -1745,15 +1745,9 @@ class CppKernel(Kernel):
         if outer_loop_fusion:
             assert isinstance(loop_nest, List)
             loop_nest_list = loop_nest
+            # since the loop_nest in loop_nest_list should codegen same out loop code
+            # we only need to handle the first loop_nest
             loop_nest = loop_nest_list[0]
-            # Some needed preprocess for the other loop_nest beside loop_nest_list[0]
-            for _loop_nest in loop_nest_list:
-                # For outer loop fusion, force not loop collopasition
-                assert self.call_ranges is not None
-                _par_depth = self.decide_parallel_depth(
-                    self.call_ranges[: _loop_nest.max_parallel_depth()], threads
-                )
-                _loop_nest.mark_parallel(_par_depth)
 
         assert self.call_ranges is not None
         par_depth = self.decide_parallel_depth(
@@ -1766,9 +1760,7 @@ class CppKernel(Kernel):
                     worksharing.close()
                 else:
                     worksharing.parallel(threads)
-                if not outer_loop_fusion:
-                    # For outer_loop_fusion case, we have init previously
-                    loop_nest.mark_parallel(par_depth)
+                loop_nest.mark_parallel(par_depth)
             elif threads > 1:
                 if worksharing.single():
                     stack.enter_context(code.indent())
