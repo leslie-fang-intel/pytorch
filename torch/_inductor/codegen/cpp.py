@@ -3619,8 +3619,6 @@ class CppScheduling(BaseScheduling):
         """
         Turn an set of pre-fused nodes into a C++ kernel.
         """
-        print("Start codegen_nodes nodes is: {}".format(nodes), flush=True)
-
         kernel_group = self.kernel_group
 
         cpp_kernel_proxy = CppKernelProxy(kernel_group)
@@ -3750,8 +3748,6 @@ class CppScheduling(BaseScheduling):
                 right_loop_nest_root = _right_kernel_proxy.loop_nest.root[0]
 
                 out_loop_fusionable, out_loop_fusion_depth = _inner(left_loop_nest_root, right_loop_nest_root, 0)
-                print("out_loop_fusionable is: {}".format(out_loop_fusionable), flush=True)
-                print("out_loop_fusion_depth is: {}".format(out_loop_fusion_depth), flush=True)
                 if not out_loop_fusionable:
                     return False
                 else:
