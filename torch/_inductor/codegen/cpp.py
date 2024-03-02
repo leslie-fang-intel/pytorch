@@ -1747,9 +1747,8 @@ class CppKernel(Kernel):
             loop_nest_list = loop_nest
             loop_nest = loop_nest_list[0]
             # Some needed preprocess for the other loop_nest beside loop_nest_list[0]
-            for idx in range(len(loop_nest_list)):
+            for _loop_nest in loop_nest_list:
                 # For outer loop fusion, force not loop collopasition
-                _loop_nest = loop_nest_list[idx]
                 assert self.call_ranges is not None
                 _par_depth = self.decide_parallel_depth(
                     self.call_ranges[: _loop_nest.max_parallel_depth()], threads
@@ -1842,9 +1841,10 @@ class CppKernel(Kernel):
                 def gen_loops_with_outer_fusion(loop_nest_root_list: List[List[LoopLevel]]):
                     with contextlib.ExitStack() as stack:
                         # Generate the code for outer for_loops
-                        loop_lines = loop_nest_root_list[0][0].lines()
-                        # if loop_lines is None:
-                        #     return
+                        assert out_loop_fusion_depth >= 1
+                        root_of_first_loop_nest = loop_nest_root_list[0]
+                        assert len(root_of_first_loop_nest) == 1
+                        loop_lines = root_of_first_loop_nest[0].lines()
                         assert loop_lines is not None
                         code.writelines(loop_lines)
                         stack.enter_context(code.indent())
@@ -1856,12 +1856,12 @@ class CppKernel(Kernel):
 
                 assert loop_nest.root
                 loop_nest_root_list = []
-                for loop_nest in loop_nest_list:
-                    assert loop_nest.root is not None
-                    assert len(loop_nest.root) == 1
-                    assert isinstance(loop_nest.root[0], LoopLevel)
-                    assert loop_nest.root[0].inner is not None
-                    loop_nest_root_list.append(loop_nest.root)
+                for _loop_nest in loop_nest_list:
+                    assert _loop_nest.root is not None
+                    assert len(_loop_nest.root) == 1
+                    assert isinstance(_loop_nest.root[0], LoopLevel)
+                    assert _loop_nest.root[0].inner is not None
+                    loop_nest_root_list.append(_loop_nest.root)
                 gen_loops_with_outer_fusion(loop_nest_root_list)
             else:
                 if loop_nest.root:
@@ -4206,7 +4206,7 @@ class LoopNestWithSplit:
                 # If there are for than 1 inner loops, we shouldn't codegen `#pragma collapse`
                 loop.can_code_gen_collapsed = False
         for i in range(1, par_depth):
-            loops = loops[0].inner 
+            loops = loops[0].inner
             loops[0].collapsed = False if outer_loop_fusion else True
 
     def split_with_tiling(self, depth, factor):
