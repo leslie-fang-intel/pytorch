@@ -1737,10 +1737,11 @@ class CppKernel(Kernel):
             sympy_product(self.call_ranges), fallback=8192
         )
     
-    def codegen_loops_impl(self, loop_nest, code, worksharing, outer_loop_fusion=False):
+    def codegen_loops_impl(self, loop_nest, code, worksharing, out_loop_fusion_depth=0):
 
         threads = parallel_num_threads()
 
+        outer_loop_fusion = out_loop_fusion_depth >= 1
         if outer_loop_fusion:
             assert isinstance(loop_nest, List)
             loop_nest_list = loop_nest
@@ -3488,13 +3489,14 @@ class CppKernelProxy(CppKernel):
                 if schedule_log.isEnabledFor(logging.DEBUG):
                     schedule_log.debug("Disabled vectorization: %s", e)
 
-    def codegen_loops(self, code, worksharing, loop_nest_list=None):
-        outer_loop_fusion = True if loop_nest_list is not None else False        
+    def codegen_loops(self, code, worksharing, loop_nest_list=None, out_loop_fusion_depth=0):
+        if out_loop_fusion_depth >= 1:
+            assert loop_nest_list is not None
         self.codegen_loops_impl(
-            loop_nest_list if outer_loop_fusion else self.loop_nest,
+            loop_nest_list if (out_loop_fusion_depth >= 1) else self.loop_nest,
             code,
             worksharing,
-            outer_loop_fusion=outer_loop_fusion,
+            out_loop_fusion_depth=out_loop_fusion_depth,
         )
         
 class OutLoopFusions(object):
@@ -3588,11 +3590,14 @@ class CppScheduling(BaseScheduling):
             self.kernel_group.finalize_kernel(
                 self._out_loop_fusion._lazy_cpp_kernel_proxy_list,
                 self._out_loop_fusion._lazy_nodes_list,
+                self._out_loop_fusion.out_loop_fusion_depth,
             )
         elif len(self._out_loop_fusion._lazy_cpp_kernel_proxy_list) == 1:
+            assert self._out_loop_fusion.out_loop_fusion_depth == 0
             self.kernel_group.finalize_kernel(
-                self._out_loop_fusion._lazy_cpp_kernel_proxy_list[0],
-                self._out_loop_fusion._lazy_nodes_list[0],
+                self._out_loop_fusion._lazy_cpp_kernel_proxy_list,
+                self._out_loop_fusion._lazy_nodes_list,
+                self._out_loop_fusion.out_loop_fusion_depth,
             )
         self._out_loop_fusion.reset()
 
@@ -3821,23 +3826,21 @@ class KernelGroup:
     def new_kernel(self, cls, *args):
         return cls(self.args, parallel_num_threads(), *args)
 
-    def finalize_kernel(self, new_kernel, nodes):
-        if isinstance(nodes[0], List):
-            print("--- hit the outer loop fusion ----", flush=True)
-            print(len(nodes), flush=True)
-            for _nodes in nodes:
-                self.scheduled_nodes += _nodes
-        else:
-            self.scheduled_nodes += nodes
+    def finalize_kernel(self, new_kernel, nodes, out_loop_fusion_depth=0):
         code = self.loops_code
         ws = self.ws
-        if isinstance(new_kernel, List):
+        if out_loop_fusion_depth >= 1:
+            assert len(nodes) > 1
+            assert len(new_kernel) > 1
+            for _nodes in nodes:
+                self.scheduled_nodes += _nodes
             loop_nest_list = []
             for kernel in new_kernel:
                 loop_nest_list.append(kernel.loop_nest)
-            new_kernel[0].codegen_loops(code, ws, loop_nest_list)
+            new_kernel[0].codegen_loops(code, ws, loop_nest_list, out_loop_fusion_depth)
         else:
-            new_kernel.codegen_loops(code, ws)
+            self.scheduled_nodes += nodes[0]
+            new_kernel[0].codegen_loops(code, ws)
 
     def get_num_args(self):
         arg_defs, call_args, arg_types = self.args.cpp_argdefs()
