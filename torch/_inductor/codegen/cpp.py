@@ -1753,7 +1753,7 @@ class CppKernel(Kernel):
                 _par_depth = self.decide_parallel_depth(
                     self.call_ranges[: _loop_nest.max_parallel_depth()], threads
                 )
-                _loop_nest.mark_parallel(_par_depth, outer_loop_fusion)
+                _loop_nest.mark_parallel(_par_depth)
 
         assert self.call_ranges is not None
         par_depth = self.decide_parallel_depth(
@@ -3976,7 +3976,6 @@ class LoopLevel:
     inner: List["LoopLevel"] = dataclasses.field(default_factory=list)
     # kernel assigned to this loop level, only valid when it is a leaf
     kernel: Optional[CppKernel] = None
-    can_code_gen_collapsed: bool = True
 
     def __post_init__(self):
         # Regarding the C++/OpenMP backend, `codecache.pick_vec_isa()` to check
@@ -4108,7 +4107,7 @@ class LoopLevel:
         if self.parallel:
             # TODO(jansel): look into chunk size and other schedules
             line1 = f"#pragma omp for{reduction} "
-            if self.parallel > 1 and self.can_code_gen_collapsed:
+            if self.parallel > 1:
                 line1 += f" collapse({self.parallel})"
             if self.simd_omp:
                 line1 = line1.replace(" for ", f" for {simd}")
@@ -4208,7 +4207,7 @@ class LoopNestWithSplit:
             self.root is not None and len(self.root) > 0 and self.root[0].is_reduction()
         )
 
-    def mark_parallel(self, par_depth, outer_loop_fusion=False):
+    def mark_parallel(self, par_depth):
         assert (
             par_depth <= self.max_parallel_depth()
         ), "Parallel depth cannot exceed the maximal allowed parallel depth"
@@ -4216,12 +4215,9 @@ class LoopNestWithSplit:
         loops = self.root
         for loop in loops:
             loop.parallel = par_depth
-            if outer_loop_fusion:
-                # If there are for than 1 inner loops, we shouldn't codegen `#pragma collapse`
-                loop.can_code_gen_collapsed = False
         for i in range(1, par_depth):
             loops = loops[0].inner
-            loops[0].collapsed = False if outer_loop_fusion else True
+            loops[0].collapsed = True
 
     def split_with_tiling(self, depth, factor):
         """
