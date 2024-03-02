@@ -1838,19 +1838,33 @@ class CppKernel(Kernel):
 
             stack.enter_context(code.indent())
             if outer_loop_fusion:
-                def gen_loops_with_outer_fusion(loop_nest_root_list: List[List[LoopLevel]]):
+                def gen_loops_with_outer_fusion(_loop_level_nested_list: List[List[LoopLevel]], _out_loop_fusion_depth):
                     with contextlib.ExitStack() as stack:
                         # Generate the code for outer for_loops
-                        assert out_loop_fusion_depth >= 1
-                        root_of_first_loop_nest = loop_nest_root_list[0]
-                        assert len(root_of_first_loop_nest) == 1
-                        loop_lines = root_of_first_loop_nest[0].lines()
+                        first_loop_level_list = _loop_level_nested_list[0]
+                        assert len(first_loop_level_list) == 1
+                        loop_lines = first_loop_level_list[0].lines()
                         assert loop_lines is not None
                         code.writelines(loop_lines)
                         stack.enter_context(code.indent())
-                        # Generate the inner loops one by one
-                        for loops in loop_nest_root_list:
-                            for loop in loops:
+
+                        _out_loop_fusion_depth -= 1
+                        assert _out_loop_fusion_depth >= 0
+                        if _out_loop_fusion_depth > 0:
+                            # Do the next level fused out loop codegen
+                            _next_loop_level_nested_list = []
+                            for _loop_level_list in _loop_level_nested_list:
+                                assert len(_loop_level_list) == 1
+                                _next_loop_level_nested_list.append(_loop_level_list[0].inner)
+                            gen_loops_with_outer_fusion(
+                                _next_loop_level_nested_list,
+                                _out_loop_fusion_depth,
+                            )
+                        else:
+                            # Generate the inner loops one by one
+                            for _loop_level_list in _loop_level_nested_list:
+                                assert len(_loop_level_list) == 1
+                                loop = _loop_level_list[0]
                                 assert loop.inner
                                 gen_loops(loop.inner, loop.is_reduction())
 
@@ -1862,7 +1876,7 @@ class CppKernel(Kernel):
                     assert isinstance(_loop_nest.root[0], LoopLevel)
                     assert _loop_nest.root[0].inner is not None
                     loop_nest_root_list.append(_loop_nest.root)
-                gen_loops_with_outer_fusion(loop_nest_root_list)
+                gen_loops_with_outer_fusion(loop_nest_root_list, out_loop_fusion_depth)
             else:
                 if loop_nest.root:
                     gen_loops(loop_nest.root)
