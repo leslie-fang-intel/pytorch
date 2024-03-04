@@ -509,6 +509,12 @@ inline at::vec::Vectorized<float> cvt_int64_to_fp32(at::vec::VectorizedN<int64_t
 # endif
 }
 
+inline at::vec::Vectorized<float> cvt_fp64_to_fp32(at::vec::VectorizedN<double,2> src) {
+  auto low = _mm512_cvtpd_ps(src[0]);
+  auto high = _mm512_cvtpd_ps(src[1]);
+  return _mm512_insertf32x8(_mm512_castps256_ps512(low), high, 1);
+}
+
 inline at::vec::VectorizedN<int64_t,2> cvt_fp32_to_int64(at::vec::Vectorized<float> src) {
   at::vec::VectorizedN<int64_t,2> result;
 # if defined(CPU_CAPABILITY_AVX512)

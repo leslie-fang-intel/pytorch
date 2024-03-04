@@ -1024,8 +1024,36 @@ class CppVecOverrides(CppOverrides):
                             new_args.append(new_arg)
                         else:
                             new_args.append(arg)
+                
+                new_new_args = list(new_args)
                 if vectors:
-                    return func(*new_args, **kwargs)
+                    new_vectors = [
+                        arg
+                        for arg in new_new_args
+                        if isinstance(arg, CppCSEVariable) and arg.is_vec
+                    ]
+
+                    # For example: vec<int> + vec<float>
+                    # Need to convert vec<int> to vec<float>
+                    support_convert = True
+                    for arg in new_vectors:
+                        if not arg.dtype in [torch.float, torch.int32]:
+                            support_convert = False
+                            break
+                    if support_convert:
+                        vec_dtype = torch.float
+                        if len(new_vectors) == 2 and (new_vectors[0].dtype != new_vectors[1].dtype):
+                            new_new_args = []
+                            for arg in new_args:
+                                if isinstance(arg, CppCSEVariable) and arg.is_vec and arg.dtype == torch.int32:
+                                    new_arg = ops.to_dtype(arg, vec_dtype, arg.dtype)
+                                    new_arg.dtype = torch.float
+                                    new_new_args.append(new_arg)
+                                else:
+                                    new_new_args.append(arg)
+
+
+                    return func(*new_new_args, **kwargs)
                 else:
                     # fallback to scalar ops
                     scalar_ops = super(CppVecOverrides, self)
@@ -1345,26 +1373,32 @@ class CppVecOverrides(CppOverrides):
         node: torch.fx.Node = V.interpreter.current_node
         assert node and isinstance(node, torch.fx.Node)
         opt_ctx_x = get_opt_ctx(node.args[1])
+
+        # print("opt_ctx_x.dtype is: {}".format(opt_ctx_x.dtype), flush=True)
+        # print("dtype is: {}".format(dtype), flush=True)
+
+        src_dtype = src_dtype if src_dtype is not None else opt_ctx_x.dtype
+
         assert opt_ctx_x
-        if opt_ctx_x.dtype in (torch.float, torch.float32) and dtype == torch.bool:
+        if src_dtype in (torch.float, torch.float32) and dtype == torch.bool:
             return f"vec_convert_to_mask({x})"
-        if opt_ctx_x.dtype == torch.bool and dtype in (torch.float, torch.float32):
+        if src_dtype == torch.bool and dtype in (torch.float, torch.float32):
             return f"mask_convert_to_float({x})"
-        if opt_ctx_x.dtype == torch.bool and dtype in DTYPE_LOWP_FP:
+        if src_dtype == torch.bool and dtype in DTYPE_LOWP_FP:
             return f"mask_convert_to_lowp<{DTYPE_TO_CPP[dtype]}>({x})"
-        if opt_ctx_x.dtype == torch.bool and dtype == torch.int64:
+        if src_dtype == torch.bool and dtype == torch.int64:
             return f"mask_convert_to_int64({x})"
-        if opt_ctx_x.dtype in (torch.float, torch.float32) and dtype in DTYPE_LOWP_FP:
+        if src_dtype in (torch.float, torch.float32) and dtype in DTYPE_LOWP_FP:
             return f"cvt_fp32_to_lowp_fp<{DTYPE_TO_CPP[dtype]}>({x})"
-        if opt_ctx_x.dtype in DTYPE_LOWP_FP and dtype in (torch.float, torch.float32):
-            return f"cvt_lowp_fp_to_fp32<{DTYPE_TO_CPP[opt_ctx_x.dtype]}>({x})"
-        if opt_ctx_x.dtype in (torch.uint8, torch.int8) and dtype in (
+        if src_dtype in DTYPE_LOWP_FP and dtype in (torch.float, torch.float32):
+            return f"cvt_lowp_fp_to_fp32<{DTYPE_TO_CPP[src_dtype]}>({x})"
+        if src_dtype in (torch.uint8, torch.int8) and dtype in (
             torch.float,
             torch.float32,
         ):
             # Note: this function only convert inputs number of elements equal to at::vec::Vectorized<float>.size()
             return f"at::vec::convert_int8_to_float({x})"
-        if opt_ctx_x.dtype in (torch.float, torch.float32) and dtype in (
+        if src_dtype in (torch.float, torch.float32) and dtype in (
             torch.uint8,
             torch.int8,
         ):
@@ -1372,18 +1406,20 @@ class CppVecOverrides(CppOverrides):
             # * Pattern match of quantization op in the loop body.
             # * Skip the explicit saturation and clamp inside at::vec::convert_float_to_int8.
             return f"at::vec::convert_float_to_int8<{DTYPE_TO_CPP[dtype]}>({x})"
-        if opt_ctx_x.dtype == torch.int32 and dtype == torch.float:
+        if src_dtype == torch.int32 and dtype == torch.float:
             return f"at::vec::convert_to_fp_of_same_size<float>({x})"
-        if opt_ctx_x.dtype == torch.float and dtype == torch.int32:
+        if src_dtype == torch.float and dtype == torch.int32:
             return f"at::vec::convert_to_int_of_same_size({x})"
-        if opt_ctx_x.dtype == torch.int64 and dtype == torch.float:
+        if src_dtype == torch.int64 and dtype == torch.float:
             return f"cvt_int64_to_fp32({x})"
-        if opt_ctx_x.dtype == torch.float and dtype == torch.int64:
+        if src_dtype == torch.float and dtype == torch.int64:
             return f"cvt_fp32_to_int64({x})"
-        if opt_ctx_x.dtype == torch.int32 and dtype == torch.int64:
+        if src_dtype == torch.int32 and dtype == torch.int64:
             return f"cvt_int32_to_int64({x})"
-        if opt_ctx_x.dtype == torch.int64 and dtype == torch.int32:
+        if src_dtype == torch.int64 and dtype == torch.int32:
             return f"cvt_int64_to_int32({x})"
+        if src_dtype == torch.float64 and dtype == torch.float:
+            return f"cvt_fp64_to_fp32({x})"
         # TODO(jgong5): support conversion for other types
         # currently we only allow load/store torch.uint8 and handle conversion there
         return f"({x})"
@@ -2558,6 +2594,7 @@ class CppVecKernelChecker(CppVecKernel):
             torch.int8,
             torch.int32,
             torch.int64,
+            torch.float64,
         ]
         self.store_supported_dtypes: List[torch.dtype] = [
             torch.float,
@@ -2963,6 +3000,7 @@ class CppVecKernelChecker(CppVecKernel):
                                 torch.float16,
                                 torch.bfloat16,
                                 torch.float,
+                                torch.float64,
                                 torch.uint8,
                                 torch.int8,
                                 torch.int32,
