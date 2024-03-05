@@ -1,3 +1,4 @@
+import contextlib
 import collections
 import dataclasses
 import functools
@@ -998,6 +999,30 @@ class FusedSchedulerNode(BaseSchedulerNode):
         return "\n".join(lines).rstrip()
 
 
+class OuterFusedSchedulerNode(FusedSchedulerNode):
+    @classmethod
+    def fuse(cls, node1: BaseSchedulerNode, node2: BaseSchedulerNode):
+        assert node1.scheduler is node2.scheduler
+        assert isinstance(node1, (OuterFusedSchedulerNode, SchedulerNode, FusedSchedulerNode)) and isinstance(
+            node2, (SchedulerNode, FusedSchedulerNode)
+        )
+        if isinstance(node1, OuterFusedSchedulerNode):
+            return cls(node1.scheduler, list(node1.get_outer_nodes()) + list(node2.get_nodes()))
+        else:
+            return cls(node1.scheduler, [node1, node2])  # type: ignore[arg-type]
+
+    def __init__(self, scheduler: "Scheduler", outer_fused_nodes: List[Union[FusedSchedulerNode, SchedulerNode]]):
+        self.outer_fused_nodes = outer_fused_nodes
+        flattern_snodes = []
+        for _node in self.outer_fused_nodes:
+            assert isinstance(_node, (SchedulerNode, FusedSchedulerNode))
+            flattern_snodes.extend(list(_node.get_nodes()))
+        super().__init__(scheduler, flattern_snodes)
+    
+    def get_outer_nodes(self):
+        return self.outer_fused_nodes
+
+
 class ForeachKernelSchedulerNode(FusedSchedulerNode):
     """Scheduler node which consists of a list of scheduler nodes that each operate on a
     distinct tensor in a list of tensors."""
@@ -1675,22 +1700,33 @@ class Scheduler:
         """
         Mutates self.nodes to combine nodes into FusedSchedulerNodes.
         """
-        for i in range(10):
-            old_len = len(self.nodes)
-            fusion_log.debug(
-                "===== attempting fusion (%d/10): %d nodes =====", i + 1, old_len
+
+        all_node_in_cpu = all(_node.get_device() == torch.device("cpu") for _node in self.nodes)
+        check_outer_loop_fusion_list = [False, True] if all_node_in_cpu else [False,]
+
+        for _check_outer_loop_fusion in check_outer_loop_fusion_list:
+            ctx_manager = (
+                self.get_backend(torch.device("cpu")).enable_outer_loop_fusion()
+                if (all_node_in_cpu and _check_outer_loop_fusion)
+                else contextlib.nullcontext()
             )
-            self.fuse_nodes_once()
-            new_len = len(self.nodes)
-            fusion_log.debug(
-                "completed fusion round (%d/10): fused %d nodes into %d nodes\n",
-                i + 1,
-                old_len,
-                new_len,
-            )
-            if new_len == old_len or new_len == 1:
-                fusion_log.debug("===== fusion complete (%d iterations) =====", i + 1)
-                break
+            with ctx_manager:
+                for i in range(10):
+                    old_len = len(self.nodes)
+                    fusion_log.debug(
+                        "===== attempting fusion (%d/10): %d nodes =====", i + 1, old_len
+                    )
+                    self.fuse_nodes_once()
+                    new_len = len(self.nodes)
+                    fusion_log.debug(
+                        "completed fusion round (%d/10): fused %d nodes into %d nodes\n",
+                        i + 1,
+                        old_len,
+                        new_len,
+                    )
+                    if new_len == old_len or new_len == 1:
+                        fusion_log.debug("===== fusion complete (%d iterations) =====", i + 1)
+                        break
 
     def benchmark_fused_nodes(self, nodes):
         """
@@ -1819,6 +1855,7 @@ class Scheduler:
 
                 # above can_fuse asserts that node2 has the same device
                 device = node1.get_device()
+
                 node3 = self.get_backend(device).fuse(node1, node2)
                 fused_nodes.remove(node1)
                 fused_nodes.remove(node2)
@@ -2327,8 +2364,9 @@ class Scheduler:
                 self.codegen_extern_call(node)
             elif node.is_foreach():
                 self.get_backend(device).codegen_foreach(node)  # type: ignore[possibly-undefined]
-            elif isinstance(node, (FusedSchedulerNode, SchedulerNode)):
-                self.get_backend(device).codegen_nodes(node.get_nodes())  # type: ignore[possibly-undefined]
+            elif isinstance(node, (OuterFusedSchedulerNode, FusedSchedulerNode, SchedulerNode)):
+                # self.get_backend(device).codegen_nodes(node.get_nodes())  # type: ignore[possibly-undefined]
+                self.get_backend(device).codegen_nodes(node)  # type: ignore[possibly-undefined]
             else:
                 assert isinstance(node, NopKernelSchedulerNode)
                 node.allocate()
@@ -2404,7 +2442,7 @@ class BaseScheduling:
         """
         raise NotImplementedError()
 
-    def codegen_nodes(self, nodes: List[SchedulerNode]):
+    def codegen_nodes(self, node: Union[OuterFusedSchedulerNode, FusedSchedulerNode, SchedulerNode]):
         """
         Generate a kernel given a list of pre-fused nodes.
         """

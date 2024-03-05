@@ -3236,10 +3236,13 @@ class TritonScheduling(BaseScheduling):
 
         return node_schedule
 
-    def codegen_nodes(self, nodes: List[scheduler.SchedulerNode]):
+    def codegen_nodes(self, node: Union[scheduler.FusedSchedulerNode, scheduler.SchedulerNode]):
         """
         Given a set of pre-fused nodes, generate a Triton kernel.
         """
+
+        nodes = node.get_nodes()
+
         _, (numel, rnumel) = max(nodes, key=lambda x: int(x.is_reduction())).group
 
         node_schedule = self.generate_node_schedule(nodes, numel, rnumel)
