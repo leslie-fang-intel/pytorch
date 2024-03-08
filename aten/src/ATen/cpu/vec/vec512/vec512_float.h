@@ -113,6 +113,13 @@ public:
       _mm512_mask_storeu_ps(reinterpret_cast<float*>(ptr), mask, values);
     }
   }
+  void store(bool* ptr, int64_t count = size()) const {
+    assert(count == size());
+    __m512i all_ones = _mm512_set1_epi32(0xFFFFFFFF);
+    __mmask16 mmask = _mm512_cmp_epi32_mask(_mm512_castps_si512(values), all_ones, _MM_CMPINT_EQ);
+    __m128i tmp_res = _mm_maskz_broadcastb_epi8(mmask, _mm_set1_epi32(0x00000001));
+    _mm_store_epi64(ptr, tmp_res);
+  }
   const float& operator[](int idx) const  = delete;
   float& operator[](int idx) = delete;
   int zero_mask() const {
