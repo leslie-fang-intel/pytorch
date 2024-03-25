@@ -287,21 +287,43 @@ class TestHelperModules:
                 return tmp + self.bn2(self.conv2(tmp))
 
     class SelfAttnLikeModule(torch.nn.Module):
-        def __init__(self, input_dim) -> None:
+        def __init__(
+            self,
+            input_dim,
+            transpose_for_score = False,
+            num_attention_heads = None,
+            attention_head_size = None,
+        ) -> None:
             super().__init__()
             self.input_dim = input_dim
             self.q_proj = nn.Linear(input_dim, input_dim, bias=False)
             self.k_proj = nn.Linear(input_dim, input_dim, bias=False)
             self.v_proj = nn.Linear(input_dim, input_dim, bias=False)
             self.softmax = nn.Softmax(dim=-1)
+            self.transpose_for_score = transpose_for_score
+            if self.transpose_for_score:
+                assert num_attention_heads is not None
+                assert attention_head_size is not None
+                self.num_attention_heads = num_attention_heads
+                self.attention_head_size = attention_head_size
+
+        def transpose_for_scores(self, x: torch.Tensor) -> torch.Tensor:
+            new_x_shape = x.size()[:-1] + (self.num_attention_heads, self.attention_head_size)
+            x = x.view(new_x_shape)
+            return x.permute(0, 2, 1, 3)
 
         def forward(self, x):
             q = self.q_proj(x)
             k = self.k_proj(x)
             v = self.v_proj(x)
-            scores = torch.bmm(q, k.transpose(1, 2)) / (self.input_dim ** 0.5)
+            if self.transpose_for_score:
+                q = self.transpose_for_scores(q)
+                k = self.transpose_for_scores(k)
+                v = self.transpose_for_scores(v)
+            # breakpoint()
+            scores = torch.matmul(q, k.transpose(-1, -2)) / (self.input_dim ** 0.5)
             attention = self.softmax(scores)
-            weighted = torch.bmm(attention, v)
+            weighted = torch.matmul(attention, v)
             return weighted
 
 class X86InductorQuantTestCase(QuantizationTestCase):
@@ -331,6 +353,9 @@ class X86InductorQuantTestCase(QuantizationTestCase):
         prepare_model = copy.deepcopy(m)
         m = convert_pt2e(m)
         convert_model = copy.deepcopy(m)
+        
+        print("convert_model is: {}".format(convert_model), flush=True)
+
         pt2_quant_output = m(*example_inputs)
         node_occurrence = {
             ns.call_function(k): v for k, v in expected_node_occurrence.items()
@@ -1267,6 +1292,46 @@ class TestQuantizePT2EX86Inductor(X86InductorQuantTestCase):
                 node_occurrence,
                 node_list,
                 is_qat=True,
+            )
+
+    @skipIfNoX86
+    def test_attention_block(self):
+        """
+        Test pattern of Attention like Block with X86InductorQuantizer.
+        """
+        with override_quantized_engine("x86"), torch.no_grad():
+            m = TestHelperModules.SelfAttnLikeModule(
+                input_dim=64*16,
+                transpose_for_score=True,
+                num_attention_heads=16,
+                attention_head_size=64,
+            ).eval()
+            example_inputs = (torch.randn(2, 384, 1024),)
+
+            m(*example_inputs)
+
+            quantizer = X86InductorQuantizer().set_global(
+                xiq.get_default_x86_inductor_quantization_config()
+            )
+            node_occurrence = {
+                torch.ops.quantized_decomposed.quantize_per_tensor.default: 1,
+                torch.ops.quantized_decomposed.dequantize_per_tensor.default: 3,
+                # quantize_per_channel for weights are const propagated
+                torch.ops.quantized_decomposed.quantize_per_channel.default: 0,
+                torch.ops.quantized_decomposed.dequantize_per_channel.default: 3,
+            }
+            node_list = [
+                torch.ops.quantized_decomposed.quantize_per_tensor.default,
+                torch.ops.quantized_decomposed.dequantize_per_tensor.default,
+                torch.ops.quantized_decomposed.dequantize_per_channel.default,
+                torch.ops.aten.linear.default,
+            ]
+            self._test_quantizer(
+                m,
+                example_inputs,
+                quantizer,
+                node_occurrence,
+                node_list,
             )
 
     @skipIfNoX86
