@@ -81,3 +81,52 @@ class DuplicateDQPass(PassBase):
         graph_module.graph.eliminate_dead_code()
         graph_module.recompile()
         return PassResult(graph_module, True)
+
+class QuantLiftUp(PassBase):
+    def call(self, graph_module: torch.fx.GraphModule) -> PassResult:
+        for node in graph_module.graph.nodes:
+            print("node is: {}".format(node), flush=True)
+            if node.op == "call_function" and node.target is torch.ops.quantized_decomposed.quantize_per_tensor.default:
+                # Find the Quant Node
+                quant_node = node
+                input_node = quant_node.args[0]
+
+                # Replace dequant's input from quant to quant's input
+                if quant_node.args[0].target in [
+                    torch.ops.aten.transpose.int,
+                    torch.ops.aten.permute.default,
+                    torch.ops.aten.view.default,
+                ]:
+                    quant_node.replace_all_uses_with(input_node)
+
+                    # Find where to insert the quant node
+                    current_node = quant_node
+                    input_node = current_node.args[0]
+
+                    while input_node.target in [
+                        torch.ops.aten.transpose.int,
+                        torch.ops.aten.permute.default,
+                        torch.ops.aten.view.default,
+                    ]:
+                        current_node = input_node
+                        input_node = current_node.args[0]
+
+                    # Insert the new quant node
+                    with graph_module.graph.inserting_before(current_node):
+                        new_quant_node = graph_module.graph.node_copy(quant_node)
+                        input_node.replace_all_uses_with(new_quant_node)
+
+                        def maybe_replace_node(n: torch.fx.Node) -> torch.fx.Node:
+                            if n == quant_node.args[0]:
+                                return input_node
+                            else:
+                                return n
+
+                        new_args = map_arg(new_quant_node.args, maybe_replace_node)
+                        new_kwargs = map_arg(new_quant_node.kwargs, maybe_replace_node)
+                        new_quant_node.args = new_args
+                        new_quant_node.kwargs = new_kwargs
+
+        graph_module.graph.eliminate_dead_code()
+        graph_module.recompile()
+        return PassResult(graph_module, True)

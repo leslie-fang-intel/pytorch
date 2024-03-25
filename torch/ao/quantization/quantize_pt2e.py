@@ -24,7 +24,7 @@ from torch.ao.quantization.quantizer import (  # noqa: F401
     QuantizationAnnotation,
 )
 from torch.fx.passes.infra.pass_manager import PassManager
-from torch.ao.quantization.pt2e.duplicate_dq_pass import DuplicateDQPass
+from torch.ao.quantization.pt2e.duplicate_dq_pass import DuplicateDQPass, QuantLiftUp
 from torch.ao.quantization.pt2e.port_metadata_pass import PortNodeMetaForQDQ
 from torch._inductor.constant_folding import constant_fold
 
@@ -237,6 +237,9 @@ def convert_pt2e(
     model = pm(model).graph_module
 
     pm = PassManager([PortNodeMetaForQDQ()])
+    model = pm(model).graph_module
+
+    pm = PassManager([QuantLiftUp()])
     model = pm(model).graph_module
 
     if fold_quantize:
