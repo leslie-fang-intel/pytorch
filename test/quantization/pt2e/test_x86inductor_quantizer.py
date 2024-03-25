@@ -355,6 +355,9 @@ class X86InductorQuantTestCase(QuantizationTestCase):
         convert_model = copy.deepcopy(m)
         
         print("convert_model is: {}".format(convert_model), flush=True)
+        # from torch.fx.passes.graph_drawer import FxGraphDrawer
+        # g = FxGraphDrawer(convert_model, "attention_block")
+        # g.get_dot_graph().write_svg("/localdisk/leslie/torch_inductor_lz/attention_block.svg")
 
         pt2_quant_output = m(*example_inputs)
         node_occurrence = {
@@ -1299,40 +1302,46 @@ class TestQuantizePT2EX86Inductor(X86InductorQuantTestCase):
         """
         Test pattern of Attention like Block with X86InductorQuantizer.
         """
-        with override_quantized_engine("x86"), torch.no_grad():
-            m = TestHelperModules.SelfAttnLikeModule(
-                input_dim=64*16,
-                transpose_for_score=True,
-                num_attention_heads=16,
-                attention_head_size=64,
-            ).eval()
-            example_inputs = (torch.randn(2, 384, 1024),)
+        # for annotate_matmul in [False, True]:
+        for annotate_matmul in [True]:
+            with override_quantized_engine("x86"), torch.no_grad():
+                m = TestHelperModules.SelfAttnLikeModule(
+                    input_dim=64*16,
+                    transpose_for_score=True,
+                    num_attention_heads=16,
+                    attention_head_size=64,
+                ).eval()
+                example_inputs = (torch.randn(2, 384, 1024),)
 
-            m(*example_inputs)
+                m(*example_inputs)
 
-            quantizer = X86InductorQuantizer().set_global(
-                xiq.get_default_x86_inductor_quantization_config()
-            )
-            node_occurrence = {
-                torch.ops.quantized_decomposed.quantize_per_tensor.default: 1,
-                torch.ops.quantized_decomposed.dequantize_per_tensor.default: 3,
-                # quantize_per_channel for weights are const propagated
-                torch.ops.quantized_decomposed.quantize_per_channel.default: 0,
-                torch.ops.quantized_decomposed.dequantize_per_channel.default: 3,
-            }
-            node_list = [
-                torch.ops.quantized_decomposed.quantize_per_tensor.default,
-                torch.ops.quantized_decomposed.dequantize_per_tensor.default,
-                torch.ops.quantized_decomposed.dequantize_per_channel.default,
-                torch.ops.aten.linear.default,
-            ]
-            self._test_quantizer(
-                m,
-                example_inputs,
-                quantizer,
-                node_occurrence,
-                node_list,
-            )
+                quantizer = X86InductorQuantizer().set_global(
+                    xiq.get_default_x86_inductor_quantization_config()
+                )
+
+                if annotate_matmul:
+                    quantizer.add_extra_quantizable_op(torch.ops.aten.matmul.default)
+
+                node_occurrence = {
+                    torch.ops.quantized_decomposed.quantize_per_tensor.default: 5 if annotate_matmul else 1,
+                    torch.ops.quantized_decomposed.dequantize_per_tensor.default: 7 if annotate_matmul else 3,
+                    # quantize_per_channel for weights are const propagated
+                    torch.ops.quantized_decomposed.quantize_per_channel.default: 0,
+                    torch.ops.quantized_decomposed.dequantize_per_channel.default: 3,
+                }
+                node_list = [
+                    torch.ops.quantized_decomposed.quantize_per_tensor.default,
+                    torch.ops.quantized_decomposed.dequantize_per_tensor.default,
+                    torch.ops.quantized_decomposed.dequantize_per_channel.default,
+                    torch.ops.aten.linear.default,
+                ]
+                self._test_quantizer(
+                    m,
+                    example_inputs,
+                    quantizer,
+                    node_occurrence,
+                    node_list,
+                )
 
     @skipIfNoX86
     def test_dynamic_quant_linear(self):
