@@ -41,6 +41,7 @@ from torch.fx.passes.utils.source_matcher_utils import (
     get_source_partitions,
     SourcePartition,
 )
+from functools import wraps
 
 __all__ = [
     "X86InductorQuantizer",
@@ -71,7 +72,25 @@ int8_in_int8_out_ops_pt2e: Set = {
 
 # Operations support the int8 data type and exclude operations such as conv and linear.
 # A superset of int8_in_int8_out_ops_pt2e incorporating additional operators.
-quantizable_ops_pt2e = copy.deepcopy(int8_in_int8_out_ops_pt2e)
+quantizable_ops_fall_through_list = copy.deepcopy(int8_in_int8_out_ops_pt2e)
+
+
+# Operators will use int8 no matter of the context
+quantizable_ops_white_list: Set = {
+    torch.ops.aten.conv2d.default,
+    torch.ops.aten.linear.default,
+}
+
+# operators we enable recipes by default
+quantizable_ops_list = quantizable_ops_fall_through_list | quantizable_ops_white_list
+
+quantizable_ops_disabled_by_default_list: Set = {
+    torch.ops.aten.matmul.default
+}
+
+# Includes quantizable_ops_list and other operators like(matmul)
+support_quantizable_ops_list = quantizable_ops_list | quantizable_ops_disabled_by_default_list
+
 
 QUANT_ANNOTATION_KEY = "quantization_annotation"
 
@@ -268,10 +287,16 @@ class X86InductorQuantizer(Quantizer):
         return self
 
     def set_config_for_operator_type(
-        self, operator_type: str, quantization_config: QuantizationConfig
+        self, operator_type, quantization_config: QuantizationConfig
     ):
         self.operator_type_config[operator_type] = quantization_config
         return self
+
+    def add_extra_quantizable_op(self, operator):
+        quantizable_ops_list.add(operator)
+
+    def remove_quantizable_op(self, operator):
+        quantizable_ops_list.discard(operator)
 
     def _annotate_conv_node_helper(
         self,
@@ -409,8 +434,8 @@ class X86InductorQuantizer(Quantizer):
         if config.is_qat:
             # Annotate QAT specific pattern: mainly due to BN not folded in prepare_qat
             self._annotate_qat_conv2d_fusion_pattern(model, config)
-
         self._annotate_conv2d_fusion_pattern(model, config)
+        self._annotate_linear_fusion_pattern(model, config)
 
         # Step2: Recipe to propagate annotation for patterns beside conv/linear.
         # Go through all the nodes from start to end.
@@ -435,14 +460,22 @@ class X86InductorQuantizer(Quantizer):
         self._annotate_linear(model, config)
         return model
 
+    def _quantization_config_filter(self, node_type, config: QuantizationConfig):
+        if node_type not in quantizable_ops_list:
+            config = None
+        elif node_type in self.operator_type_config:
+            config = self.operator_type_config[node_type]
+        return config
+
     def _annotate_qat_conv2d_fusion_pattern(
         self, model: torch.fx.GraphModule, config: QuantizationConfig
     ):
-        # Annotate QAT Specific patterns
-        self._annotate_qat_conv2d_bn_binary_unary(model, config)
-        self._annotate_qat_conv2d_bn_binary(model, config)
-        self._annotate_qat_conv2d_bn_unary(model, config)
-        self._annotate_qat_conv2d_bn(model, config)
+        if (config := self._quantization_config_filter(torch.ops.aten.conv2d.default, config)) is not None:
+            # Annotate QAT Specific patterns
+            self._annotate_qat_conv2d_bn_binary_unary(model, config)
+            self._annotate_qat_conv2d_bn_binary(model, config)
+            self._annotate_qat_conv2d_bn_unary(model, config)
+            self._annotate_qat_conv2d_bn(model, config)
 
     def _annotate_qat_conv2d_bn_binary_unary(
         self, gm: torch.fx.GraphModule, quantization_config: QuantizationConfig
@@ -650,12 +683,18 @@ class X86InductorQuantizer(Quantizer):
     def _annotate_conv2d_fusion_pattern(
         self, model: torch.fx.GraphModule, config: QuantizationConfig
     ):
-        self._annotate_conv2d_binary_unary(model, config)
-        self._annotate_conv2d_binary(model, config)
-        self._annotate_conv2d_unary(model, config)
-        self._annotate_conv2d(model, config)
-        self._annotate_linear_unary(model, config)
-        self._annotate_linear(model, config)
+        if (config := self._quantization_config_filter(torch.ops.aten.conv2d.default, config)) is not None:
+            self._annotate_conv2d_binary_unary(model, config)
+            self._annotate_conv2d_binary(model, config)
+            self._annotate_conv2d_unary(model, config)
+            self._annotate_conv2d(model, config)
+    
+    def _annotate_linear_fusion_pattern(
+        self, model: torch.fx.GraphModule, config: QuantizationConfig
+    ):
+        if (config := self._quantization_config_filter(torch.ops.aten.linear.default, config)) is not None:
+            self._annotate_linear_unary(model, config)
+            self._annotate_linear(model, config)
 
     def _annotate_conv2d_binary_unary(
         self, gm: torch.fx.GraphModule, quantization_config: QuantizationConfig
@@ -854,9 +893,10 @@ class X86InductorQuantizer(Quantizer):
     ) -> None:
         # Propagate annotation to quantizable patterns.
         if (
-            (node.target in quantizable_ops_pt2e)
+            (node.target in quantizable_ops_fall_through_list)
             and (not _is_any_annotated([node]))
             and (node.op == "call_function")
+            and (quantization_config := self._quantization_config_filter(node.target, quantization_config)) is not None
         ):
 
             def is_all_inputs_connected_to_quantized_op(input_nodes):
@@ -922,7 +962,11 @@ class X86InductorQuantizer(Quantizer):
         90d19323d96afc53fcc22ba5a7bb3fb07fdd6c1c/intel_extension_for_pytorch/quantization/_utils.py#L495
         """
         edge_or_node: Tuple[Node, Node]
-        if (node.target in int8_in_int8_out_ops_pt2e) and (_is_any_annotated([node])):
+        if (
+            (node.target in int8_in_int8_out_ops_pt2e)
+            and (_is_any_annotated([node]))
+            and (quantization_config := self._quantization_config_filter(node.target, quantization_config)) is not None
+        ):
             if node.target == torch.ops.aten.max_pool2d.default:
                 maxpool_node = node
                 if not _is_all_annotated(
