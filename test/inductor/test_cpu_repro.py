@@ -2434,6 +2434,55 @@ class CPUReproTests(TestCase):
             assert len(metrics.cpp_outer_loop_fused_inner_counts) == 1
             assert metrics.cpp_outer_loop_fused_inner_counts[0] == 2
 
+    def test_avoid_outer_loop_fusion_case(self):
+        # Refer to Issue
+        def fn(maskU, kappaM, dzw, tke, mxl):
+            a_tri = torch.zeros_like(maskU[2:-2, 2:-2])
+            b_tri = torch.zeros_like(maskU[2:-2, 2:-2])
+            delta = torch.zeros_like(maskU[2:-2, 2:-2])
+            sqrttke = torch.zeros_like(tke[:, :, :, 0])
+
+            delta[:, :, :-1] = (
+                1
+                / dzw[None, None, 1:]
+                * 1.0
+                * 0.5
+                * (kappaM[2:-2, 2:-2, :-1] + kappaM[2:-2, 2:-2, 1:])
+            )
+
+            a_tri[:, :, 1:-1] = -delta[:, :, :-2] / dzw[None, None, 1:-1]
+            a_tri[:, :, -1] = -delta[:, :, -2] / (0.5 * dzw[-1])
+
+            b_tri[:, :, 1:-1] = (
+                1
+                + (delta[:, :, 1:-1] + delta[:, :, :-2]) / dzw[None, None, 1:-1]
+                + 1 * sqrttke[2:-2, 2:-2, 1:-1] / mxl[2:-2, 2:-2, 1:-1]
+            )
+            b_tri[:, :, -1] = (
+                1
+                + delta[:, :, -2] / (0.5 * dzw[-1])
+                + 1 / mxl[2:-2, 2:-2, -1] * sqrttke[2:-2, 2:-2, -1]
+            )
+            return a_tri, b_tri
+
+        dzw = torch.randn(26)
+        mxl = torch.randn(204, 204, 26)
+        kappaM = torch.randn(204, 204, 26)
+        maskU = torch.randn(204, 204, 26, dtype=torch.float64)
+        tke = torch.randn(204, 204, 26, 3)
+
+        with config.patch(
+            {
+                "cpp.simdlen": 1,
+                "cpp.min_chunk_size": 4096,
+                "cpp.threads": 56,
+            }
+        ):
+            torch._dynamo.reset()
+            metrics.reset()
+            self.common(fn, (maskU, kappaM, dzw, tke, mxl), atol=1e-5, rtol=1e-5)
+            assert len(metrics.cpp_outer_loop_fused_inner_counts) == 0
+
     def test_argmin(self):
         def fn(x):
             return torch.argmin(x, -1)

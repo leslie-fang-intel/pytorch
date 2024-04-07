@@ -463,6 +463,26 @@ class OuterLoopFusedSchedulerNode(FusedSchedulerNode):
 
             return True
 
+        def _get_parallel_depth(cpp_proxy_kernel):
+            return cpp_proxy_kernel.decide_parallel_depth(
+                cpp_proxy_kernel.call_ranges[
+                    : cpp_proxy_kernel.loop_nest.max_parallel_depth()
+                ],
+                parallel_num_threads(),
+            )
+
+        if _get_parallel_depth(cpp_kernel_proxy_list[0]) == 0 and any(
+            _get_parallel_depth(cpp_proxy_kernel) != 0
+            for cpp_proxy_kernel in cpp_kernel_proxy_list[1:]
+        ):
+            # Refer to pyhpc_turbulent_kinetic_energy in torch_bench:
+            # Kernel0 and Kernel1 have fusible outer loop dimensions.
+            # However, the elements inside Kernel0 is not sufficient for parallel execution,
+            # unlike Kernel1 which is suitable for parallel processing.
+            # Avoid fusing the outer loops in this scenario which will force Kernel1
+            # with serial execution.
+            return False
+
         for idx in range(len(cpp_kernel_proxy_list) - 1):
             left_loop_nest = cpp_kernel_proxy_list[idx].loop_nest
             right_loop_nest = cpp_kernel_proxy_list[idx + 1].loop_nest
