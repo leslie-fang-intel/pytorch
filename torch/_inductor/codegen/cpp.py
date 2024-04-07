@@ -3758,6 +3758,9 @@ class CppScheduling(BaseScheduling):
 
     def _get_outer_loop_fusion_depth(self, node1, node2):
         DISABLE_OUTER_LOOP_FUSION = 0
+
+        # return DISABLE_OUTER_LOOP_FUSION
+
         if not all(
             type(node)
             in (OuterLoopFusedSchedulerNode, FusedSchedulerNode, SchedulerNode)
@@ -3853,6 +3856,8 @@ class CppScheduling(BaseScheduling):
 
                 cpp_kernel_proxy_list.append(cpp_kernel_proxy)
                 nodes_list.append(_nodes)
+
+                self.scheduler.available_buffer_names.update(_node.get_names())
 
             # Note that, in the future, when every kernel can be vectorized,
             # the function select_tiling will be much easier, and we'll be able to lift
