@@ -2426,6 +2426,17 @@ class CppVecKernel(CppKernel):
         opt_ctx: OptimizationContext = get_current_node_opt_ctx()
         var = self.args.input(name)
         index = self.rename_indexing(index)
+
+        if (index_id := getattr(V.graph.scheduler.name_to_node.get(name, None), "index_with_tl_tid", None)) is not None:
+            sorted_symbols = sorted(index.free_symbols, key=lambda s: s.name)
+            replacements = {}
+            for x in sorted_symbols:
+                if x.name == f"x{index_id['replace_idx_id']}":
+                    replacements[x] = "tid"
+                elif x.name != f"x{index_id['keep_idx_id']}":
+                    replacements[x] = "0"
+            index = sympy_subs(index, replacements)
+
         dtype = V.graph.get_dtype(name)
         tiling_var = self.itervars[self.tiling_idx]
         stride = self._try_get_const_stride(index, tiling_var)
@@ -2488,6 +2499,17 @@ class CppVecKernel(CppKernel):
         var = self.args.output(name)
         self.cache_fp32_cse_var_before_lowp_store(value)
         index = self.rename_indexing(index)
+
+        if (index_id := getattr(V.graph.scheduler.name_to_node.get(name, None), "index_with_tl_tid", None)) is not None:
+            sorted_symbols = sorted(index.free_symbols, key=lambda s: s.name)
+            replacements = {}
+            for x in sorted_symbols:
+                if x.name == f"x{index_id['replace_idx_id']}":
+                    replacements[x] = "tid"
+                elif x.name != f"x{index_id['keep_idx_id']}":
+                    replacements[x] = "0"
+            index = sympy_subs(index, replacements)
+
         code = self._get_store_line(value, var, index, V.graph.get_dtype(name))
         self.stores.splice(code.map(lambda x: DeferredLine(name, x)))
 
@@ -3848,9 +3870,57 @@ class CppScheduling(BaseScheduling):
             cpp_kernel_proxy_list: List[CppKernelProxy] = []
             nodes_list: List[List[SchedulerNode]] = []
 
+            def _can_use_thread_local_buffer(node):
+                outer_loop_fusion_depth = node.outer_loop_fusion_depth
+                for _node in node.get_outer_nodes():
+
+                    _nodes: List[SchedulerNode] = _node.get_nodes()
+                    _, (group, reduction_group) = max(
+                        _nodes, key=lambda x: int(x.is_reduction())
+                    ).group
+
+                    call_ranges = tuple(group) + tuple(reduction_group)
+
+                    if len(call_ranges) != outer_loop_fusion_depth + 1:
+                        # Assume there is only 1 left loop which can do the
+                        # thread_local id sustitute
+                        return False
+                return True
+
+            if _can_use_thread_local_buffer(node):
+                flatten_node = node.get_nodes()
+                # Annotate the node to change index
+                for _node in node.get_outer_nodes():
+                    _nodes: List[SchedulerNode] = _node.get_nodes()
+
+                    _, (group, reduction_group) = max(
+                        _nodes, key=lambda x: int(x.is_reduction())
+                    ).group
+
+                    call_ranges = tuple(group) + tuple(reduction_group)
+
+                    keep_idx_id = len(call_ranges) - node.outer_loop_fusion_depth
+                    replace_idx_id = keep_idx_id - 1
+
+                    for _snode in _nodes:
+                        if not _snode.is_reduction():
+                            users = _snode.users
+                            if (any(user.node not in flatten_node for user in users)):
+                                # Skip if any node' user is outside of current outer loop fusion
+                                continue
+                            print("----- _snode modify write is: {}".format(_snode), flush=True)
+                            # Modify current node's index
+                            # Assume it's the internal most dim
+                            _snode.index_with_tl_tid = {
+                                "keep_idx_id": keep_idx_id,
+                                "replace_idx_id":replace_idx_id,
+                            }
+                            # _snode.index_with_tl_tid = 0
+
             for _node in node.get_outer_nodes():
                 assert isinstance(_node, (FusedSchedulerNode, SchedulerNode))
                 _nodes: List[SchedulerNode] = _node.get_nodes()  # type: ignore[assignment]
+
                 cpp_kernel_proxy = CppKernelProxy(kernel_group)
                 cpp_kernel_proxy.codegen_nodes(_nodes)
 
