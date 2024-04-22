@@ -261,7 +261,10 @@ def fuse_fx(gm: torch.fx.GraphModule, example_inputs) -> torch.fx.GraphModule:
         return gm
     if config.freezing:
         gm = remove_identity(gm)
+        print("---- gm before conv_bn folding is: {}".format(gm), flush=True)    
         gm = fuse_conv_bn(gm)
+        print("---- gm after conv_bn folding is: {}".format(gm), flush=True)    
+
     return gm
 
 
@@ -320,7 +323,11 @@ def fuse_conv_bn(gm: torch.fx.GraphModule, inplace=False) -> torch.fx.GraphModul
                     continue
                 if not bn.track_running_stats:
                     continue
-                fused_conv = fuse_conv_bn_eval(conv, bn)
+                if getattr(conv, "has_bn_folded", False):
+                    fused_conv = conv
+                else:
+                    fused_conv = fuse_conv_bn_eval(conv, bn)
+                    fused_conv.has_bn_folded = True
                 replace_node_module(node.args[0], modules, fused_conv)
                 node.replace_all_uses_with(node.args[0])
                 gm.graph.erase_node(node)
