@@ -475,6 +475,14 @@ class UserDefinedObjectVariable(UserDefinedVariable):
         self.value = value
         self.value_type = value_type or type(value)
         assert type(value) is self.value_type
+        self.instance_method_skip_trace_into = (
+            istype(self.value, types.MethodType)
+            and self.value.__name__ == "forward_pass"
+            and getattr(self.value.__self__, "suite_name", "") in [
+                'torchbench',
+                'timm_models',
+            ]
+        )
 
     def __str__(self):
         inner = self.value_type.__name__
@@ -722,6 +730,9 @@ class UserDefinedObjectVariable(UserDefinedVariable):
                 return variables.TorchCtxManagerClassVariable(
                     obj.__class__
                 ).call_function(tx, [var], kwargs)
+
+            if self.instance_method_skip_trace_into:
+                return super().call_function(tx, args, kwargs)
 
             if self.source is None:
                 unimplemented(
