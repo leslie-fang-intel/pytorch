@@ -1245,13 +1245,14 @@ def quantized_decomposed_quantize_per_tensor_tensor(
 
     def inner_fn(idx):
         input = input_loader(idx)
+        input = ops.to_dtype(input, torch.double)
         _scale = scale_loader((0,) if len(scale.get_size()) == 1 else ())
         _zero_point = zero_point_loader((0,) if len(scale.get_size()) == 1 else ())
-        if scale.dtype != torch.float32:
-            _scale = ops.to_dtype(_scale, torch.float32)
+        if scale.dtype != torch.double:
+            _scale = ops.to_dtype(_scale, torch.double)
         if zero_point.dtype != torch.float32:
             _zero_point = ops.to_dtype(_zero_point, torch.float32)
-        val = ops.round(input * ops.reciprocal(_scale)) + _zero_point
+        val = ops.to_dtype(ops.round(input * ops.reciprocal(_scale)), torch.float32) + _zero_point
         qmin, qmax = _create_constants(quant_min, quant_max, dtype=torch.float32)
         clamped = ops.minimum(ops.maximum(val, qmin), qmax)
         return ops.to_dtype(clamped, dtype)
