@@ -293,6 +293,16 @@ def _get_supported_config_and_operators() -> List[OperatorConfig]:
     return _get_supported_x86_inductor_config_and_operators()
 
 
+def _is_conv_bn_pattern(node: torch.fx.Node) -> bool:
+    return (
+        node.op == "call_function"
+        and node.target == operator.getitem
+        and node.args[0].op == "call_function"
+        and node.args[0].target == torch.ops.aten._native_batch_norm_legit.default
+        and node.args[0].args[0].op == "call_function"
+        and node.args[0].args[0].target == torch.ops.aten.conv2d.default
+    )
+
 class X86InductorQuantizer(Quantizer):
     supported_config_and_operators = _get_supported_config_and_operators()
     module_function_to_aten_operator_type = _map_module_function_to_aten_operator_type()
@@ -606,17 +616,23 @@ class X86InductorQuantizer(Quantizer):
 
             self._annotate_conv_node_helper(conv_node, False, quantization_config)
 
-            binary_node_input_qspec_map = {}
-            binary_node_input_qspec_map[extra_input_node] = get_input_act_qspec(
-                quantization_config
-            )
-            binary_node.meta[QUANT_ANNOTATION_KEY] = _X86InductorQuantizationAnnotation(
-                input_qspec_map=binary_node_input_qspec_map,
-                _annotated=True,
-            )
+            if _is_conv_bn_pattern(extra_input_node):
+                # Workaround the issue 2 in https://github.com/pytorch/pytorch/issues/112833
+                extra_input_node.meta[QUANT_ANNOTATION_KEY] = _X86InductorQuantizationAnnotation(
+                    output_qspec=get_output_act_qspec(quantization_config),
+                    _annotated=True,
+                )
+            else:
+                binary_node_input_qspec_map = {}
+                binary_node_input_qspec_map[extra_input_node] = get_input_act_qspec(
+                    quantization_config
+                )
+                binary_node.meta[QUANT_ANNOTATION_KEY] = _X86InductorQuantizationAnnotation(
+                    input_qspec_map=binary_node_input_qspec_map,
+                    _annotated=True,
+                )
+
             unary_node.meta[QUANT_ANNOTATION_KEY] = _X86InductorQuantizationAnnotation(
-                # TODO<leslie> Remove the annotate of output in QAT when qat util support pattern matcher.
-                output_qspec=get_output_act_qspec(quantization_config),  # type: ignore[arg-type]
                 _annotated=True,
                 _is_output_of_quantized_pattern=True,
             )
@@ -666,17 +682,26 @@ class X86InductorQuantizer(Quantizer):
 
             self._annotate_conv_node_helper(conv_node, False, quantization_config)
 
-            binary_node_input_qspec_map = {}
-            binary_node_input_qspec_map[extra_input_node] = get_input_act_qspec(
-                quantization_config
-            )
-            binary_node.meta[QUANT_ANNOTATION_KEY] = _X86InductorQuantizationAnnotation(
-                input_qspec_map=binary_node_input_qspec_map,
-                # TODO<leslie> Remove the annotate of output in QAT when qat util support pattern matcher.
-                output_qspec=get_output_act_qspec(quantization_config),  # type: ignore[arg-type]
-                _annotated=True,
-                _is_output_of_quantized_pattern=True,
-            )
+            if _is_conv_bn_pattern(extra_input_node):
+                # Workaround the issue 2 in https://github.com/pytorch/pytorch/issues/112833
+                extra_input_node.meta[QUANT_ANNOTATION_KEY] = _X86InductorQuantizationAnnotation(
+                    output_qspec=get_output_act_qspec(quantization_config),
+                    _annotated=True,
+                )
+                binary_node.meta[QUANT_ANNOTATION_KEY] = _X86InductorQuantizationAnnotation(
+                    _annotated=True,
+                    _is_output_of_quantized_pattern=True,
+                )
+            else:
+                binary_node_input_qspec_map = {}
+                binary_node_input_qspec_map[extra_input_node] = get_input_act_qspec(
+                    quantization_config
+                )
+                binary_node.meta[QUANT_ANNOTATION_KEY] = _X86InductorQuantizationAnnotation(
+                    input_qspec_map=binary_node_input_qspec_map,
+                    _annotated=True,
+                    _is_output_of_quantized_pattern=True,
+                )
             nodes_to_mark_annotated = list(conv_partition.nodes)
             nodes_to_mark_annotated.extend(list(bn_partition.nodes))
             nodes_to_mark_annotated.extend(list(binary_partition.nodes))
@@ -720,8 +745,6 @@ class X86InductorQuantizer(Quantizer):
 
             self._annotate_conv_node_helper(conv_node, False, quantization_config)
             unary_node.meta[QUANT_ANNOTATION_KEY] = _X86InductorQuantizationAnnotation(
-                # TODO<leslie> Remove the annotate of output in QAT when qat util support pattern matcher.
-                output_qspec=get_output_act_qspec(quantization_config),  # type: ignore[arg-type]
                 _annotated=True,
                 _is_output_of_quantized_pattern=True,
             )
@@ -755,8 +778,6 @@ class X86InductorQuantizer(Quantizer):
             bn_output_node.meta[
                 QUANT_ANNOTATION_KEY
             ] = _X86InductorQuantizationAnnotation(
-                # TODO<leslie> Remove the annotate of output in QAT when qat util support pattern matcher.
-                output_qspec=get_output_act_qspec(quantization_config),  # type: ignore[arg-type]
                 _annotated=True,
                 _is_output_of_quantized_pattern=True,
             )
