@@ -3241,12 +3241,94 @@ class CppKernelProxy(CppKernel):
                 body: ir.LoopBody = node._body
                 _legalize_lowp_fp(body)
 
-    def codegen_nodes(self, nodes: List[SchedulerNode]):
-        # Legalize BF16 node by adding to_dtype explicitly
-        self.legalize_lowp_fp_dtype(nodes)
-        self.data_type_propagation(nodes)
+    def select_tiling_indices(self, nodes, tiling_factor):
+        all_index = []
+        for node in nodes:
+            rw = dependencies.extract_read_writes(node._body, *node._sizes)
+            all_index += [dep.index for dep in itertools.chain(rw.reads, rw.writes)]
+        contig_vars = set()
+        contig_vars_list = []
+        non_contig_stride_const = set()
+        non_contig_stride_other = set()
+        for index in all_index:
+            for var in index.free_symbols:
+                if not re.search(r"^d\d+$", var.name):
+                    continue
+                stride = stride_at_vec_range(index, var, tiling_factor)
+                if stride == 0:
+                    continue
+                elif stride == 1:
+                    contig_vars.add(int(var.name[1:]))
+                    contig_vars_list.append(int(var.name[1:]))
+                elif all(symbol_is_type(s, SymT.SIZE) for s in stride.free_symbols):
+                    non_contig_stride_const.add(int(var.name[1:]))
+                else:
+                    non_contig_stride_other.add(int(var.name[1:]))
+        contig_only = contig_vars - non_contig_stride_const - non_contig_stride_other
+        if len(contig_vars) == 0:
+            # no contiguous vars
+            return [len(self.itervars) - 1]
+        if contig_only:
+            return sorted(contig_only)[-1:]
+        contig_and_const_stride = (
+            contig_vars & non_contig_stride_const
+        ) - non_contig_stride_other
+        contig_vars_sorted = sorted(contig_vars)
+        if (
+            len(contig_vars_sorted) == 2
+            and contig_vars_sorted[-1] in contig_and_const_stride
+            and contig_vars_sorted[-1] == len(self.itervars) - 1
+        ):
+            return contig_vars_sorted
+        return sorted(contig_vars_sorted, key=contig_vars_list.count)[-1:]
 
-        assert len(nodes) >= 1
+    def select_tiling(
+        self, nodes, group, reduction_group, dtype: torch.dtype = torch.float
+    ):
+        # TODO(jgong5): support alternative tiling factors and data types
+        tiling_factor = self.picked_vec_isa.nelements(dtype=dtype)
+        tiling_indices = self.select_tiling_indices(nodes, tiling_factor)
+        if tiling_indices:
+            could_vec = True
+            for tiling_indice in tiling_indices:
+                with CppVecKernelChecker(
+                    deepcopy(self.kernel_group.args),
+                    parallel_num_threads(),
+                    tiling_factor,
+                    tiling_indice,
+                ) as vec_checker:
+                    self.run(vec_checker, group, reduction_group, nodes)
+                    could_vec = could_vec and vec_checker.simd_vec
+                    if not could_vec:
+                        break
+            if could_vec:
+                if len(tiling_indices) == 1:
+                    return [tiling_factor], tiling_indices
+                if len(tiling_indices) == 2:
+                    return [tiling_factor, tiling_factor], tiling_indices
+        return [], []
+
+    def run(self, kernel, group, reduction_group, nodes):
+        vars, reduction_vars = kernel.set_ranges(group, reduction_group)
+        in_suffix = False
+        for node in nodes:
+            if node.group[1] in [
+                (group, reduction_group),
+                (group + reduction_group, ()),
+            ]:
+                assert not in_suffix
+                node.run(vars, reduction_vars)
+            else:
+                in_suffix = True
+                assert node.group[1] == (
+                    group,
+                    (),
+                ), f"unexpected group: {node.group[1]} != {group}, {reduction_group}"
+                # we can fuse in some extra pointwise into the suffix
+                with kernel.write_to_suffix():
+                    node.run(vars, ())
+
+    def get_vec_dtype(self, nodes):
         first_node = nodes[0]
         vec_dtype = (
             first_node._lowp_fp_type  # type: ignore[attr-defined]
@@ -3257,6 +3339,15 @@ class CppKernelProxy(CppKernel):
             )
             else torch.float
         )
+        return vec_dtype
+
+    def codegen_nodes(self, nodes: List[SchedulerNode]):
+        # Legalize BF16 node by adding to_dtype explicitly
+        self.legalize_lowp_fp_dtype(nodes)
+        self.data_type_propagation(nodes)
+
+        assert len(nodes) >= 1
+        vec_dtype = self.get_vec_dtype(nodes)
 
         kernel_group = self.kernel_group
         _, (group, reduction_group) = max(
@@ -3271,28 +3362,8 @@ class CppKernelProxy(CppKernel):
                 # we only count in CppKernelProxy, not those contained in it
                 metrics.generated_kernel_count -= 1
 
-                run(kernel)
+                self.run(kernel, group, reduction_group, nodes)
                 return kernel
-
-        def run(kernel):
-            vars, reduction_vars = kernel.set_ranges(group, reduction_group)
-            in_suffix = False
-            for node in nodes:
-                if node.group[1] in [
-                    (group, reduction_group),
-                    (group + reduction_group, ()),
-                ]:
-                    assert not in_suffix
-                    node.run(vars, reduction_vars)
-                else:
-                    in_suffix = True
-                    assert node.group[1] == (
-                        group,
-                        (),
-                    ), f"unexpected group: {node.group[1]} != {group}, {reduction_group}"
-                    # we can fuse in some extra pointwise into the suffix
-                    with kernel.write_to_suffix():
-                        node.run(vars, ())
 
         scalar_kernel = codegen_kernel(CppKernel)
         V.graph.removed_buffers |= scalar_kernel.removed_buffers
@@ -3302,79 +3373,14 @@ class CppKernelProxy(CppKernel):
         if not self.picked_vec_isa:
             return
 
-        def select_tiling_indices(tiling_factor):
-            all_index = []
-            for node in nodes:
-                rw = dependencies.extract_read_writes(node._body, *node._sizes)
-                all_index += [dep.index for dep in itertools.chain(rw.reads, rw.writes)]
-            contig_vars = set()
-            contig_vars_list = []
-            non_contig_stride_const = set()
-            non_contig_stride_other = set()
-            for index in all_index:
-                for var in index.free_symbols:
-                    if not re.search(r"^d\d+$", var.name):
-                        continue
-                    stride = stride_at_vec_range(index, var, tiling_factor)
-                    if stride == 0:
-                        continue
-                    elif stride == 1:
-                        contig_vars.add(int(var.name[1:]))
-                        contig_vars_list.append(int(var.name[1:]))
-                    elif all(symbol_is_type(s, SymT.SIZE) for s in stride.free_symbols):
-                        non_contig_stride_const.add(int(var.name[1:]))
-                    else:
-                        non_contig_stride_other.add(int(var.name[1:]))
-            contig_only = (
-                contig_vars - non_contig_stride_const - non_contig_stride_other
-            )
-            if len(contig_vars) == 0:
-                # no contiguous vars
-                return [len(self.itervars) - 1]
-            if contig_only:
-                return sorted(contig_only)[-1:]
-            contig_and_const_stride = (
-                contig_vars & non_contig_stride_const
-            ) - non_contig_stride_other
-            contig_vars_sorted = sorted(contig_vars)
-            if (
-                len(contig_vars_sorted) == 2
-                and contig_vars_sorted[-1] in contig_and_const_stride
-                and contig_vars_sorted[-1] == len(self.itervars) - 1
-            ):
-                return contig_vars_sorted
-            return sorted(contig_vars_sorted, key=contig_vars_list.count)[-1:]
-
-        def select_tiling(dtype: torch.dtype = torch.float):
-            # TODO(jgong5): support alternative tiling factors and data types
-            tiling_factor = self.picked_vec_isa.nelements(dtype=dtype)
-            tiling_indices = select_tiling_indices(tiling_factor)
-            if tiling_indices:
-                could_vec = True
-                for tiling_indice in tiling_indices:
-                    with CppVecKernelChecker(
-                        deepcopy(self.kernel_group.args),
-                        parallel_num_threads(),
-                        tiling_factor,
-                        tiling_indice,
-                    ) as vec_checker:
-                        run(vec_checker)
-                        could_vec = could_vec and vec_checker.simd_vec
-                        if not could_vec:
-                            break
-                if could_vec:
-                    if len(tiling_indices) == 1:
-                        return [tiling_factor], tiling_indices
-                    if len(tiling_indices) == 2:
-                        return [tiling_factor, tiling_factor], tiling_indices
-            return [], []
-
         # Kernels share the same global contexts like V.graph.wrapper_code, V.kernel.args.
         # But the generated scalar kernel has updated these global contexts. Hence, the other kernels
         # should not do this again to avoid context conflict. By now, we only control the
         # config.inplace_buffers. In the future, we could maintain more contexts.
         with torch._inductor.config.patch(inplace_buffers=False):
-            tiling_factors, tiling_indices = select_tiling(vec_dtype)
+            tiling_factors, tiling_indices = self.select_tiling(
+                nodes, group, reduction_group, vec_dtype
+            )
             assert len(tiling_factors) == len(tiling_indices)
             if len(tiling_indices) == 1:
                 vec_kernel = codegen_kernel(
@@ -3764,6 +3770,28 @@ class CppScheduling(BaseScheduling):
                 for _node in node.get_outer_nodes():
                     assert isinstance(_node, (FusedSchedulerNode, SchedulerNode))
                     cpp_kernel_proxy = CppKernelProxy(kernel_group)
+
+                    # For tile2D kernel, reset to not use thread local buffer
+                    _, (group, reduction_group) = max(  # type: ignore[attr-defined]
+                        _node.get_nodes(), key=lambda x: int(x.is_reduction())
+                    ).group
+                    _, tiling_indices = cpp_kernel_proxy.select_tiling(
+                        _node.get_nodes(),
+                        group,
+                        reduction_group,
+                        cpp_kernel_proxy.get_vec_dtype(_node.get_nodes()),
+                    )
+                    if len(tiling_indices) == 2:
+                        for _snode in _node.get_nodes():  # type: ignore[assignment]
+                            if (
+                                getattr(_snode, "_use_thread_local_buf", None)
+                                is not None
+                            ):
+                                delattr(_snode, "_use_thread_local_buf")
+                                delattr(_snode, "_index_with_tl_tid")
+                                delattr(_snode, "_thread_local_buf_size")
+                                delattr(_snode, "_thread_local_buf_dtype")
+
                     cpp_kernel_proxy.codegen_nodes(_node.get_nodes())  # type: ignore[arg-type]
 
                     cpp_kernel_proxy_list.append(cpp_kernel_proxy)
