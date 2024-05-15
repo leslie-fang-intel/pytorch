@@ -989,7 +989,7 @@ def _use_template_for_cpu(layout):
     return use_max_autotune() and layout.device.type == "cpu"
 
 
-def use_cpp_packed_gemm_template(layout, mat1, mat2):
+def use_cpp_packed_gemm_template(layout, mat1, mat2, input_dtype=None):
     from . import ir
     from .codegen.cpp_micro_gemm import create_micro_gemm
     from .kernel.mm_common import mm_args
@@ -1001,7 +1001,14 @@ def use_cpp_packed_gemm_template(layout, mat1, mat2):
         return False
 
     layout_dtypes = [torch.float32, torch.bfloat16, torch.half]
-    m, n, k, layout, mat1, mat2 = mm_args(mat1, mat2)
+    int8_gemm = False
+    if input_dtype == torch.uint8:
+        assert mat1.get_dtype() == torch.uint8
+        assert mat2.get_dtype() == torch.int8
+        m, n, k, layout, mat1, mat2 = mm_args(mat1, mat2, out_dtype=torch.float32)
+        int8_gemm = True
+    else:
+        m, n, k, layout, mat1, mat2 = mm_args(mat1, mat2)
     # TODO(jgong5): support dynamic shapes for n or k
     if has_free_symbols((n, k)):
         return False
@@ -1012,11 +1019,19 @@ def use_cpp_packed_gemm_template(layout, mat1, mat2):
         m,
         n,
         k,
-        input_dtype=layout.dtype,
+        input_dtype=input_dtype if input_dtype else layout.dtype,
         output_dtype=torch.float,
         num_threads=parallel_num_threads(),
+        compute_dtype=torch.int32 if int8_gemm else None,
+        use_ref=input_dtype == torch.uint8, # For Debug Only
     )
     # TODO(jgong5): support n % n_block_size != 0
+    print("---- layout.dtype in layout_dtypes is: {}".format(layout.dtype in layout_dtypes), flush=True)
+    print("---- micro_gemm is not None is: {}".format(micro_gemm is not None), flush=True)
+    # print("---- n % micro_gemm.register_blocking[1] == 0 is: {}".format(n % micro_gemm.register_blocking[1] == 0), flush=True)
+    # print("---- mat1.get_stride()[-1] == 1   is: {}".format(mat1.get_stride()[-1] == 1), flush=True)
+    # print("---- isinstance(mat2, ir.StorageBox)   is: {}".format(isinstance(mat2, ir.StorageBox)), flush=True)
+    # print("---- mat2.is_module_buffer()   is: {}".format(mat2.is_module_buffer()), flush=True)
     return (
         layout.dtype in layout_dtypes
         and micro_gemm is not None

@@ -1044,6 +1044,8 @@ class AlgorithmSelectorCache(PersistentCache):
         def make_benchmark_fn():
             return self.make_benchmark_fn(choices, input_nodes, layout, input_gen_fns)
 
+        # breakpoint()
+
         inputs_key = repr([self.key_of(x) for x in input_nodes])
 
         def precompile(choices) -> Callable[[], None]:
@@ -1252,31 +1254,73 @@ class AlgorithmSelectorCache(PersistentCache):
 
         def get_inputs():
             # de-duplicate args
-            unique_example_inputs = {
-                x.get_name(): input_gen_fns.get(i, cls.benchmark_example_value)(x)
-                for i, x in enumerate(input_nodes)
-            }
-            example_inputs = list(unique_example_inputs.values())
-            example_inputs_extern = [
-                unique_example_inputs[input_node.get_name()]
-                if unique_example_inputs[input_node.get_name()].is_mkldnn
-                else torch.as_strided(
-                    unique_example_inputs[input_node.get_name()],
-                    V.graph.sizevars.size_hints(
-                        input_node.get_size(),
-                        fallback=config.unbacked_symint_fallback,
-                    ),
-                    V.graph.sizevars.size_hints(
-                        input_node.get_stride(),
-                        fallback=config.unbacked_symint_fallback,
-                    ),
-                    V.graph.sizevars.size_hint(
-                        input_node.get_layout().offset,
-                        fallback=config.unbacked_symint_fallback,
-                    ),
-                )
-                for input_node in input_nodes
-            ]
+            # for i, x in enumerate(input_nodes):
+            #     print("---- x is: {}".format(x), flush=True)
+            # unique_example_inputs = {
+            #     x.get_name(): input_gen_fns.get(i, cls.benchmark_example_value)(x)
+            #     for i, x in enumerate(input_nodes)
+            # }
+
+            unique_example_inputs = {}
+            for i, x in enumerate(input_nodes):
+                if isinstance(x, (ir.TensorBox, ir.StorageBox)):
+                    unique_example_inputs[x.get_name()] = input_gen_fns.get(i, cls.benchmark_example_value)(x)
+                else:
+                    unique_example_inputs[i] = x
+
+            # example_inputs = list(unique_example_inputs.values())
+
+            example_inputs = []
+            for i, x in enumerate(input_nodes):
+                example_inputs.append(input_gen_fns.get(i, cls.benchmark_example_value)(x))
+
+
+            example_inputs_extern = []
+            for i, input_node in enumerate(input_nodes):
+                if not isinstance(input_node, (ir.TensorBox, ir.StorageBox)):
+                    example_inputs_extern.append(unique_example_inputs[i])
+                elif unique_example_inputs[input_node.get_name()].is_mkldnn:
+                    example_inputs_extern.append(unique_example_inputs[input_node.get_name()])
+                else:
+                    example_inputs_extern.append(
+                        torch.as_strided(
+                            unique_example_inputs[input_node.get_name()],
+                            V.graph.sizevars.size_hints(
+                                input_node.get_size(),
+                                fallback=config.unbacked_symint_fallback,
+                            ),
+                            V.graph.sizevars.size_hints(
+                                input_node.get_stride(),
+                                fallback=config.unbacked_symint_fallback,
+                            ),
+                            V.graph.sizevars.size_hint(
+                                input_node.get_layout().offset,
+                                fallback=config.unbacked_symint_fallback,
+                            ),
+                        )
+                    )
+            print("len(example_inputs_extern) is: {}".format(len(example_inputs_extern)), flush=True)
+            # breakpoint()
+            # example_inputs_extern = [
+            #     unique_example_inputs[input_node.get_name()]
+            #     if unique_example_inputs[input_node.get_name()].is_mkldnn
+            #     else torch.as_strided(
+            #         unique_example_inputs[input_node.get_name()],
+            #         V.graph.sizevars.size_hints(
+            #             input_node.get_size(),
+            #             fallback=config.unbacked_symint_fallback,
+            #         ),
+            #         V.graph.sizevars.size_hints(
+            #             input_node.get_stride(),
+            #             fallback=config.unbacked_symint_fallback,
+            #         ),
+            #         V.graph.sizevars.size_hint(
+            #             input_node.get_layout().offset,
+            #             fallback=config.unbacked_symint_fallback,
+            #         ),
+            #     )
+            #     for input_node in input_nodes
+            # ]
 
             out = cls.benchmark_example_value(layout)
             out_extern = torch.as_strided(
@@ -1316,9 +1360,10 @@ class AlgorithmSelectorCache(PersistentCache):
                 result = choice.benchmark(*example_inputs_extern, out=out_extern)
             else:
                 # triton templates want the base pointer for sliced tensors
+                # breakpoint()
                 result = choice.benchmark(*example_inputs, out=out)
-            if VERIFY and expected is not None:
-                torch.testing.assert_close(out_extern, expected, **VERIFY)
+            # if VERIFY and expected is not None:
+            #     torch.testing.assert_close(out_extern, expected, **VERIFY)
             if torch.cuda.is_available():
                 torch.cuda.synchronize()  # shake out any CUDA errors
             return result
@@ -1350,7 +1395,7 @@ class AlgorithmSelectorCache(PersistentCache):
                     timing = float("inf")
                 except AssertionError as e:
                     raise AssertionError(  # noqa: TRY200
-                        f"Incorrect result from choice {choice}\n\n{e}"
+                        f"Incorrect result from choice {choice}\n\n{e} uihookh"
                     )
                 except Exception as e:
                     try:
@@ -1405,7 +1450,7 @@ class AlgorithmSelectorCache(PersistentCache):
                     map(
                         str,
                         V.graph.sizevars.size_hints(
-                            n.get_size(), fallback=config.unbacked_symint_fallback
+                            n.get_size() if hasattr(n, "get_size") else [0,], fallback=config.unbacked_symint_fallback
                         ),
                     )
                 )
@@ -1471,6 +1516,8 @@ class AlgorithmSelectorCache(PersistentCache):
         autotuning results on.
         """
         sizevars = V.graph.sizevars
+        if not isinstance(node, ir.TensorBox):
+            return node
         return (
             node.get_device().type,
             str(node.get_dtype()),

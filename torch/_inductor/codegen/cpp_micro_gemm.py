@@ -90,13 +90,15 @@ inline void {{kernel_name}}(
         `C += alpha * A @ B` if `accum` is True, or `C = alpha * A @ B` otherwise.
         """
         A_ptr = f"&({kernel.index(A, [0, 0])})"
-        B_ptr = f"&({kernel.index(B, [0, 0])})"
+        # B_ptr = f"&({kernel.index(B, [0, 0])})"
+        B_ptr =  f"&(W[static_cast<long>(n_start + (64L*kc))])"
         C_ptr = f"&({kernel.index(C, [0, 0])})"
         M = kernel.size(C, 0)
         N = kernel.size(C, 1)
         K = kernel.size(A, 1)
         lda = kernel.stride(A, 0)
-        ldb = kernel.stride(B, 0)
+        # ldb = kernel.stride(B, 0)
+        ldb = f"static_cast<long>(64L)"
         ldc = kernel.stride(C, 0)
         res = IndentedBuffer()
         res.writeline(f"{self.name}<{value_to_cpp(accum, 'bool')}>(")
@@ -195,6 +197,228 @@ class CppMicroGemmRef(CppMicroGemm):
         }
         return KernelTemplate._template_from_string(self.TEMPLATE_ENTRY).render(options)
 
+class CppMicroInt8GemmRef(CppMicroGemm):
+    """
+    A reference implementation of the CppMicroGemm class with naive C++ code.
+    It is used for correctness debugging.
+    """
+
+    DECLARE_KERNEL = r"""
+template <bool accum>
+inline void {{kernel_name}}(
+    const {{input_t}}* __restrict__ A,
+    const {{input2_t}}* __restrict__ B,
+    {{output_t}}* __restrict__ C,
+    int64_t M,
+    int64_t N,
+    int64_t K,
+    int64_t lda,
+    int64_t ldb,
+    int64_t ldc
+)
+"""
+
+#     TEMPLATE_ENTRY = r"""
+# {{declare_kernel}} {
+#     // int a = 0;
+#     for (int64_t m = 0; m < M; ++m) {
+#         for (int64_t n = 0; n < N; ++n) {
+#             {{compute_t}} result = accum ? C[m * ldc + n] : 0;
+#             for (int64_t k = 0; k < K; ++k) {
+#                 result += ({{compute_t}})A[m * lda + k] * ({{compute_t}})B[k * ldb + n] * {{alpha}};
+#             }
+#             C[m * ldc + n] = result;
+#         }
+#     }
+# }
+# """
+
+    TEMPLATE_ENTRY = r"""
+{{declare_kernel}} {
+    for (int64_t m = 0; m < M; ++m) {
+        for (int64_t n = 0; n < N; ++n) {
+            {{compute_t}} result = accum ? C[m * ldc + n] : 0;
+            for (int64_t k = 0; k < K; ++k) {
+                // result += ({{compute_t}})A[m * lda + k] * ({{compute_t}})B[k * ldb + n] * {{alpha}};
+                result += ({{compute_t}})A[m * lda + k] * ({{compute_t}})B[k * ldb + n] * {{alpha}};
+            }
+            C[m * ldc + n] = result;
+        }
+    }
+}
+"""
+
+    def __init__(self, name, input_dtype, output_dtype, compute_dtype, alpha):
+        super().__init__(
+            name, input_dtype, output_dtype, compute_dtype, GemmBlocking(1, 1, 1), alpha
+        )
+
+    def get_common_options(self):
+        return {
+            "torch": torch,
+            "kernel_name": self.name,
+            "input_dtype": self.input_dtype,
+            "output_dtype": self.output_dtype,
+            "compute_dtype": self.compute_dtype,
+            "input_t": DTYPE_TO_CPP[self.input_dtype],
+            "input2_t": DTYPE_TO_CPP[torch.int8],
+            "output_t": DTYPE_TO_CPP[self.output_dtype],
+            "compute_t": DTYPE_TO_CPP[self.compute_dtype],
+            "alpha": self.alpha,
+        }
+
+    def get_kernel_declaration(self):
+        options = self.get_common_options()
+        return KernelTemplate._template_from_string(self.DECLARE_KERNEL).render(options)
+
+    def codegen_define(self, kernel: CppTemplateKernel) -> str:
+        options = {
+            "declare_kernel": self.get_kernel_declaration(),
+            **self.get_common_options(),
+        }
+        return KernelTemplate._template_from_string(self.TEMPLATE_ENTRY).render(options)
+
+# @register_micro_gemm(
+#     *generate_gemm_config(
+#         VecAVX512, [(8, 48, 1),], input_dtype=torch.uint8, output_dtype=torch.float32, compute_dtype=torch.int8
+#     ),
+# )
+# class CppMicroGemmInt8Vec(CppMicroGemm):
+#     """
+#     This class generates the code for micro gemm using int8 vec instructions for compute.
+#     It supports input types of uint8 (mat1) and int8 (mat2) with fp32 output.
+#     """
+
+#     TEMPLATE_ENTRY = r"""
+# {{declare_kernel}} {
+#     TORCH_CHECK(N % {{block_n}} == 0, "N dimension must be multiple of {{block_n}}");
+#     TORCH_CHECK(K % {{block_k}} == 0, "K dimension must be multiple of {{block_k}}");
+#     // TODO(jgong5): loop unroll for M and N
+#     for (int64_t m = 0; m < M; m += {{block_m}}) {
+#         int64_t block_m = std::min<int64_t>(M - m, {{block_m}});
+#         for (int64_t n = 0; n < N; n += {{block_n}}) {
+#             if (block_m == {{block_m}}) {
+#                 {{kernel_name}}_kernel<{{block_m}}, {{block_n}}, accum>(
+#                     A + m * lda,
+#                     B + n,
+#                     C + m * ldc + n,
+#                     K,
+#                     lda,
+#                     ldb,
+#                     ldc
+#                 );
+#             } else {
+#                 switch (block_m) {
+#                 {%- for b in range(block_m - 1, 0, -1) %}
+#                 case {{b}}:
+#                     {{kernel_name}}_kernel<{{b}}, {{block_n}}, accum>(
+#                         A + m * lda,
+#                         B + n,
+#                         C + m * ldc + n,
+#                         K,
+#                         lda,
+#                         ldb,
+#                         ldc
+#                     );
+#                     break;
+#                 {%- endfor %}
+#                 default:
+#                     {{kernel.assert_function}}(false, "Unsupported block_m: ", block_m);
+#                 }
+#             }
+#         }
+#     }
+# }
+# """
+
+#     TEMPLATE_KERNEL = r"""
+# template <int64_t BLOCK_M, int64_t BLOCK_N, bool accum>
+# inline void {{kernel_name}}_kernel(
+#     const {{input_t}}* __restrict__ A,
+#     const {{input_t}}* __restrict__ B,
+#     {{output_t}}* __restrict__ C,
+#     int64_t K,
+#     int64_t lda,
+#     int64_t ldb,
+#     int64_t ldc
+# ) {
+#     using Vectorized = at::vec::Vectorized<{{compute_t}}>;
+#     using VectorizedIn = at::vec::Vectorized<{{input_t}}>;
+#     constexpr auto VLEN = Vectorized::size();
+#     constexpr auto ROWS = BLOCK_M;
+#     constexpr auto COLS = BLOCK_N / VLEN;
+
+#     Vectorized va;
+#     at::vec::VectorizedN<{{compute_t}}, COLS> vb;
+#     at::vec::VectorizedN<{{compute_t}}, ROWS*COLS> vc;
+
+#     auto loadc = [&](auto i) {
+#         if constexpr (accum) {
+#             constexpr int row = i / COLS;
+#             constexpr int col = i % COLS;
+#             vc[i] = Vectorized::loadu(C + row * ldc + col * VLEN);
+#         } else {
+#             vc[i] = Vectorized(0.0f);
+#         }
+#     };
+#     c10::ForcedUnroll<ROWS * COLS>{}(loadc);
+
+#     auto compute = [&, COLS](auto i, int k) {
+#         constexpr int row = i / COLS;
+#         constexpr int col = i % COLS;
+
+#         if constexpr (col == 0) {
+#             {%- if alpha != 1 %}
+#             va = Vectorized(static_cast<{{compute_t}}>(A[row * lda + k]) * {{alpha}});
+#             {%- else %}
+#             va = Vectorized(static_cast<{{compute_t}}>(A[row * lda + k]));
+#             {%- endif %}
+#         }
+
+#         if constexpr (row == 0) {
+#             {%- if input_dtype == torch.bfloat16 or input_dtype == torch.float16 %}
+#             auto b = VectorizedIn::loadu(B + k * ldb + col * VLEN, VLEN);
+#             vb[col] = at::vec::convert<{{compute_t}}>(b);
+#             {%- else %}
+#             vb[col] = Vectorized::loadu(B + k * ldb + col * VLEN);
+#             {%- endif %}
+#         }
+
+#         constexpr int idx = row * COLS + col;
+#         vc[idx] = at::vec::fmadd(va, vb[col], vc[idx]);
+#     };
+
+#     {{kernel.unroll_pragma(4)}}
+#     for (int k = 0; k < K; ++k) {
+#         c10::ForcedUnroll<ROWS * COLS>{}(compute, k);
+#     }
+
+#     // store to C
+#     auto storec = [&](auto i) {
+#         constexpr int row = i / COLS;
+#         constexpr int col = i % COLS;
+#         vc[i].store(C + row * ldc + col * VLEN);
+#     };
+#     c10::ForcedUnroll<ROWS * COLS>{}(storec);
+# }
+# """
+
+#     def codegen_define(self, kernel: CppTemplateKernel) -> str:
+#         options = {
+#             "declare_kernel": self.get_kernel_declaration(),
+#             "kernel": kernel,
+#             "block_m": self.register_blocking.block_m,
+#             "block_n": self.register_blocking.block_n,
+#             "block_k": self.register_blocking.block_k,
+#             **self.get_common_options(),
+#         }
+#         result = KernelTemplate._template_from_string(self.TEMPLATE_KERNEL).render(
+#             options
+#         )
+#         result += KernelTemplate._template_from_string(self.TEMPLATE_ENTRY).render(
+#             options
+#         )
+#         return result
 
 @register_micro_gemm(
     *generate_gemm_config(
@@ -409,6 +633,7 @@ def create_micro_gemm(
                 and config.output_dtype == output_dtype
                 and config.compute_dtype == compute_dtype
             ):
+                print("---- hit here ----", flush=True)
                 block_m, block_n, block_k = config.register_blocking
                 # TODO(jgong5): support n % n_block_size != 0
                 if n % block_n != 0:
@@ -436,11 +661,21 @@ def create_micro_gemm(
                         config,
                     )
                 )
+    
+    print("len(matched_configs) is: {}".format(len(matched_configs)), flush=True)
+    print("use_ref is: {}".format(use_ref), flush=True)
     if len(matched_configs) == 0:
         if use_ref:
-            return CppMicroGemmRef(
-                name, input_dtype, output_dtype, compute_dtype, alpha
-            )
+            if input_dtype == torch.uint8:
+                assert output_dtype == torch.float32
+                print("---- Create Int8 Ref template", flush=True)
+                return CppMicroInt8GemmRef(
+                    name, input_dtype, output_dtype, compute_dtype, alpha
+                )
+            else:
+                return CppMicroGemmRef(
+                    name, input_dtype, output_dtype, compute_dtype, alpha
+                )
         else:
             return None
     # TODO(jgong5): allow autotuning on choices of configs

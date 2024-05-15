@@ -7141,12 +7141,12 @@ class QLinearPointwisePT2E(ExternKernelAlloc):
         w_scale: "TensorBox",
         w_zp: "TensorBox",
         bias: "TensorBox",
-        o_inv_scale: float,
+        output_scale: float,
         output_zero_point: int,
         output_dtype,
-        unary_attr,
-        unary_scalars,
-        unary_algorithm,
+        post_op_name,
+        post_op_args,
+        post_op_algorithm,
     ):
         (inputs, constant_args, kernel_layout, _) = _prepare_linear_fusion_create(
             cls,
@@ -7168,12 +7168,12 @@ class QLinearPointwisePT2E(ExternKernelAlloc):
         w_zp.realize()
         inputs = inputs + [w_scale, w_zp]
         constant_args = constant_args + [
-            o_inv_scale,
+            output_scale,
             output_zero_point,
             output_dtype,
-            unary_attr,
-            may_convert_to_optional(unary_scalars),
-            unary_algorithm,
+            post_op_name,
+            may_convert_to_optional(post_op_args),
+            post_op_algorithm,
         ]
 
         if output_dtype is not None:

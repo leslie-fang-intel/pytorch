@@ -446,6 +446,10 @@ def check_model(
     run = torch._dynamo.optimize(compile_fx_wrapper, nopython=nopython)(run)
 
     torch.manual_seed(0)
+    print("---- start the warm up run ----", flush=True)
+    actual = run(*example_inputs, **kwargs)
+    actual = run(*example_inputs, **kwargs)
+    print("---- start the actual run ----", flush=True)
     actual = run(*example_inputs, **kwargs)
     # if not called:
     #     exp = torch._dynamo.explain(run)(*example_inputs)
@@ -487,6 +491,10 @@ def check_model(
         correct = tree_unflatten(correct_flat, correct_spec)
 
     if assert_equal:
+        
+        print("---- actual is: {}".format(actual), flush=True)
+        print("---- correct is: {}".format(correct), flush=True)
+
         self.assertEqual(
             actual,
             correct,

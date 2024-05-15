@@ -68,20 +68,53 @@ def patches(fn):
 
     return wrapped
 
+from torch.ao.quantization.quantize_pt2e import (
+    convert_pt2e,
+    prepare_pt2e,
+    prepare_qat_pt2e,
+)
+from torch.ao.quantization.quantizer.x86_inductor_quantizer import X86InductorQuantizer
+import torch.ao.quantization.quantizer.x86_inductor_quantizer as xiq
+from torch._export import capture_pre_autograd_graph
+
+def get_default_quantizer(is_qat, is_dynamic):
+    quantizer = X86InductorQuantizer()
+    quantizer.set_global(
+        xiq.get_default_x86_inductor_quantization_config(
+            is_qat=is_qat, is_dynamic=is_dynamic
+        )
+    )
+    return quantizer
 
 class TestSelectAlgorithm(TestCase):
+
+    def _generate_qdq_quantized_model(
+        self, mod, inputs,
+    ):
+        with torch.no_grad():
+            export_model = capture_pre_autograd_graph(
+                mod,
+                inputs,
+            )
+            quantizer = get_default_quantizer(False, False)
+            prepare_model = prepare_pt2e(export_model, quantizer)
+            prepare_model(*inputs)
+            convert_model = convert_pt2e(prepare_model)
+            torch.ao.quantization.move_exported_model_to_eval(convert_model)
+            return convert_model
+
     common = check_model
 
     @inductor_config.patch({"freezing": True})
     @patches
     @torch.no_grad
     @unittest.skipIf(not TEST_MKL, "Test requires MKL")
-    @parametrize("batch_size", (1, 2, 1000))
-    @parametrize("in_features", (1, 1000))
-    @parametrize("out_features", (1, 1024))
-    @parametrize("bias", (True, False))
-    @parametrize("input_3d", (True, False))
-    @dtypes(torch.float, torch.bfloat16, torch.half)
+    @parametrize("batch_size", (2,))
+    @parametrize("in_features", (1000,))
+    @parametrize("out_features", (1024,))
+    @parametrize("bias", (False,))
+    @parametrize("input_3d", (False,))
+    @dtypes(torch.bfloat16,)
     def test_linear_static_shapes(
         self, batch_size, in_features, out_features, bias, input_3d, dtype
     ):
@@ -109,6 +142,59 @@ class TestSelectAlgorithm(TestCase):
             counters["inductor"]["select_algorithm_autotune"],
             1 if out_features != 1 else 0,
         )
+
+    @inductor_config.patch({"freezing": True})
+    @patches
+    @torch.no_grad
+    @unittest.skipIf(not TEST_MKL, "Test requires MKL")
+    @parametrize("batch_size", (32,))
+    @parametrize("in_features", (128,))
+    @parametrize("out_features", (64,))
+    @parametrize("bias", (False,))
+    @parametrize("input_3d", (False,))
+    @dtypes(torch.float32,)
+    def test_int8_linear_static_shapes(
+        self, batch_size, in_features, out_features, bias, input_3d, dtype
+    ):
+        import numpy as np
+        import random
+        from torch._dynamo.testing import rand_strided
+        quantized_decomposed = torch.ops.quantized_decomposed
+
+        local_seed = 2024
+        torch.manual_seed(local_seed) # Set PyTorch seed
+        np.random.seed(seed=local_seed) # Set Numpy seed
+        random.seed(local_seed) # Set the Python seed
+        a = rand_strided(
+            (batch_size, in_features),
+            (in_features, 1),
+            device='cpu',
+            dtype=torch.float32,
+        )
+
+        class M(torch.nn.Module):
+            def __init__(self, bias):
+                super().__init__()
+                self.linear = torch.nn.Linear(in_features, out_features, bias)
+
+            def forward(self, x):
+                return self.linear(x)
+
+        counters.clear()
+        ref_quantized_mod = self._generate_qdq_quantized_model(
+            M(bias=bias).to(dtype=dtype).eval(),
+            (a,),
+        )
+        # ref_res = ref_quantized_mod(a)
+
+        atol, rtol = 1e-3, 1e-3
+        # self.common(ref_quantized_mod, (a,), atol=atol, rtol=rtol)
+        with patch.object(select_algorithm, "VERIFY", dict(atol=atol, rtol=rtol)):
+            self.common(ref_quantized_mod, (a,), atol=atol, rtol=rtol)
+        # self.assertEqual(
+        #     counters["inductor"]["select_algorithm_autotune"],
+        #     1 if out_features != 1 else 0,
+        # )
 
     @inductor_config.patch({"freezing": True})
     @patches

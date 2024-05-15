@@ -102,11 +102,14 @@ def freeze(
 
     # TODO - further restrict cse ? right now needed to dedup aliasing ops
     cse_graph = fx_graph_cse(aot_autograd_gm.graph)
+
     aot_autograd_gm.graph = cse_graph
     aot_autograd_gm.recompile()
 
     aot_example_inputs = [example_inputs[ind] for ind in preserved_arg_indices]
     freezing_passes(aot_autograd_gm, aot_example_inputs)
+
+    print("aot_autograd_gm after freeze is: {}".format(aot_autograd_gm.graph), flush=True)
 
     constant_fold(aot_autograd_gm)
     # invalidate nn Modules

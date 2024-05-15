@@ -32,6 +32,12 @@ def register_onednn_fusion_ops():
             has_out_variant=False,
             kernel_creator=ir.LinearUnary.create,
         )
+        aten_mkldnn_qlinear_unary = ExternKernelChoice(
+            torch.ops.onednn.qlinear_pointwise,
+            "onednn::qlinear_pointwise",
+            has_out_variant=False,
+            kernel_creator=ir.QLinearPointwisePT2E.create,
+        )
         cpu_needs_realized_inputs = [
             torch.ops.mkldnn._convolution_pointwise,
             torch.ops.mkldnn._convolution_pointwise_,
@@ -406,24 +412,130 @@ def register_onednn_fusion_ops():
             attr,
             scalars,
             algorithm,
+            layout=None,
         ):
-            return TensorBox.create(
-                ir.QLinearPointwisePT2E.create(
-                    x,
-                    x_scale,
-                    x_zp,
-                    packed_weight,
-                    w_scale,
-                    w_zp,
-                    bias,
-                    o_inv_scale,
-                    o_zero_point,
-                    output_dtype,
-                    attr,
-                    scalars,
-                    algorithm,
+            x_size = x.get_size()
+            if len(x_size) > 2:
+                # GEMM template needs 2D input, normalize input shape here
+                x = view(x, [-1, x_size[-1]])
+            print("type(x_scale) is: {}".format(type(x_scale)), flush=True)
+            print("type(x_zp) is: {}".format(type(x_zp)), flush=True)
+            print("type(w_scale) is: {}".format(type(w_scale)), flush=True)
+
+            if not isinstance(x_scale, ir.TensorBox):
+                assert type(x_scale) == float
+                x_scale = V.graph.add_tensor_constant(torch.tensor(x_scale, dtype=torch.float32), name="x_scale")
+            if not isinstance(x_zp, ir.TensorBox):
+                assert type(x_zp) == int
+                x_zp = V.graph.add_tensor_constant(torch.tensor(x_zp, dtype=torch.int32), name="x_zp")
+            # breakpoint()
+            if w_zp.get_dtype() != torch.int32:
+                w_zp_tensor = V.graph.constants[w_zp.get_name()].to(torch.int32)
+                w_zp = V.graph.add_tensor_constant(torch.tensor(w_zp_tensor, dtype=torch.int32), name=w_zp.get_name())
+
+            choices: List[ChoiceCaller] = []
+            if len(choices) == 0 or use_aten_gemm_kernels():
+                # print("---- w_zp is: {}".format(w_zp), flush=True)
+                # print(V.graph.constant_name(w_zp.get_name(), device_override=None), flush=True)
+                # breakpoint()
+                choices.append(
+                    aten_mkldnn_qlinear_unary.bind(
+                        (x, x_scale, x_zp, packed_weight, w_scale, w_zp),
+                        layout,
+                        bias=None,
+                        output_scale=o_inv_scale,
+                        output_zero_point=o_zero_point,
+                        output_dtype=output_dtype,
+                        post_op_name=attr,
+                        post_op_args=scalars,
+                        post_op_algorithm=algorithm,
+                    )
+                    if bias is None
+                    else aten_mkldnn_qlinear_unary.bind(
+                        (x, x_scale, x_zp, packed_weight, w_scale, w_zp, bias),
+                        layout,
+                        output_scale=o_inv_scale,
+                        output_zero_point=o_zero_point,
+                        output_dtype=output_dtype,
+                        post_op_name=attr,
+                        post_op_args=scalars,
+                        post_op_algorithm=algorithm,
+                    )
                 )
+            if use_max_autotune():
+                # transposed_w = permute(packed_weight, [1, 0])
+                transposed_w = packed_weight
+                # Only support u8s8f32 for now
+                assert output_dtype == torch.float32
+                *_, layout, x, transposed_w = mm_args(x, transposed_w, layout=layout, out_dtype=output_dtype)
+                # TODO(jgong5): support epilogue fusion
+                print("---- start to check use_cpp_packed_gemm_template ----", flush=True)
+                print("torch.equal(torch.zeros_like(V.graph.constants[w_zp.get_name()]), V.graph.constants[w_zp.get_name()]) is: {}".format(
+                    torch.equal(torch.zeros_like(V.graph.constants[w_zp.get_name()]), V.graph.constants[w_zp.get_name()])
+                ), flush=True)
+                if (
+                    use_cpp_packed_gemm_template(layout, x, transposed_w, input_dtype=torch.uint8)
+                    and attr == "none"
+                    # We only composentate MatrixB and assume B_zp is 0 to avoid the composantation of MatrixA
+                    and torch.equal(torch.zeros_like(V.graph.constants[w_zp.get_name()]), V.graph.constants[w_zp.get_name()])
+                ):
+                    # print("----- use_cpp_packed_gemm_template is: {}".format(use_cpp_packed_gemm_template(layout, x, transposed_w)), flush=True)
+                    print("----- hit the int8 gemm templare ----", flush=True)
+                    print(bias is None, flush=True)
+                    if bias is None:
+                        print("---- x.get_size() is: {}".format(x.get_size()), flush=True)
+                        print("---- packed_weight.get_size() is: {}".format(packed_weight.get_size()), flush=True)
+                        CppPackedGemmTemplate.add_choices(
+                            choices,
+                            layout,
+                            [x, x_scale, x_zp, permute(packed_weight, [1, 0]), w_scale, w_zp],
+                            trans_w=True,
+                            input_dtype=torch.uint8,
+                        )
+                    else:
+                        assert bias is None
+                    #     CppPackedGemmTemplate.add_choices(
+                    #         choices,
+                    #         layout,
+                    #         [x, packed_weight, bias],
+                    #         trans_w=True,
+                    #         input_indices=[2, 0, 1],
+                    #     )
+            assert packed_weight.get_name() in V.graph.constants
+            input_gen_fns = {
+                1: lambda x: V.graph.constants[x.get_name()],
+                2: lambda x: V.graph.constants[x.get_name()],
+                3: lambda x: V.graph.constants[x.get_name()],
+                4: lambda x: V.graph.constants[x.get_name()],
+                5: lambda x: V.graph.constants[x.get_name()],
+            }
+            result = autotune_select_algorithm(
+                "qlinear_unary",
+                choices,
+                [x, x_scale, x_zp, packed_weight, w_scale, w_zp] if bias is None else [x, x_scale, x_zp, packed_weight, w_scale, w_zp, bias],
+                layout,
+                input_gen_fns=input_gen_fns,
             )
+            if len(x_size) > 2:
+                result = view(result, (*x_size[:-1], result.get_size()[-1]))
+            return result
+            # return TensorBox.create(
+            #     ir.QLinearPointwisePT2E.create(
+            #         x,
+            #         x_scale,
+            #         x_zp,
+            #         packed_weight,
+            #         w_scale,
+            #         w_zp,
+            #         bias,
+            #         o_inv_scale,
+            #         o_zero_point,
+            #         output_dtype,
+            #         attr,
+            #         scalars,
+            #         algorithm,
+            #     )
+            # )
 
         if torch._C.has_mkl:
             aten_mkl_linear = ExternKernelChoice(
