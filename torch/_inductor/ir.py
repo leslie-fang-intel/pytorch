@@ -614,6 +614,9 @@ class Reduction(Loops):
     src_dtype: torch.dtype
     reduction_hint: ReductionHint
 
+    # def make_loader(self):
+    #     return self.inner_fn
+
     def __str__(self):
         return Loops.__str__(  # type: ignore[call-arg]
             self, names=("ranges", "reduction_ranges", "reduction_type")
@@ -2746,6 +2749,13 @@ class FixedLayout(Layout):
         """A closure containing math to read a given element"""
 
         def indexer(index):
+            # print("--- inside make_indexer ----", flush=True)
+            # print(len(index), flush=True)
+            # print(index, flush=True)
+            # print(len(self.stride), flush=True)
+            # print(self.stride, flush=True)
+            # print(len(self.size), flush=True)
+            # print(self.size, flush=True)
             assert len(index) == len(self.stride) == len(self.size)
             result = self.offset
             for idx, stride, sz in zip(index, self.stride, self.size):
@@ -7740,6 +7750,9 @@ class LoopBody:
         self.indirect_vars = []
         self.root_block = LoopBodyBlock(self, fn, args)
         self.indexing = None
+        # print("---- self.root_block is: {}".format(
+        #     self.debug_str()
+        # ), flush=True)
 
     @cache_on_self
     def get_nodes(self):

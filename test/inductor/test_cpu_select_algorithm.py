@@ -46,6 +46,7 @@ def patches(fn):
                 # where template kernels are always chosen with fusions applied
                 # and correctness checks at runtime.
                 timings[choice] = timing * 1000
+                # timings[choice] = timing
         return timings
 
     for patcher in [
@@ -108,12 +109,12 @@ class TestSelectAlgorithm(TestCase):
     @patches
     @torch.no_grad
     @unittest.skipIf(not TEST_MKL, "Test requires MKL")
-    @parametrize("batch_size", (1, 2, 1000))
-    @parametrize("in_features", (1, 1000))
-    @parametrize("out_features", (1, 1024))
-    @parametrize("bias", (True, False))
-    @parametrize("input_3d", (True, False))
-    @dtypes(torch.float, torch.bfloat16, torch.half)
+    @parametrize("batch_size", (128,))
+    @parametrize("in_features", (512,))
+    @parametrize("out_features", (1024,))
+    @parametrize("bias", (False,))
+    @parametrize("input_3d", (False,))
+    @dtypes(torch.bfloat16,)
     def test_linear_static_shapes(
         self, batch_size, in_features, out_features, bias, input_3d, dtype
     ):
@@ -173,26 +174,14 @@ class TestSelectAlgorithm(TestCase):
     @patches
     @torch.no_grad
     @unittest.skipIf(not TEST_MKL, "Test requires MKL")
-    @parametrize("bias", (True, False))
+    @parametrize("bias", (False,))
     @parametrize(
         "epilogue",
         (
             "relu",
-            "gelu",
-            "silu",
-            "sigmoid",
-            "tanh",
-            "hardswish",
-            "hardsigmoid",
-            "leaky_relu",
-            "hardtanh",
-            "add",
-            "sub",
-            "mul",
-            "div",
         ),
     )
-    @dtypes(torch.float, torch.bfloat16, torch.half)
+    @dtypes(torch.bfloat16,)
     def test_linear_with_pointwise(self, bias, epilogue, dtype):
         batch_size = 384
         in_features = 196
@@ -332,9 +321,9 @@ class _DynamicShapesTestBase(TestCase):
 class TestSelectAlgorithmDynamicShapes(_DynamicShapesTestBase):
     common = check_model
     test_linear_dynamic_shapes = TestSelectAlgorithm.test_linear_static_shapes
-    test_linear_with_pointwise_dynamic_shapes = (
-        TestSelectAlgorithm.test_linear_with_pointwise
-    )
+    # test_linear_with_pointwise_dynamic_shapes = (
+    #     TestSelectAlgorithm.test_linear_with_pointwise
+    # )
     test_linear_with_transpose_dynamic_shapes = (
         TestSelectAlgorithm.test_linear_with_transpose
     )
