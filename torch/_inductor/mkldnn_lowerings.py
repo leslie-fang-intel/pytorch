@@ -180,6 +180,12 @@ def register_onednn_fusion_ops():
             has_out_variant=False,
             kernel_creator=mkldnn_ir.LinearBinary.create,
         )
+        aten_mkldnn_qlinear_unary = ExternKernelChoice(
+            torch.ops.onednn.qlinear_pointwise,
+            "onednn::qlinear_pointwise",
+            has_out_variant=False,
+            kernel_creator=mkldnn_ir.QLinearPointwisePT2E.create,
+        )
         cpu_needs_realized_inputs = [
             torch.ops.mkldnn._convolution_pointwise,
             torch.ops.mkldnn._convolution_pointwise_,
@@ -602,30 +608,96 @@ def register_onednn_fusion_ops():
             w_scale: TensorBox,
             w_zp: TensorBox,
             bias: TensorBox,
-            o_inv_scale,
+            o_scale,
             o_zero_point,
             output_dtype,
             attr,
             scalars,
             algorithm,
+            layout=None,
         ):
-            return TensorBox.create(
-                mkldnn_ir.QLinearPointwisePT2E.create(
-                    x,
-                    x_scale,
-                    x_zp,
-                    packed_weight,
-                    w_scale,
-                    w_zp,
-                    bias,
-                    o_inv_scale,
-                    o_zero_point,
-                    output_dtype,
-                    attr,
-                    scalars,
-                    algorithm,
+            x_size = x.get_size()
+            if len(x_size) > 2:
+                # GEMM template needs 2D input, normalize input shape here
+                x = view(x, [-1, x_size[-1]])
+            if not isinstance(x_scale, ir.TensorBox):
+                assert type(x_scale) == float
+                x_scale = V.graph.add_tensor_constant(torch.tensor(x_scale, dtype=torch.float32), name="x_scale")
+            if not isinstance(x_zp, ir.TensorBox):
+                assert type(x_zp) == int
+                x_zp = V.graph.add_tensor_constant(torch.tensor(x_zp, dtype=torch.int32), name="x_zp")
+            if w_zp.get_dtype() != torch.int32:
+                w_zp_tensor = V.graph.constants[w_zp.get_name()].to(torch.int32)
+                w_zp = V.graph.add_tensor_constant(torch.tensor(w_zp_tensor, dtype=torch.int32), name=w_zp.get_name())
+                
+            choices: List[ChoiceCaller] = []
+            if len(choices) == 0 or use_aten_gemm_kernels():
+                choices.append(
+                    aten_mkldnn_qlinear_unary.bind(
+                        (x, x_scale, x_zp, packed_weight, w_scale, w_zp),
+                        layout,
+                        bias=None,
+                        output_scale=o_scale,
+                        output_zero_point=o_zero_point,
+                        output_dtype=output_dtype,
+                        post_op_name=attr,
+                        post_op_args=scalars,
+                        post_op_algorithm=algorithm,
+                    )
+                    if bias is None
+                    else aten_mkldnn_qlinear_unary.bind(
+                        (x, x_scale, x_zp, packed_weight, w_scale, w_zp, bias),
+                        layout,
+                        output_scale=o_scale,
+                        output_zero_point=o_zero_point,
+                        output_dtype=output_dtype,
+                        post_op_name=attr,
+                        post_op_args=scalars,
+                        post_op_algorithm=algorithm,
+                    )
                 )
+            if use_max_autotune():
+                *_, layout, x, packed_weight = mm_args(x, packed_weight, layout=layout, out_dtype=output_dtype)
+                if (
+                    use_cpp_packed_gemm_template(layout, x, packed_weight)
+                    and attr == "none"
+                    and output_dtype == torch.float32 # Only support u8s8f32 for now
+                    and len(x_zp.get_layout().size) == 0 # Per tensor quant for activation
+                    and torch.equal(
+                        torch.zeros_like(V.graph.constants[w_zp.get_name()]), V.graph.constants[w_zp.get_name()]
+                    )  # We only composentate MatrixB and assume B_zp is 0 to avoid the composantation of MatrixA
+                ):
+                    if bias is None:
+                        assert x.get_dtype() == torch.uint8
+                        CppPackedGemmTemplate.add_choices(
+                            choices,
+                            layout,
+                            [x, x_scale, x_zp, packed_weight, w_scale, w_zp],
+                        )
+                    else:
+                        CppPackedGemmTemplate.add_choices(
+                            choices,
+                            layout,
+                            [x, x_scale, x_zp, packed_weight, w_scale, w_zp, bias],
+                            has_bias=True,
+                        )
+            assert packed_weight.get_name() in V.graph.constants
+            input_gen_fns = {
+                3: lambda x: V.graph.constants[x.get_name()],
+                4: lambda x: V.graph.constants[x.get_name()],
+                5: lambda x: V.graph.constants[x.get_name()],
+                6: lambda x: V.graph.constants[x.get_name()], # For bias
+            }
+            result = autotune_select_algorithm(
+                "qlinear_unary",
+                choices,
+                [x, x_scale, x_zp, packed_weight, w_scale, w_zp] if bias is None else [x, x_scale, x_zp, packed_weight, w_scale, w_zp, bias],
+                layout,
+                input_gen_fns=input_gen_fns,
             )
+            if len(x_size) > 2:
+                result = view(result, (*x_size[:-1], result.get_size()[-1]))
+            return result
 
         @register_lowering(
             torch.ops.onednn.qlinear_pointwise.binary, type_promotion_kind=None
