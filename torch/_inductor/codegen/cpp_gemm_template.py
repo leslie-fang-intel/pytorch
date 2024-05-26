@@ -139,9 +139,11 @@ extern "C"
 
 INT8_GEMM_TEMPLATE = r"""
 {{template.header().getvalue()}}
+
 {{micro_gemm.codegen_define(kernel)}}
+
 extern "C"
-{{kernel.def_kernel(inputs={"X": X, "x_scale": x_scale, "x_zp": x_zp, "W": W, "w_scale": w_scale, "w_zp": w_zp, "inp": inp, "BMatricCompo":BMatricCompo,}, outputs={"Y": Y})}}
+{{kernel.def_kernel(inputs={"X": X, "x_scale": x_scale, "x_zp": x_zp, "W": W, "w_scale": w_scale, "w_zp": w_zp, "inp": inp,}, outputs={"Y": Y}, aliases=buffer_aliases)}}
 {
     {{kernel.maybe_codegen_profile()}}
     constexpr int64_t num_threads = {{num_threads}};
@@ -153,7 +155,7 @@ extern "C"
     constexpr int64_t N0_blocks = (N + N0 - 1) / N0;
     constexpr int64_t K0_blocks = (K + K0 - 1) / K0;
     static_assert(N % N0 == 0, "N dimension must be multiple of N0");
-    const float* b_compensate = BMatricCompo;
+    // const float* b_compensate = BMatricCompo;
     // TODO(jgong5): improve cache blocking with CPU info (Mc, Kc)
     {%- if is_dynamic_M %}
     const int64_t M = {{kernel.size(GemmOut, 0)}};
@@ -247,33 +249,10 @@ extern "C"
                 {%- endif %}
                 {%- set tile_Y = kernel.slice_nd(Y_maybe_transposed, [("m_start", "m_end"), ("n_start", "n_start + N0")]) %}
                 {{ kernel.store_output(
-                      tile_Y, acc, epilogue_nodes, offsets=("m_start", "n_start"), reindexer=reindexer
+                      tile_Y, acc, GemmOut, epilogue_nodes, offsets=("m_start", "n_start"), reindexer=reindexer
                    )|indent(16, false)
                 }}
             }
-        }
-    }
-    for (int m=0; m<M; m++) {
-        for (int n=0; n<N; n++) {
-            /*
-            float cur_y = Y[m*64 + n];            
-            cur_y = x_scale[0] * w_scale[n] * cur_y;
-            cur_y -= x_scale[0] * w_scale[n] * x_zp[0] * b_compensate[n];
-            {%- if inp is not none and beta != 0 %}
-            // Add Bias
-            cur_y += inp[n];
-            {%- endif %}
-            Y[m*64 + n] = cur_y;
-            */
-
-            float cur_y = {{kernel.index(Y, ["m", "n"])}}; 
-            cur_y = x_scale[0] * {{kernel.index(w_scale, ["n"])}} * cur_y;
-            cur_y -= x_scale[0] * {{kernel.index(w_scale, ["n"])}} * x_zp[0] * {{kernel.index(BMatricCompo, ["n"])}};
-            {%- if inp is not none and beta != 0 %}
-            // Add Bias
-            cur_y += {{kernel.index(inp, ["m", "n"])}};
-            {%- endif %}
-            {{kernel.index(Y, ["m", "n"])}} = cur_y;
         }
     }
 }
@@ -499,23 +478,24 @@ class CppPackedGemmTemplate(CppTemplate):
 
             W = inputs[W_idx]
 
-            # Calculate the composentation for MatrixB
-            BMatricCompo = None
-            if int8_gemm:
-                # Calculate the composentation
-                if isinstance(W, ir.IRNode):
-                    if not isinstance(W, ir.TensorBox):
-                        W = ir.TensorBox(W)
-                    W_tensor = V.graph.constants[W.get_name()]
-                    W_tensor = W_tensor.to_dense()
-                    BMatricCompo_tensor = torch.sum(W_tensor.to(torch.float), dim=0)
-                    BMatricCompo = V.graph.add_tensor_constant(BMatricCompo_tensor, name="BMatricCompo")
-                else:
-                    if W.is_mkldnn:
-                        W_tensor = W.to_dense()
-                    else:
-                        W_tensor = W
-                    BMatricCompo = torch.sum(W_tensor.to(torch.float), dim=0)
+
+            # BMatricCompo = None
+            # if int8_gemm:
+            #     BMatricCompo = None
+            #     # Calculate the composentation
+            #     if isinstance(W, ir.IRNode):
+            #         if not isinstance(W, ir.TensorBox):
+            #             W = ir.TensorBox(W)
+            #         W_tensor = V.graph.constants[W.get_name()]
+            #         W_tensor = W_tensor.to_dense()
+            #         BMatricCompo_tensor = torch.sum(W_tensor.to(torch.float), dim=0)
+            #         BMatricCompo = V.graph.add_tensor_constant(BMatricCompo_tensor, name="BMatricCompo")
+            #     else:
+            #         if W.is_mkldnn:
+            #             W_tensor = W.to_dense()
+            #         else:
+            #             W_tensor = W
+            #         BMatricCompo = torch.sum(W_tensor.to(torch.float), dim=0)
 
             new_inputs = list(inputs)
             if isinstance(W, ir.IRNode):
@@ -559,6 +539,11 @@ class CppPackedGemmTemplate(CppTemplate):
                 blocked_w = blocked_w.as_strided(blocked_w.shape, new_stride)
             new_inputs[W_idx] = blocked_w
             if int8_gemm:
+                BMatricCompo = (
+                    V.graph.add_tensor_constant(V.graph.constants["BMatricCompo"], "BMatricCompo")
+                    if isinstance(W, ir.IRNode)
+                    else V.graph.constants["BMatricCompo"]
+                )
                 new_inputs.append(BMatricCompo)
             return new_inputs, layout_or_out
 
@@ -621,7 +606,7 @@ class CppPackedGemmTemplate(CppTemplate):
         x_zp = None
         w_scale = None
         w_zp = None
-        BMatricCompo = None
+        # BMatricCompo = None
         if int8_gemm:
             X, W = self.input_nodes[0], self.input_nodes[3]
             x_scale = self.input_nodes[1]
@@ -629,7 +614,7 @@ class CppPackedGemmTemplate(CppTemplate):
             w_scale = self.input_nodes[4]
             w_zp = self.input_nodes[5]
             inp = self.input_nodes[6] if self.has_bias else None
-            BMatricCompo = self.input_nodes[7] if self.has_bias else self.input_nodes[6]
+            # BMatricCompo = self.input_nodes[7] if self.has_bias else self.input_nodes[6]
             Y = self.output_node
         else:
             X, W = self.input_nodes[0], self.input_nodes[1]
@@ -657,7 +642,7 @@ class CppPackedGemmTemplate(CppTemplate):
             )
 
         Y_is_transposed = False
-        use_local_acc = self.layout.dtype != torch.float
+        use_local_acc = (self.layout.dtype != torch.float or int8_gemm)
         acc_buf_name = "local_acc_buf"
         if epilogue_nodes:
             epilogues.extend(epilogue_nodes)
@@ -705,6 +690,6 @@ class CppPackedGemmTemplate(CppTemplate):
             x_zp=x_zp,
             w_scale=w_scale,
             w_zp=w_zp,
-            BMatricCompo=BMatricCompo,
+            # BMatricCompo=BMatricCompo,
         )
         return self._template_from_string(INT8_GEMM_TEMPLATE if int8_gemm else GEMM_TEMPLATE).render(**options)

@@ -195,73 +195,6 @@ class CppMicroGemmRef(CppMicroGemm):
         }
         return KernelTemplate._template_from_string(self.TEMPLATE_ENTRY).render(options)
 
-
-class CppMicroInt8GemmRef(CppMicroGemm):
-    """
-    A reference implementation of the CppMicroGemm class with naive C++ code.
-    It is used for correctness debugging.
-    """
-
-    DECLARE_KERNEL = r"""
-template <bool accum>
-inline void {{kernel_name}}(
-    const {{input_t}}* __restrict__ A,
-    const {{input2_t}}* __restrict__ B,
-    {{output_t}}* __restrict__ C,
-    int64_t M,
-    int64_t N,
-    int64_t K,
-    int64_t lda,
-    int64_t ldb,
-    int64_t ldc
-)
-"""
-
-    TEMPLATE_ENTRY = r"""
-{{declare_kernel}} {
-    for (int64_t m = 0; m < M; ++m) {
-        for (int64_t n = 0; n < N; ++n) {
-            {{compute_t}} result = accum ? C[m * ldc + n] : 0;
-            for (int64_t k = 0; k < K; ++k) {
-                result += ({{compute_t}})A[m * lda + k] * ({{compute_t}})B[k * ldb + n] * {{alpha}};
-            }
-            C[m * ldc + n] = result;
-        }
-    }
-}
-"""
-
-    def __init__(self, name, input_dtype, output_dtype, compute_dtype, alpha):
-        super().__init__(
-            name, input_dtype, output_dtype, compute_dtype, GemmBlocking(1, 1, 1), alpha
-        )
-
-    def get_common_options(self):
-        return {
-            "torch": torch,
-            "kernel_name": self.name,
-            "input_dtype": self.input_dtype,
-            "output_dtype": self.output_dtype,
-            "compute_dtype": self.compute_dtype,
-            "input_t": DTYPE_TO_CPP[self.input_dtype],
-            "input2_t": DTYPE_TO_CPP[torch.int8],  # TODO: support dtype other than s8 for weight
-            "output_t": DTYPE_TO_CPP[self.output_dtype],
-            "compute_t": DTYPE_TO_CPP[self.compute_dtype],
-            "alpha": self.alpha,
-        }
-
-    def get_kernel_declaration(self):
-        options = self.get_common_options()
-        return KernelTemplate._template_from_string(self.DECLARE_KERNEL).render(options)
-
-    def codegen_define(self, kernel: CppTemplateKernel) -> str:
-        options = {
-            "declare_kernel": self.get_kernel_declaration(),
-            **self.get_common_options(),
-        }
-        return KernelTemplate._template_from_string(self.TEMPLATE_ENTRY).render(options)
-
-
 @register_micro_gemm(
     *generate_gemm_config(
         VecAVX512, [(8, 48, 1), (8, 32, 1), (16, 16, 1)], input_dtype=torch.float
@@ -430,6 +363,72 @@ inline void {{kernel_name}}_kernel(
             options
         )
         return result
+
+
+class CppMicroInt8GemmRef(CppMicroGemm):
+    """
+    A reference implementation of the CppMicroGemm class with naive C++ code.
+    It is used for correctness debugging.
+    """
+
+    DECLARE_KERNEL = r"""
+template <bool accum>
+inline void {{kernel_name}}(
+    const {{input_t}}* __restrict__ A,
+    const {{input2_t}}* __restrict__ B,
+    {{output_t}}* __restrict__ C,
+    int64_t M,
+    int64_t N,
+    int64_t K,
+    int64_t lda,
+    int64_t ldb,
+    int64_t ldc
+)
+"""
+
+    TEMPLATE_ENTRY = r"""
+{{declare_kernel}} {
+    for (int64_t m = 0; m < M; ++m) {
+        for (int64_t n = 0; n < N; ++n) {
+            {{compute_t}} result = accum ? C[m * ldc + n] : 0;
+            for (int64_t k = 0; k < K; ++k) {
+                result += ({{compute_t}})A[m * lda + k] * ({{compute_t}})B[k * ldb + n] * {{alpha}};
+            }
+            C[m * ldc + n] = result;
+        }
+    }
+}
+"""
+
+    def __init__(self, name, input_dtype, output_dtype, compute_dtype, alpha):
+        super().__init__(
+            name, input_dtype, output_dtype, compute_dtype, GemmBlocking(1, 1, 1), alpha
+        )
+
+    def get_common_options(self):
+        return {
+            "torch": torch,
+            "kernel_name": self.name,
+            "input_dtype": self.input_dtype,
+            "output_dtype": self.output_dtype,
+            "compute_dtype": self.compute_dtype,
+            "input_t": DTYPE_TO_CPP[self.input_dtype],
+            "input2_t": DTYPE_TO_CPP[torch.int8],  # TODO: support dtype other than s8 for weight
+            "output_t": DTYPE_TO_CPP[self.output_dtype],
+            "compute_t": DTYPE_TO_CPP[self.compute_dtype],
+            "alpha": self.alpha,
+        }
+
+    def get_kernel_declaration(self):
+        options = self.get_common_options()
+        return KernelTemplate._template_from_string(self.DECLARE_KERNEL).render(options)
+
+    def codegen_define(self, kernel: CppTemplateKernel) -> str:
+        options = {
+            "declare_kernel": self.get_kernel_declaration(),
+            **self.get_common_options(),
+        }
+        return KernelTemplate._template_from_string(self.TEMPLATE_ENTRY).render(options)
 
 
 def create_micro_gemm(

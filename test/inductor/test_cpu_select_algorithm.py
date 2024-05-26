@@ -338,7 +338,7 @@ class TestSelectAlgorithm(TestCase):
     @parametrize("batch_size", (32,))
     @parametrize("in_features", (128,))
     @parametrize("out_features", (64,))
-    @parametrize("bias", (True, False))
+    @parametrize("bias", (False, True))
     @parametrize("input_3d", (False,))
     @dtypes(torch.float32,)
     def test_int8_linear_static_shapes(

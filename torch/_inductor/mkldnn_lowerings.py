@@ -667,12 +667,70 @@ def register_onednn_fusion_ops():
                         torch.zeros_like(V.graph.constants[w_zp.get_name()]), V.graph.constants[w_zp.get_name()]
                     )  # We only composentate MatrixB and assume B_zp is 0 to avoid the composantation of MatrixA
                 ):
+
+                    W_tensor = V.graph.constants[packed_weight.get_name()]
+                    W_tensor = W_tensor.to_dense()
+                    weight_compo_tensor = torch.sum(W_tensor.to(torch.float), dim=0)
+                    weight_compo = V.graph.add_tensor_constant(weight_compo_tensor, name="BMatricCompo")
+
+                    def cvt_fp32_epilogue_creator(input_buffer):
+                        # Epilogue to convert from s32 to f32 for u8s8f32
+                        assert output_dtype == torch.float32
+                        input_loader = input_buffer.make_loader()
+                        weight_compo_loader = weight_compo.make_loader()
+                        x_scale_loader = x_scale.make_loader()
+                        w_scale_loader = w_scale.make_loader()
+                        x_zp_loader = x_zp.make_loader()
+                        nonlocal bias
+                        bias_loader = None
+                        if bias is not None:
+                            bias_loader = bias.make_loader()
+                        def inner_fn(index):
+                            nonlocal bias
+                            input = input_loader(index)
+                            weight_compo_index = (index[-1],)
+                            _x_scale = x_scale_loader(())
+                            _x_zp = x_zp_loader(())
+                            _w_scale = w_scale_loader(weight_compo_index)
+                            _weight_compo = weight_compo_loader(weight_compo_index)
+                            temp = ops.mul(
+                                ops.mul(
+                                    input,
+                                    _x_scale,
+                                ),
+                                _w_scale,
+                            )
+                            temp = ops.sub(
+                                temp,
+                                ops.mul(
+                                    ops.mul(
+                                        ops.mul(
+                                            _x_scale,
+                                            _w_scale,
+                                        ),
+                                        _x_zp,
+                                    ),
+                                    _weight_compo,
+                                ),
+                            )
+                            if bias is not None:
+                                _bias = bias_loader(weight_compo_index)
+                                temp = ops.add(temp, _bias)
+                            return temp
+                        return ir.Pointwise(
+                            device=input_buffer.get_device(),
+                            dtype=torch.float32,  # Hardcode to FP32 for u8s8f32
+                            inner_fn=inner_fn,
+                            ranges=input_buffer.get_size(),
+                        )
+
                     if bias is None:
                         assert x.get_dtype() == torch.uint8
                         CppPackedGemmTemplate.add_choices(
                             choices,
                             layout,
                             [x, x_scale, x_zp, packed_weight, w_scale, w_zp],
+                            epilogue_creator=cvt_fp32_epilogue_creator,
                         )
                     else:
                         CppPackedGemmTemplate.add_choices(
@@ -680,6 +738,7 @@ def register_onednn_fusion_ops():
                             layout,
                             [x, x_scale, x_zp, packed_weight, w_scale, w_zp, bias],
                             has_bias=True,
+                            epilogue_creator=cvt_fp32_epilogue_creator,
                         )
             assert packed_weight.get_name() in V.graph.constants
             input_gen_fns = {
