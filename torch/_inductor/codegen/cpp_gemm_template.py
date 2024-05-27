@@ -216,13 +216,7 @@ extern "C"
                 {%- set acc = kernel.slice_nd(GemmOut, [("m_start", "m_end"), ("n_start", "n_start + N0")]) %}
                 {%- endif %}
                 {%- if inp is not none and beta != 0 %}
-                // For int8, bias should be added after convert Y to FP32
-                // for (int64_t m = 0; m < m_size; ++m) {
-                //    #pragma omp simd
-                //    for (int64_t n = 0; n < n_size; ++n) {
-                //        {{kernel.index(acc, ["m", "n"])}} = {{beta}} * {{kernel.index(inp, ["m + m_start", "n + n_start"])}};
-                //    }
-                //}
+                // For int8, bias should add after convert Y to FP32
                 {%- endif %}
                 for (int64_t kc = k_block_start; kc < k_block_end; kc += Kc_blocks) {
                     int64_t k_start = kc * K0;
