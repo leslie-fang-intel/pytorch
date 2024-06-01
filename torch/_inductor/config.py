@@ -517,6 +517,9 @@ disable_cpp_codegen = False
 # can no longer be updated.
 freezing: bool = os.environ.get("TORCHINDUCTOR_FREEZING", "0") == "1"
 
+# Enable the binary folding when freezing turns on
+binary_folding_round: int = int(os.environ.get("TORCHINDUCTOR_BINARY_FOLDING_ROUND", "4"))
+
 # Make freezing invalidate the eager Parameters of nn modules, to avoid memory overhead
 # of potentially keeping multiple copies of weights.
 freezing_discard_parameters: bool = False
