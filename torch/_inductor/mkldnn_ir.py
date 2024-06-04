@@ -1480,16 +1480,16 @@ class QLinearPointwiseBinaryPT2E(ExternKernelAlloc):
     def create(
         cls,
         qx: "TensorBox",
+        other: "TensorBox",
+        qw: "TensorBox",  # packed_weight
+        bias: "TensorBox",
         x_scale: float,
         x_zero_point: int,
-        qw: "TensorBox",  # packed_weight
         w_scale: "TensorBox",
         w_zero_point: "TensorBox",
-        bias: "TensorBox",
         output_scale: float,
         output_zero_point: int,
         output_dtype,
-        other: "TensorBox",
         other_scale,
         other_zp,
         binary_post_op,
