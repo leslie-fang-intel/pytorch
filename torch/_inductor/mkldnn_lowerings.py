@@ -186,6 +186,12 @@ def register_onednn_fusion_ops():
             has_out_variant=False,
             kernel_creator=mkldnn_ir.QLinearPointwisePT2E.create,
         )
+        aten_mkldnn_qlinear_binary = ExternKernelChoice(
+            torch.ops.onednn.qlinear_pointwise.binary,
+            "onednn::qlinear_pointwise",
+            has_out_variant=False,
+            kernel_creator=mkldnn_ir.QLinearPointwiseBinaryPT2E.create,
+        )
         cpu_needs_realized_inputs = [
             torch.ops.mkldnn._convolution_pointwise,
             torch.ops.mkldnn._convolution_pointwise_,
@@ -854,7 +860,7 @@ def register_onednn_fusion_ops():
             w_scale: TensorBox,
             w_zp: TensorBox,
             bias: TensorBox,
-            o_inv_scale,
+            o_scale,
             o_zero_point,
             output_dtype,
             x2: TensorBox,
@@ -865,7 +871,37 @@ def register_onednn_fusion_ops():
             unary_attr,
             unary_scalars,
             unary_algorithmm,
+            layout=None,
         ):
+            x_size = x.get_size()
+            if len(x_size) > 2:
+                # GEMM template needs 2D input, normalize input shape here
+                x = view(x, [-1, x_size[-1]])
+            # if not isinstance(x_scale, ir.TensorBox):
+            #     assert type(x_scale) == float
+            #     x_scale = V.graph.add_tensor_constant(
+            #         torch.tensor(x_scale, dtype=torch.float32), name="x_scale"
+            #     )
+            # if not isinstance(x_zp, ir.TensorBox):
+            #     assert type(x_zp) == int
+            #     x_zp = V.graph.add_tensor_constant(
+            #         torch.tensor(x_zp, dtype=torch.int32), name="x_zp"
+            #     )
+
+            # When channels less than 8, w_scale/w_zp is Pointwise instead of ConstantBuffer
+            # Refer to https://github.com/pytorch/pytorch/blob
+            # /f353d17755ed23b02924c962a86ff99a3405fe10/torch/_inductor/graph.py#L570-L577
+            w_scale.realize()
+            w_zp.realize()
+            if w_zp.get_dtype() != torch.int32 and isinstance(
+                ir.InputsKernel.unwrap_storage_for_input(w_zp),
+                ir.ConstantBuffer,
+            ):
+                w_zp_tensor = V.graph.constants[w_zp.get_name()].to(torch.int32)
+                w_zp = V.graph.add_tensor_constant(
+                    torch.tensor(w_zp_tensor, dtype=torch.int32), name=w_zp.get_name()
+                )
+
             if binary_attr == "sum":
                 if output_dtype in [
                     torch.float32,
@@ -881,28 +917,265 @@ def register_onednn_fusion_ops():
                     assert (
                         x2.get_dtype() == output_dtype
                     ), "dtype of accum for qlinear post op sum should be the same as output"
-            return TensorBox.create(
-                mkldnn_ir.QLinearPointwiseBinaryPT2E.create(
-                    x,
-                    x2,
-                    packed_weight,
-                    bias,
-                    x_scale,
-                    x_zp,
-                    w_scale,
-                    w_zp,
-                    o_inv_scale,
-                    o_zero_point,
-                    output_dtype,
-                    x2_scale,
-                    x2_zp,
-                    binary_attr,
-                    alpha,
-                    unary_attr,
-                    unary_scalars,
-                    unary_algorithmm,
+
+            choices: List[ChoiceCaller] = []
+            if len(choices) == 0 or use_aten_gemm_kernels():
+                choices.append(
+                    aten_mkldnn_qlinear_binary.bind(
+                        (x, x2, packed_weight, w_scale, w_zp),
+                        layout,
+                        bias=None,
+                        x_scale=x_scale,
+                        x_zero_point=x_zp,
+                        output_scale=o_scale,
+                        output_zero_point=o_zero_point,
+                        output_dtype=output_dtype,
+                        other_scale=x2_scale,
+                        other_zp=x2_zp,
+                        binary_post_op=binary_attr,
+                        binary_alpha=alpha,
+                        unary_post_op=unary_attr,
+                        unary_post_op_args=unary_scalars,
+                        unary_post_op_algorithm=unary_algorithmm,
+                    )
+                    if bias is None
+                    else aten_mkldnn_qlinear_binary.bind(
+                        (x, x2, packed_weight, w_scale, w_zp, bias),
+                        layout,
+                        x_scale=x_scale,
+                        x_zero_point=x_zp,
+                        output_scale=o_scale,
+                        output_zero_point=o_zero_point,
+                        output_dtype=output_dtype,
+                        other_scale=x2_scale,
+                        other_zp=x2_zp,
+                        binary_post_op=binary_attr,
+                        binary_alpha=alpha,
+                        unary_post_op=unary_attr,
+                        unary_post_op_args=unary_scalars,
+                        unary_post_op_algorithm=unary_algorithmm,
+                    )
                 )
+            if use_max_autotune():
+                *_, layout, x, packed_weight, x2 = mm_args(
+                    x, packed_weight, x2, layout=layout, out_dtype=output_dtype
+                )
+                if (
+                    # output_dtype == torch.float32
+                    # and len(x_zp.get_layout().size) == 0  # Per tensor quant of act
+                    isinstance(
+                        ir.InputsKernel.unwrap_storage_for_input(w_zp),
+                        ir.ConstantBuffer,
+                    )
+                    and torch.equal(
+                        torch.zeros_like(V.graph.constants[w_zp.get_name()]),
+                        V.graph.constants[w_zp.get_name()],
+                    )  # We only composentate MatrixB and assume B_zp is 0 to avoid the composantation of MatrixA
+                    and use_cpp_packed_gemm_template(layout, x, packed_weight)
+                ):
+                    W_tensor = V.graph.constants[packed_weight.get_name()]
+                    W_tensor = W_tensor.to_dense()
+                    weight_compo_tensor = torch.sum(W_tensor.to(torch.float), dim=0)
+                    weight_compo = V.graph.add_tensor_constant(
+                        weight_compo_tensor,
+                        name=packed_weight.get_name() + "BMatricCompo",
+                    )
+
+
+                    def cvt_fp32_epilogue_creator(input_buffer):
+                        # Epilogue to convert from s32 to f32 for u8s8f32
+                        assert output_dtype in [torch.float32, None, torch.uint8]
+
+                        from .lowering import _create_constants
+                        
+                        input_loader = input_buffer.make_loader()
+                        x2_loader = x2.make_loader()
+                        weight_compo_loader = weight_compo.make_loader()
+                        # x_scale_loader = x_scale.make_loader()
+                        w_scale_loader = w_scale.make_loader()
+                        # x_zp_loader = x_zp.make_loader()
+                        nonlocal bias
+                        bias_loader = None
+                        if bias is not None:
+                            bias_loader = bias.make_loader()
+
+                        def inner_fn(index, scale, zero_point):
+
+
+                            nonlocal bias
+                            input = input_loader(index)
+                            _x2 = x2_loader(index)
+
+                            _x_scale, _ = _create_constants(
+                                scale, zero_point, dtype=torch.float32
+                            )
+                            _, _x_zp = _create_constants(
+                                scale, zero_point, dtype=torch.int32
+                            )
+                            _x_zp = ops.to_dtype(_x_zp, torch.float32)
+
+                            # MicroKernel Output is with int32
+                            # cvt to FP32 before doing compensation
+                            input = ops.to_dtype(input, torch.float32)
+                            weight_compo_index = (index[-1],)
+                            # _x_scale = x_scale_loader(())
+                            # _x_zp = x_zp_loader(())
+                            _w_scale = w_scale_loader(weight_compo_index)
+                            _weight_compo = weight_compo_loader(weight_compo_index)
+                            # Step 1: Doing compensation to cvt fp32
+                            temp = ops.mul(
+                                ops.mul(
+                                    input,
+                                    _x_scale,
+                                ),
+                                _w_scale,
+                            )
+                            temp = ops.sub(
+                                temp,
+                                ops.mul(
+                                    ops.mul(
+                                        ops.mul(
+                                            _x_scale,
+                                            _w_scale,
+                                        ),
+                                        _x_zp,
+                                    ),
+                                    _weight_compo,
+                                ),
+                            )
+
+                            # Step 2: add Bias if applicable
+                            if bias is not None:
+                                _bias = bias_loader(weight_compo_index)
+                                temp = ops.add(temp, _bias)
+                            
+                            # Step 3: Binary add
+                            temp = ops.add(temp, _x2)
+
+                            return temp
+
+                        import functools
+
+                        output_buf = ir.Pointwise(
+                            device=input_buffer.get_device(),
+                            dtype=torch.float32,  # Hardcode to FP32 for u8s8f32
+                            inner_fn=functools.partial(
+                                inner_fn,
+                                scale=float(x_scale),
+                                zero_point=int(x_zp),
+                            ),
+                            ranges=input_buffer.get_size(),
+                        )
+
+                        # Step 4: Unary post op if has 
+                        if unary_attr != "none":
+                            output_buf = create_epilogue_with_attr(
+                                output_buf, unary_attr, scalars=unary_scalars, algorithm=unary_algorithmm
+                            )
+
+                        # Step 5: Doing the requant for uint8 out
+                        if output_dtype != torch.float32:
+                            assert output_dtype in [None, torch.uint8]
+
+                            # from .lowering import quantized_decomposed_quantize_per_tensor_default
+                            # output_buf = quantized_decomposed_quantize_per_tensor_default(
+                            #     output_buf,
+                            #     o_scale,
+                            #     o_zero_point,
+                            #     0,  # quant_min for uint8
+                            #     255,  # quant_max for uint8
+                            #     torch.uint8,
+                            # ).data.data
+
+                            from .lowering import _create_constants
+
+                            requant_input_loader = output_buf.make_loader()
+
+                            def inner_fn_requant(index, scale, zero_point):
+                                input = requant_input_loader(index)
+                                inv_scale, zero_point = _create_constants(
+                                    1.0 / scale, zero_point, dtype=torch.float32
+                                )
+                                val = ops.round(input * inv_scale) + zero_point
+                                qmin, qmax = _create_constants(
+                                    0, 255, dtype=torch.float32
+                                )
+                                clamped = ops.minimum(ops.maximum(val, qmin), qmax)
+                                return ops.to_dtype(clamped, torch.uint8)
+
+                            import functools
+
+                            output_buf = ir.Pointwise(
+                                device=output_buf.get_device(),
+                                dtype=torch.uint8,
+                                inner_fn=functools.partial(
+                                    inner_fn_requant,
+                                    scale=float(o_scale),
+                                    zero_point=int(o_zero_point),
+                                ),
+                                ranges=output_buf.get_size(),
+                            )
+
+                        return output_buf
+                
+                    if bias is None:
+                        assert x.get_dtype() == torch.uint8
+                        CppPackedGemmTemplate.add_choices(
+                            choices,
+                            layout,
+                            [x, x2, packed_weight, w_scale, w_zp],
+                            epilogue_creator=cvt_fp32_epilogue_creator,
+                            has_binary=True,
+                        )
+                    else:
+                        CppPackedGemmTemplate.add_choices(
+                            choices,
+                            layout,
+                            [x, x2, packed_weight, w_scale, w_zp, bias],
+                            has_bias=True,
+                            epilogue_creator=cvt_fp32_epilogue_creator,
+                            has_binary=True,
+                        )
+
+            assert packed_weight.get_name() in V.graph.constants
+            input_gen_fns = {
+                2: lambda x: V.graph.constants[x.get_name()],  # weight to get the constant
+            }
+            result = autotune_select_algorithm(
+                "qlinear_binary",
+                choices,
+                [x, x2, packed_weight, w_scale, w_zp]
+                if bias is None
+                else [x, x2, packed_weight, w_scale, w_zp, bias],
+                layout,
+                input_gen_fns=input_gen_fns,
             )
+            if len(x_size) > 2:
+                result = view(result, (*x_size[:-1], result.get_size()[-1]))
+            return result
+
+            # return TensorBox.create(
+            #     mkldnn_ir.QLinearPointwiseBinaryPT2E.create(
+            #         x,
+            #         x_scale,
+            #         x_zp,
+            #         packed_weight,
+            #         w_scale,
+            #         w_zp,
+            #         bias,
+            #         o_inv_scale,
+            #         o_zero_point,
+            #         output_dtype,
+            #         x2,
+            #         x2_scale,
+            #         x2_zp,
+            #         binary_attr,
+            #         alpha,
+            #         unary_attr,
+            #         unary_scalars,
+            #         unary_algorithmm,
+            #     )
+            # )
 
         if torch._C.has_mkl:
             aten_mkl_linear = ExternKernelChoice(

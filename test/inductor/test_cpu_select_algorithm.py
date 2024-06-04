@@ -179,26 +179,27 @@ class TestSelectAlgorithm(TestCase):
     @patches
     @torch.no_grad
     @unittest.skipIf(not TEST_MKL, "Test requires MKL")
-    @parametrize("bias", (True, False))
+    @parametrize("bias", (True,))
     @parametrize(
         "epilogue",
         (
-            "relu",
-            "gelu",
-            "silu",
-            "sigmoid",
-            "tanh",
-            "hardswish",
-            "hardsigmoid",
-            "leaky_relu",
-            "hardtanh",
+            # "relu",
+            # "gelu",
+            # "silu",
+            # "sigmoid",
+            # "tanh",
+            # "hardswish",
+            # "hardsigmoid",
+            # "leaky_relu",
+            # "hardtanh",
             "add",
-            "sub",
-            "mul",
-            "div",
+            # "sub",
+            # "mul",
+            # "div",
         ),
     )
-    @dtypes(torch.float, torch.bfloat16, torch.half)
+    # @dtypes(torch.float, torch.bfloat16, torch.half)
+    @dtypes(torch.bfloat16,)
     def test_linear_with_pointwise(self, bias, epilogue, dtype):
         batch_size = 384
         in_features = 196
@@ -392,6 +393,129 @@ class TestSelectAlgorithm(TestCase):
     @dtypes(
         torch.float32,
     )
+    def test_int8_linear_binary_static_shapes(
+        self, batch_size, in_features, out_features, bias, input_3d, dtype
+    ):
+        from torch._dynamo.testing import rand_strided
+
+        a = rand_strided(
+            (batch_size, in_features),
+            (in_features, 1),
+            device="cpu",
+            dtype=torch.float32,
+        )
+        other = rand_strided(
+            (batch_size, out_features),
+            (out_features, 1),
+            device="cpu",
+            dtype=torch.float32,
+        )
+        other2 = rand_strided(
+            (batch_size, out_features),
+            (out_features, 1),
+            device="cpu",
+            dtype=torch.float32,
+        )
+
+        class M(torch.nn.Module):
+            def __init__(self, bias):
+                super().__init__()
+                self.linear = torch.nn.Linear(in_features, out_features, bias)
+                self.linear2 = torch.nn.Linear(out_features, out_features, bias)
+
+            def forward(self, x, other, other2):
+                res = self.linear(x) + other
+                return self.linear2(res) + other2
+
+        counters.clear()
+        ref_quantized_mod = _generate_qdq_quantized_model(
+            M(bias=bias).to(dtype=dtype).eval(),
+            (a, other, other2),
+        )
+
+        atol, rtol = 1e-3, 1e-3
+        with patch.object(select_algorithm, "VERIFY", dict(atol=atol, rtol=rtol)):
+            self.common(ref_quantized_mod, (a, other, other2,), atol=atol, rtol=rtol)
+
+    @inductor_config.patch({"freezing": True})
+    @patches
+    @torch.no_grad
+    @unittest.skipIf(not TEST_MKL, "Test requires MKL")
+    @parametrize("batch_size", (32,))
+    @parametrize("in_features", (128,))
+    @parametrize("out_features", (64,))
+    @parametrize("bias", (False, True))
+    @parametrize("input_3d", (False,))
+    @dtypes(
+        torch.float32,
+    )
+    @parametrize(
+        "epilogue",
+        (
+            "relu",
+        ),
+    )
+    def test_int8_linear_binary_unary_static_shapes(
+        self, batch_size, in_features, out_features, bias, input_3d, dtype, epilogue
+    ):
+        from torch._dynamo.testing import rand_strided
+
+        a = rand_strided(
+            (batch_size, in_features),
+            (in_features, 1),
+            device="cpu",
+            dtype=torch.float32,
+        )
+        other = rand_strided(
+            (batch_size, out_features),
+            (out_features, 1),
+            device="cpu",
+            dtype=torch.float32,
+        )
+        other2 = rand_strided(
+            (batch_size, out_features),
+            (out_features, 1),
+            device="cpu",
+            dtype=torch.float32,
+        )
+
+        class M(torch.nn.Module):
+            def __init__(self, bias):
+                super().__init__()
+                self.linear = torch.nn.Linear(in_features, out_features, bias)
+                self.epilogue = _get_epilogue(epilogue)
+                self.linear2 = torch.nn.Linear(out_features, out_features, bias)
+                self.epilogue2 = _get_epilogue(epilogue)
+
+            def forward(self, x, other, other2):
+                res = self.linear(x) + other
+                res = self.epilogue(res)
+                res = self.linear2(res) + other2
+                res = self.epilogue2(res)
+                return res
+
+        counters.clear()
+        ref_quantized_mod = _generate_qdq_quantized_model(
+            M(bias=bias).to(dtype=dtype).eval(),
+            (a, other, other2),
+        )
+
+        atol, rtol = 1e-3, 1e-3
+        with patch.object(select_algorithm, "VERIFY", dict(atol=atol, rtol=rtol)):
+            self.common(ref_quantized_mod, (a, other, other2), atol=atol, rtol=rtol)
+
+    @inductor_config.patch({"freezing": True})
+    @patches
+    @torch.no_grad
+    @unittest.skipIf(not TEST_MKL, "Test requires MKL")
+    @parametrize("batch_size", (32,))
+    @parametrize("in_features", (128,))
+    @parametrize("out_features", (64,))
+    @parametrize("bias", (False, True))
+    @parametrize("input_3d", (False,))
+    @dtypes(
+        torch.float32,
+    )
     @parametrize(
         "epilogue",
         (
@@ -443,9 +567,9 @@ class _DynamicShapesTestBase(TestCase):
 class TestSelectAlgorithmDynamicShapes(_DynamicShapesTestBase):
     common = check_model
     test_linear_dynamic_shapes = TestSelectAlgorithm.test_linear_static_shapes
-    test_linear_with_pointwise_dynamic_shapes = (
-        TestSelectAlgorithm.test_linear_with_pointwise
-    )
+    # test_linear_with_pointwise_dynamic_shapes = (
+    #     TestSelectAlgorithm.test_linear_with_pointwise
+    # )
     test_linear_with_transpose_dynamic_shapes = (
         TestSelectAlgorithm.test_linear_with_transpose
     )

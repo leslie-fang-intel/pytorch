@@ -1251,11 +1251,11 @@ class QLinearOnednn final {
       Tensor act, // int8 CPU tensor, not QTensor
       std::optional<at::Tensor> other, // extra input for binary post-op
       Tensor onednn_weight, // int8 tensor from MkldnnCPU
+      Tensor weight_scales,
+      Tensor weight_zero_points,
       std::optional<Tensor> bias,
       double act_scale,
       int64_t act_zero_point,
-      Tensor weight_scales,
-      Tensor weight_zero_points,
       double output_scale,
       int64_t output_zero_point,
       std::optional<c10::ScalarType> output_dtype,
@@ -1283,11 +1283,11 @@ class QLinearOnednn final {
       Tensor act, // int8 CPU tensor, not QTensor
       std::optional<at::Tensor> other, // extra input for binary post-op
       Tensor onednn_weight, // int8 tensor from MkldnnCPU
+      Tensor weight_scales,
+      Tensor weight_zero_points,
       std::optional<Tensor> bias,
       Tensor act_scale,
       Tensor act_zero_point,
-      Tensor weight_scales,
-      Tensor weight_zero_points,
       double output_scale,
       int64_t output_zero_point,
       std::optional<c10::ScalarType> output_dtype,

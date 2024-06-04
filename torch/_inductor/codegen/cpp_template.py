@@ -54,6 +54,8 @@ class CppTemplate(KernelTemplate):
             unique(input_node.get_name() for input_node in self.input_nodes)
         )
         expected_args.extend([self.output_node.get_name()])
+        print("expected_args is: {}".format(expected_args), flush=True)
+        print("call_args is: {}".format(call_args), flush=True)
         assert list(call_args)[: len(expected_args)] == expected_args, (
             call_args,
             expected_args,

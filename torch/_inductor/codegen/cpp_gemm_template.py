@@ -142,9 +142,15 @@ INT8_GEMM_TEMPLATE = r"""
 
 {{micro_gemm.codegen_define(kernel)}}
 
+{%- if has_binary %}
+{%- set kernel_args = {"X": X, "X2": X2, "W": W, "w_scale": w_scale, "w_zp": w_zp, "inp": inp,} %}
+{%- else %}
+{%- set kernel_args = {"X": X, "x_scale": x_scale, "x_zp": x_zp, "W": W, "w_scale": w_scale, "w_zp": w_zp, "inp": inp,} %}
+{%- endif %}
+
 extern "C"
 {{kernel.def_kernel(
-    inputs={"X": X, "x_scale": x_scale, "x_zp": x_zp, "W": W, "w_scale": w_scale, "w_zp": w_zp, "inp": inp,},
+    inputs=kernel_args,
     outputs={"Y": Y},
     aliases=buffer_aliases
 )}}
@@ -270,6 +276,7 @@ class CppPackedGemmTemplate(CppTemplate):
         alpha=1,
         has_bias=False,
         epilogue_creator: Optional[Callable[[ir.Buffer], ir.Pointwise]] = None,
+        has_binary=False,
     ):
         assert layout.dtype in [torch.float, torch.bfloat16, torch.half, torch.uint8]
         super().__init__(
@@ -284,6 +291,7 @@ class CppPackedGemmTemplate(CppTemplate):
         _, k = input_nodes[0].get_size()
         self.m, self.n, self.k = m, n, k
         self.is_dynamic_M = has_free_symbols((m,))
+        self.has_binary=has_binary
 
     @cache_on_self
     def thread_blocking(self) -> GemmBlocking:
@@ -349,6 +357,7 @@ class CppPackedGemmTemplate(CppTemplate):
         trans_w=False,
         input_indices=None,
         epilogue_creator: Optional[Callable[[ir.Buffer], ir.Pointwise]] = None,
+        has_binary=False,
     ):
         if input_indices is None:
             input_indices = list(range(len(input_nodes)))
@@ -387,7 +396,14 @@ class CppPackedGemmTemplate(CppTemplate):
             ) or (
                 isinstance(inputs[0], torch.Tensor) and inputs[0].dtype == torch.uint8
             )
-            wgt_idx = 3 if int8_gemm else 1
+            # wgt_idx = 3 if int8_gemm else 1
+            wgt_idx = 1
+            if int8_gemm:
+                if has_binary:
+                    wgt_idx = 2
+                else:
+                    wgt_idx = 3   # position before change linear unary schema
+
             new_inputs = list(inputs)
             if isinstance(inputs[wgt_idx], torch.Tensor):
                 W = inputs[wgt_idx]
@@ -405,8 +421,18 @@ class CppPackedGemmTemplate(CppTemplate):
             new_inputs = list(inputs)
 
             X_idx = 0
-            W_idx = 3 if int8_gemm else 1
-            B_idx = 6 if int8_gemm else 2
+            W_idx = 1
+            if int8_gemm:
+                if has_binary:
+                    W_idx = 2
+                else:
+                    W_idx = 3   # position before change linear unary schema
+            B_idx = 2
+            if int8_gemm:
+                if has_binary:
+                    B_idx = 3
+                else:
+                    B_idx = 6   # position before change linear unary schema
 
             X = inputs[X_idx]
             W = inputs[W_idx]
@@ -444,7 +470,7 @@ class CppPackedGemmTemplate(CppTemplate):
         )
         int8_gemm = new_inputs[0].get_dtype() == torch.uint8
         m, n, k, *_ = (
-            mm_args(new_inputs[0], new_inputs[3])
+            mm_args(new_inputs[0], new_inputs[2 if has_binary else 3])
             if int8_gemm
             else mm_args(new_inputs[0], new_inputs[1])
         )
@@ -469,7 +495,15 @@ class CppPackedGemmTemplate(CppTemplate):
             ) or (
                 isinstance(inputs[0], torch.Tensor) and inputs[0].dtype == torch.uint8
             )
-            W_idx = 3 if int8_gemm else 1
+            # W_idx = 3 if int8_gemm else 1
+
+            W_idx = 1
+            if int8_gemm:
+                if has_binary:
+                    W_idx = 2
+                else:
+                    W_idx = 3   # position before change linear unary schema
+
             W = inputs[W_idx]
             new_inputs = list(inputs)
             if isinstance(W, ir.IRNode):
@@ -544,7 +578,13 @@ class CppPackedGemmTemplate(CppTemplate):
                 assert isinstance(template_buffer, ir.CppTemplateBuffer)
                 new_input_nodes, _ = reorder_and_filter(input_nodes, layout)
                 int8_gemm = new_input_nodes[0].get_dtype() == torch.uint8
-                W_idx = 3 if int8_gemm else 1
+                # W_idx = 3 if int8_gemm else 1
+                W_idx = 1
+                if int8_gemm:
+                    if has_binary:
+                        W_idx = 2
+                    else:
+                        W_idx = 3   # position before change linear unary schema
                 W_node = new_input_nodes[W_idx]
                 assert W_node.get_name() in V.graph.constants
                 W = V.graph.constants[W_node.get_name()]
@@ -571,6 +611,7 @@ class CppPackedGemmTemplate(CppTemplate):
             alpha=alpha,
             has_bias=has_bias,
             epilogue_creator=epilogue_creator,
+            has_binary=has_binary,
         )
         template.maybe_append_choice(choices)
         return template
@@ -585,20 +626,30 @@ class CppPackedGemmTemplate(CppTemplate):
         assert len(self.input_nodes) >= 2
 
         int8_gemm = self.input_nodes[0].get_dtype() == torch.uint8
+        # has_binary = int8_gemm and len(self.input_nodes) == 5
+        # breakpoint()
         x_scale = None
         x_zp = None
         w_scale = None
         w_zp = None
         # BMatricCompo = None
         if int8_gemm:
-            X, W = self.input_nodes[0], self.input_nodes[3]
-            x_scale = self.input_nodes[1]
-            x_zp = self.input_nodes[2]
-            w_scale = self.input_nodes[4]
-            w_zp = self.input_nodes[5]
-            inp = self.input_nodes[6] if self.has_bias else None
-            # BMatricCompo = self.input_nodes[7] if self.has_bias else self.input_nodes[6]
-            Y = self.output_node
+            if self.has_binary:
+                X, W = self.input_nodes[0], self.input_nodes[2]
+                w_scale = self.input_nodes[3]
+                w_zp = self.input_nodes[4]
+                inp = self.input_nodes[5] if self.has_bias else None
+                # BMatricCompo = self.input_nodes[7] if self.has_bias else self.input_nodes[6]
+                Y = self.output_node
+            else:
+                X, W = self.input_nodes[0], self.input_nodes[3]
+                x_scale = self.input_nodes[1]
+                x_zp = self.input_nodes[2]
+                w_scale = self.input_nodes[4]
+                w_zp = self.input_nodes[5]
+                inp = self.input_nodes[6] if self.has_bias else None
+                # BMatricCompo = self.input_nodes[7] if self.has_bias else self.input_nodes[6]
+                Y = self.output_node
         else:
             X, W = self.input_nodes[0], self.input_nodes[1]
             inp = self.input_nodes[2] if self.has_bias else None
@@ -607,7 +658,7 @@ class CppPackedGemmTemplate(CppTemplate):
         if template_buffer_node is not None:
             # Use the updated prepacked weight buffer
             W = (
-                template_buffer_node.inputs[3]
+                template_buffer_node.inputs[2 if self.has_binary else 3]
                 if int8_gemm
                 else template_buffer_node.inputs[1]
             )
@@ -678,6 +729,8 @@ class CppPackedGemmTemplate(CppTemplate):
             w_scale=w_scale,
             w_zp=w_zp,
             acc_buf_dtype=torch.int32 if int8_gemm else torch.float,
+            has_binary=self.has_binary,
+            X2= self.input_nodes[1] if (int8_gemm and self.has_binary) else None
         )
         return self._template_from_string(
             INT8_GEMM_TEMPLATE if int8_gemm else GEMM_TEMPLATE
