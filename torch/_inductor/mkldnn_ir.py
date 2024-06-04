@@ -1334,6 +1334,7 @@ class QLinearPointwiseBinaryPT2E(ExternKernelAlloc):
         constant_args=(),
         has_bias=True,
         x_scale_zp_are_tensors=False,
+        has_mutation=False,
     ):
         """
         if bias is not None
@@ -1346,7 +1347,9 @@ class QLinearPointwiseBinaryPT2E(ExternKernelAlloc):
               fp32_output, binary_attr, aplha, unary_attr, unary_scalars, unary_algorithm]
         """
         self.has_bias = has_bias
+        self.idx_for_inplace_sum = -1
         self.x_scale_zp_are_tensors = x_scale_zp_are_tensors
+        self.has_mutation = has_mutation
         super().__init__(
             layout,
             inputs,
@@ -1388,6 +1391,16 @@ class QLinearPointwiseBinaryPT2E(ExternKernelAlloc):
                 c10::string_view unary_post_op,
                 torch::List<c10::optional<at::Scalar>> unary_post_op_args,
                 c10::string_view unary_post_op_algorithm)"""
+
+    def get_mutation_names(self):
+        return (
+            [self.inputs[self.idx_for_inplace_sum].get_name()]
+            if self.has_mutation
+            else []
+        )
+
+    def get_unbacked_symbol_defs(self) -> Set[sympy.Symbol]:
+        return set()
 
     def codegen(self, wrapper):
         # Parser the inputs and constant
@@ -1532,6 +1545,7 @@ class QLinearPointwiseBinaryPT2E(ExternKernelAlloc):
                 constant_args=constant_args,
                 has_bias=(bias is not None),
                 x_scale_zp_are_tensors=x_scale_zp_are_tensors,
+                has_mutation=True,
             )
             mark_node_as_mutating(packed, other)
             # Return other since it has been inplace changed.
