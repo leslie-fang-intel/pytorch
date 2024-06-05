@@ -215,6 +215,7 @@ extern "C"
         int64_t k_block_start = 0;
         int64_t k_block_end = K0_blocks;
     {%- endif %}
+        {{ micro_gemm.codegen_init(kernel) }}
         for (int64_t mc = m_block_start; mc < m_block_end; mc += Mc_blocks) {
             const int64_t m_start = mc * M0;
             const int64_t m_end = std::min((mc + Mc_blocks) * M0, M);
@@ -235,10 +236,10 @@ extern "C"
                     int64_t k_start = kc * K0;
                     int64_t k_end = std::min((kc + Kc_blocks) * K0, K);
                     {%- set tile_X = kernel.slice_nd(X, [("m_start", "m_end"), ("k_start", "k_end")]) %}
-                    {%- set tile_W_3d = kernel.slice_nd(W, [("k_start", "k_end"), ("nc", "nc + 1"), ()]) %}
-                    {%- set tile_W = kernel.view(
-                        tile_W_3d, ["k_end - k_start", "nc + 1 - nc", micro_gemm.register_blocking.block_n]
-                    ) %}
+
+                    {%- set tile_W_3d = kernel.slice_nd(W, [("nc", "nc + 1"), ("k_start", "k_end"), ()]) %}
+                    {%- set tile_W = kernel.view(tile_W_3d, ["k_end - k_start", micro_gemm.register_blocking.block_n]) %}
+                    
                     {%- if inp is not none and beta != 0 %}
                     // For int8, bias should be added after convert Y to FP32
                     {{ micro_gemm.codegen_call(kernel, tile_X, tile_W, acc, accum=False)|indent(20, false) }}
@@ -518,11 +519,11 @@ class CppPackedGemmTemplate(CppTemplate):
                     n % block_n == 0
                 ), f"The last dimension of W must be a multiple of {block_n}."
                 blocked_w = L.view(W, (k, n // block_n, block_n))
-                if not int8_gemm:
-                    blocked_w = L.permute(
-                        blocked_w,
-                        [1, 0, 2],
-                    )
+                # if not int8_gemm:
+                blocked_w = L.permute(
+                    blocked_w,
+                    [1, 0, 2],
+                )
                 blocked_w = ir.ExternKernel.realize_input(blocked_w)
                 blocked_w = ir.ExternKernel.require_contiguous(blocked_w)
                 if isinstance(blocked_w, ir.ReinterpretView):
@@ -539,20 +540,20 @@ class CppPackedGemmTemplate(CppTemplate):
             else:
                 k, n = list(W.shape)
 
-                blocked_w = W.reshape(k, n // block_n, block_n)
-                if not int8_gemm:
-                    blocked_w = blocked_w.transpose(0, 1).contiguous()
+                blocked_w = W.contiguous().reshape(k, n // block_n, block_n)
+                blocked_w = blocked_w.transpose(0, 1).contiguous()
 
                 # blocked_w = (
                 #     W.reshape(k, n // block_n, block_n).transpose(0, 1).contiguous()
                 # )
                 if micro_gemm.get_b_layout() != LayoutType.NORMAL:
+                    vnni_size = 4 if int8_gemm else 2
                     assert (
                         micro_gemm.get_b_layout() == LayoutType.VNNI2
                     ), "We only support VNNI2 for now"
-                    assert k % 2 == 0, "k should be even for VNNI2 layout"
+                    assert k % vnni_size == 0, "k should be even for VNNI2 layout"
                     blocked_w = (
-                        blocked_w.view(n // block_n, k // 2, 2, block_n)
+                        blocked_w.view(n // block_n, k // vnni_size, vnni_size, block_n)
                         .transpose(-1, -2)
                         .contiguous()
                         .view(n // block_n, k, block_n)

@@ -417,6 +417,11 @@ inline void {{kernel_name}}_kernel(
 
 # extra check for CppMicroGemmAMX
 def check_amx_extra(config, m, n, k, alpha, num_threads):
+    if config.input_dtype == torch.uint8:
+        if config.register_blocking.block_k > 16 or config.register_blocking.block_n > 16:
+            # we config tile_B cols max as 64 bytes, if block_k>16,
+            # 16*4(4 is VNNI layout of int8) is large than 64 bytes
+            return False
     return n % config.register_blocking.block_n == 0 and k % 2 == 0 and alpha == 1
 
 class CppMicroInt8Gemm(CppMicroGemm):
@@ -434,6 +439,7 @@ class CppMicroInt8Gemm(CppMicroGemm):
             "output_t": DTYPE_TO_CPP[self.output_dtype],
             "compute_t": DTYPE_TO_CPP[self.compute_dtype],
             "alpha": self.alpha,
+            "kernel_extra_args_declare": self.get_kernel_extra_args_declare(),
         }
 
 
@@ -663,7 +669,234 @@ inline void {{kernel_name}}_kernel(
 @register_micro_gemm(
     *generate_gemm_config(
         VecAMX,
-        [(32, 32, 32), (48, 16, 32), (16, 48, 32)],
+        [(32, 16, 16),],
+        input_dtype=torch.uint8,
+        output_dtype=torch.float,
+        compute_dtype=torch.int32,
+        extra_check=check_amx_extra,
+    ),
+)
+class CppMicroGemmInt8AMX(CppMicroInt8Gemm):
+    """
+    This class generates the code for micro gemm using Advanced Matrix eXtention (AMX)
+    instructions available in 4th generation Intel Xeon for compute.
+    It supports input types of torch.bfloat16 with fp32 output.
+    TODO(jgong5): support int8 data type.
+    """
+
+    DECLARE_KERNEL = r"""
+template <bool accum>
+inline void {{kernel_name}}(
+{%- if kernel_extra_args_declare %}
+    {{kernel_extra_args_declare}}
+{%- endif %}
+    const {{input_t}}* __restrict__ A,
+    const {{input2_t}}* __restrict__ B,
+    {{compute_t}}* __restrict__ C,
+    int64_t M,
+    int64_t N,
+    int64_t K,
+    int64_t lda,
+    int64_t ldb,
+    int64_t ldc
+)
+"""
+
+    TEMPLATE_ENTRY = r"""
+{{declare_kernel}} {
+    TORCH_CHECK(N % {{block_n}} == 0, "N dimension must be multiple of {{block_n}}");
+    TORCH_CHECK(K % 2 == 0, "K dimension must be multiple of 2");
+    // TODO(jgong5): loop unroll for M and N
+    for (int64_t m = 0; m < M; m += {{block_m}}) {
+        int64_t block_m = std::min<int64_t>(M - m, {{block_m}});
+        int64_t m_tail = m;
+        for (int64_t n = 0; n < N; n += {{block_n}}) {
+            {%- for num_rows in range(block_m, 0, -16) %}
+            {%- if num_rows != block_m %}
+            else
+            {%- endif %}
+            if (block_m >= {{num_rows}}) {
+                {{kernel_name}}_amx_kernel_{{num_rows}}_{{num_columns}}<accum>(
+                    amx_state,
+                    A + m * lda,
+                    B + n,
+                    C + m * ldc + n,
+                    K,
+                    lda,
+                    ldb,
+                    ldc,
+                    16
+                );
+                block_m -= {{num_rows}};
+                m_tail += {{num_rows}};
+            }
+            {%- endfor %}
+            if (block_m > 0) {
+                {{kernel_name}}_amx_kernel_16_{{num_columns}}<accum>(
+                    amx_state,
+                    A + m_tail * lda,
+                    B + n,
+                    C + m_tail * ldc + n,
+                    K,
+                    lda,
+                    ldb,
+                    ldc,
+                    block_m
+                );
+            }
+        }
+    }
+}
+"""
+
+    TEMPLATE_KERNEL = r"""
+template <bool accum>
+inline void {{kernel_name}}_amx_kernel_{{num_rows}}_{{num_columns}}(
+    AMXState& amx_state,
+    const {{input_t}}* __restrict__ A,
+    const {{input2_t}}* __restrict__ B,
+    {{compute_t}}* __restrict__ C,
+    int64_t K,
+    int64_t lda,
+    int64_t ldb,
+    int64_t ldc,
+    uint8_t tilecfg_rows
+) {
+    // TODO(jgong5): add prefetch hint for A, B, C
+    auto loadconfig = [](const amx_tilecfg& cfg) {
+        _tile_loadconfig(&cfg);
+    };
+    const auto last_k_offset = K / {{block_k}} * {{block_k}};
+    const auto tail_k_size = K - last_k_offset;
+    if C10_LIKELY (last_k_offset > 0) {
+        amx_state.configure(tilecfg_rows, {{block_k}}, {{num_rows}} / 16, {{num_columns}}, loadconfig);
+    } else {
+        amx_state.configure(tilecfg_rows, tail_k_size * sizeof({{input_t}}), {{num_rows}} / 16, {{num_columns}}, loadconfig);
+    }
+    auto load_c = [&]() {
+    {%- for tile_row in range(num_rows // 16) %}
+        {%- for tile_col in range(num_columns) %}
+        {%- set tile_idx = tile_row * num_columns + tile_col %}
+        _tile_loadd({{tile_idx}}, C + {{tile_row * 16}} * ldc + {{tile_col * 16}}, ldc * sizeof({{output_t}}));
+        {%- endfor %}
+    {%- endfor %}
+    };
+    auto zero_c = [&]() {
+    {%- for tile_row in range(num_rows // 16) %}
+        {%- for tile_col in range(num_columns) %}
+        {%- set tile_idx = tile_row * num_columns + tile_col %}
+        _tile_zero({{tile_idx}});
+        {%- endfor %}
+    {%- endfor %}
+    };
+
+    if constexpr (accum) {
+        load_c();
+    } else {
+        zero_c();
+    }
+
+    auto compute = [&](int k) {
+    {%- set tile_offset_a = num_rows // 16 * num_columns %}
+    {%- set tile_offset_b = tile_offset_a + num_rows // 16 %}
+    {%- for tile_row in range(num_rows // 16) %}
+        {%- for tile_col in range(num_columns) %}
+        {%- set tile_idx_a = tile_offset_a + tile_row %}
+        {%- set tile_idx_b = tile_offset_b + tile_col %}
+        {%- set tile_idx_c = tile_row * num_columns + tile_col %}
+        {%- if tile_col == 0 %}
+        _tile_loadd({{tile_idx_a}}, A + {{tile_row * 16}} * lda + k, lda * sizeof({{input_t}}));
+        {%- endif %}
+        {%- if tile_row == 0 %}
+        _tile_loadd({{tile_idx_b}}, B + k * ldb + {{tile_col * 16 * 2}}, ldb * 4 * sizeof({{input_t}}));
+        {%- endif %}
+        // _tile_dpbf16ps({{tile_idx_c}}, {{tile_idx_a}}, {{tile_idx_b}});
+        _tile_dpbusd({{tile_idx_c}}, {{tile_idx_a}}, {{tile_idx_b}});
+        {%- endfor %}
+    {%- endfor %}
+    };
+
+    {{kernel.unroll_pragma(4)}}
+    for (int k = 0; k < last_k_offset; k += {{block_k}}) {
+        compute(k);
+    }
+
+    auto store_c = [&]() {
+    // store to C
+    {%- for tile_row in range(num_rows // 16) %}
+        {%- for tile_col in range(num_columns) %}
+        {%- set tile_idx = tile_row * num_columns + tile_col %}
+        _tile_stored({{tile_idx}}, C + {{tile_row * 16}} * ldc + {{tile_col * 16}}, ldc * sizeof({{output_t}}));
+        {%- endfor %}
+    {%- endfor %}
+    };
+
+    // TODO(jgong5): move tail k computation to separate loopnest to save tile configuration overhead
+    if C10_UNLIKELY (tail_k_size > 0) {
+        if C10_LIKELY (last_k_offset > 0) {
+            store_c();
+            amx_state.configure(tilecfg_rows, tail_k_size * sizeof({{input_t}}), {{num_rows}} / 16, {{num_columns}}, loadconfig);
+            load_c();
+        }
+        compute(last_k_offset);
+    }
+
+    store_c();
+}
+"""
+
+    def codegen_define(self, kernel: CppTemplateKernel) -> str:
+        block_m, block_n, block_k = self.register_blocking
+        assert block_m % 16 == 0, "Only support block_m % 16 == 0 for AMX"
+        assert block_n % 16 == 0, "Only support block_n % 16 == 0 for AMX"
+        assert block_k == 16, "Only support block_k = 16 for AMX int8"
+        num_columns = block_n // 16
+        options = {
+            "declare_kernel": self.get_kernel_declaration(),
+            "kernel": kernel,
+            "block_m": block_m,
+            "block_n": block_n,
+            "block_k": block_k,
+            "num_columns": num_columns,
+            **self.get_common_options(),
+        }
+        result = ""
+        for num_rows in range(block_m, 0, -16):
+            amx_kernel_options = {**options, "num_rows": num_rows}
+            result += KernelTemplate._template_from_string(self.TEMPLATE_KERNEL).render(
+                amx_kernel_options
+            )
+        result += KernelTemplate._template_from_string(self.TEMPLATE_ENTRY).render(
+            options
+        )
+        return result
+
+    def codegen_init(
+        self,
+        kernel: CppTemplateKernel,
+    ) -> str:
+        return "AMXState amx_state;"
+
+    def codegen_finalize(
+        self,
+        kernel: CppTemplateKernel,
+    ) -> str:
+        return "amx_state.release([]() { _tile_release(); });"
+
+    def get_kernel_extra_args_declare(self) -> str:
+        return "AMXState& amx_state,"
+
+    def get_kernel_extra_args(self) -> str:
+        return "amx_state,"
+
+    def get_b_layout(self):
+        return LayoutType.VNNI2
+
+
+@register_micro_gemm(
+    *generate_gemm_config(
+        VecAMX,
+        [(32, 32, 32),],
         input_dtype=torch.bfloat16,
         output_dtype=torch.float,
         extra_check=check_amx_extra,
