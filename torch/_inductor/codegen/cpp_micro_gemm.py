@@ -418,7 +418,8 @@ inline void {{kernel_name}}_kernel(
 # extra check for CppMicroGemmAMX
 def check_amx_extra(config, m, n, k, alpha, num_threads):
     if config.input_dtype == torch.uint8:
-        if config.register_blocking.block_k > 16 or config.register_blocking.block_n > 16:
+        # if config.register_blocking.block_k > 16 or config.register_blocking.block_n > 16:
+        if config.register_blocking.block_n > 16:
             # we config tile_B cols max as 64 bytes, if block_k>16,
             # 16*4(4 is VNNI layout of int8) is large than 64 bytes
             return False
@@ -669,7 +670,7 @@ inline void {{kernel_name}}_kernel(
 @register_micro_gemm(
     *generate_gemm_config(
         VecAMX,
-        [(32, 16, 16),],
+        [(32, 16, 32),],
         input_dtype=torch.uint8,
         output_dtype=torch.float,
         compute_dtype=torch.int32,
@@ -849,7 +850,7 @@ inline void {{kernel_name}}_amx_kernel_{{num_rows}}_{{num_columns}}(
         block_m, block_n, block_k = self.register_blocking
         assert block_m % 16 == 0, "Only support block_m % 16 == 0 for AMX"
         assert block_n % 16 == 0, "Only support block_n % 16 == 0 for AMX"
-        assert block_k == 16, "Only support block_k = 16 for AMX int8"
+        assert block_k == 32, "Only support block_k = 32 for AMX int8"
         num_columns = block_n // 16
         options = {
             "declare_kernel": self.get_kernel_declaration(),
