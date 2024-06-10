@@ -549,11 +549,26 @@ void le_kernel(TensorIteratorBase& iter) {
 void gt_kernel(TensorIteratorBase& iter) {
   // See Note [special-case bool outputs]
   if (iter.dtype() == ScalarType::Bool) {
-    AT_DISPATCH_ALL_TYPES_AND3(
-        kBool, kBFloat16, kHalf, iter.common_dtype(), "gt_cpu", [&]() {
+    auto dtype = iter.common_dtype();
+    if (iter.is_scalar(2) && iter.data_ptr(2) != nullptr && at::isReducedFloatingType(dtype)) {
+        AT_DISPATCH_REDUCED_FLOATING_TYPES(dtype, "gt_cpu", [&]() {
+          using opmath_t = at::opmath_type<scalar_t>;
+          opmath_t b = iter.original_scalar_value<opmath_t>(2);
+          iter.remove_operand(2);
           cpu_kernel(
-              iter, [](scalar_t a, scalar_t b) -> bool { return a > b; });
+              iter, [=](scalar_t a) -> bool {
+                return static_cast<opmath_t>(a) > b;
+              }
+          );
         });
+    } else {
+        AT_DISPATCH_ALL_TYPES_AND3(
+          kBool, kBFloat16, kHalf, iter.common_dtype(), "gt_cpu", [&]() {
+            cpu_kernel(
+                iter, [](scalar_t a, scalar_t b) -> bool { return a > b; }
+            );
+        });
+    }
   } else {
     AT_DISPATCH_ALL_TYPES_AND2(
         kBFloat16, kHalf, iter.common_dtype(), "gt_cpu", [&]() {
