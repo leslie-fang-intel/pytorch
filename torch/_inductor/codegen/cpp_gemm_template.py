@@ -21,7 +21,11 @@ GEMM_TEMPLATE = r"""
 {{micro_gemm.codegen_define(kernel)}}
 
 {%- if x_scale is not none %}
+{%- if is_int8_binary_with_bias %}
+{%- set kernel_args = {"X": X, "x_scale": x_scale, "x_zp": x_zp, "W": W, "w_scale": w_scale, "w_zp": w_zp, "X2": X2, "inp": inp,} %}
+{%- else %}
 {%- set kernel_args = {"X": X, "x_scale": x_scale, "x_zp": x_zp, "W": W, "w_scale": w_scale, "w_zp": w_zp, "inp": inp,} %}
+{%- endif %}
 {%- else %}
 {%- set kernel_args = {"X": X, "W": W, "inp": inp} %}
 {%- endif %}
@@ -442,13 +446,20 @@ class CppPackedGemmTemplate(CppTemplate):
         x_zp = None
         w_scale = None
         w_zp = None
+        is_int8_binary_with_bias = False
         if int8_gemm:
             X, W = self.input_nodes[0], self.input_nodes[3]
             x_scale = self.input_nodes[1]
             x_zp = self.input_nodes[2]
             w_scale = self.input_nodes[4]
             w_zp = self.input_nodes[5]
-            inp = self.input_nodes[6] if self.has_bias else None
+            inp = None
+            if self.has_bias:
+                if len(self.input_nodes) > 8:
+                    # Case of int8 gemm with binary fusion and with bias
+                    is_int8_binary_with_bias = True
+                # Note that X2 is at front of inp in param list
+                inp = self.input_nodes[7 if is_int8_binary_with_bias else 6]
             Y = self.output_node
         else:
             X, W = self.input_nodes[0], self.input_nodes[1]
@@ -548,5 +559,7 @@ class CppPackedGemmTemplate(CppTemplate):
             w_scale=w_scale,
             w_zp=w_zp,
             acc_buf_dtype=torch.int32 if int8_gemm else torch.float,
+            is_int8_binary_with_bias=is_int8_binary_with_bias,
+            X2=self.input_nodes[6] if is_int8_binary_with_bias else None,
         )
         return self._template_from_string(GEMM_TEMPLATE).render(**options)
