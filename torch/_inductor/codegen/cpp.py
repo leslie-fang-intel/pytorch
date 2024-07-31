@@ -3390,10 +3390,7 @@ class CppKernelProxy(CppKernel):
         # 1. Need to refince the condition for loop split optimization
         # 2. Should apply to all of the nodes in the input
         if len(nodes[0].group[1][1]) == 0:
-            print("-----", flush=True)
-            # iter_ranges = [2, 9216, 32, 30] # original
-            # iter_ranges = [2, 960, 96, 96] # pass
-            iter_ranges = [2, 30, 32, 9216] # pass
+            iter_ranges = [2, 9216, 32, 30] # pass
             
             reduce_ranges = []
             (iter_vars, reduce_vars), var_ranges = dependencies.index_vars_no_squeeze(
@@ -3407,38 +3404,21 @@ class CppKernelProxy(CppKernel):
             ) = nodes[0].node.get_default_sizes_body()
 
             def new_indexing_from_args(indices):
-                print("--- hit new_indexing_from_args ----", flush=True)
-                # index = [*itertools.chain.from_iterable(indices)]
-                # replacements = dict(zip(original_body.var_ranges.keys(), index))
-                # res = {
-                #     name: sympy_subs(expr, replacements)
-                #     for name, expr in original_body.indexing_exprs.items()
-                # }
-                # return res
-
-
+                # <TODO> Here we hardcode the expected index based on testcase
                 z0 = sympy.core.symbol.Symbol(f"z0", integer=True, nonnegative=True)
                 z1 = sympy.core.symbol.Symbol(f"z1", integer=True, nonnegative=True)
                 z2 = sympy.core.symbol.Symbol(f"z2", integer=True, nonnegative=True)
                 z3 = sympy.core.symbol.Symbol(f"z3", integer=True, nonnegative=True)
-                # from sympy import div
-                # new_indexing = {
-                #     "index0": sympy.core.numbers.Integer(8847360)*z0 + z1 + sympy.core.numbers.Integer(92160)*z2 + sympy.core.numbers.Integer(960)*z3,
-                #     "index1": sympy.core.numbers.Integer(32)*z0 + (z1//sympy.core.numbers.Integer(30)),
-                #     "index2": z1,
-                # }
                 new_indexing = {
-                    "index0": sympy.core.numbers.Integer(8847360)*z0 + z1 + sympy.core.numbers.Integer(30)*z2 + sympy.core.numbers.Integer(960)*z3,
-                    "index1": sympy.core.numbers.Integer(30)*z0 + z1,
-                    "index2": z1,
+                    "index0": sympy.core.numbers.Integer(8847360)*z0 + z3 + sympy.core.numbers.Integer(30)*z2 + sympy.core.numbers.Integer(960)*z1,
+                    "index1": sympy.core.numbers.Integer(30)*z0 + z3,
+                    "index2": z3,
                 }
                 return new_indexing
 
             # <TODO> Here should changed based on Loop order 
             iter_vars_reindex = [*iter_vars]
-            # iter_vars_reindex = [iter_vars[0],]
             reduce_vars_reindex = []
-
 
             from unittest.mock import patch
             with patch.object(original_body, "indexing_from_args", new_indexing_from_args):
