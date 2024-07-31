@@ -3389,51 +3389,132 @@ class CppKernelProxy(CppKernel):
         # <TODO>: We hardcode the condition for POC
         # 1. Need to refince the condition for loop split optimization
         # 2. Should apply to all of the nodes in the input
-        if len(nodes[0].group[1][1]) == 0:
-            iter_ranges = [2, 9216, 32, 30] # pass
+        if (
+            all(len(node.group[1][1]) == 0 for node in nodes)  # No reduce
+            # <TODO> How about fused scheduler nodes? I guess we should apply the split loop to all the scheduler nodes inside fused scheduler node
+            and len(nodes) == 1
+        ):
+
+            def split_loop(snode):
+                (
+                    (original_index_size, original_reduce_size),
+                    original_body,
+                    (original_index_vars, original_reduce_vars),
+                ) = snode.node.get_default_sizes_body() 
+
+                if not (
+                    len(original_index_size) == 4  # Typical of 4D with channel last
+                    and len(original_reduce_size) == 0
+                    and len([*snode._body.var_ranges.values()]) == 3  # 2 dim has been fused, which we will do split
+                ):
+                    # Typical of 4D with channel last
+                    return snode
+                
+                # [2, 9216, 960]
+                current_iter_ranges = [*snode._body.var_ranges.values()]
+                current_iter_vars = [*snode._body.var_ranges.keys()]
+
+
+                # Check the index: The split dim has a divider at 1 index_expr
+                split_var = None
+                split_number = None
+                divide_index_name = None
+
+                def has_div(expr, name):
+                    if isinstance(expr, torch.utils._sympy.functions.FloorDiv):
+                        nonlocal split_var
+                        nonlocal split_number
+                        nonlocal divide_index_name
+                        split_var = expr.args[0]
+                        split_number = expr.args[1]
+                        divide_index_name = name
+                        return True
+                    return any(has_div(arg, name) for arg in expr.args)
+
+                if not any(has_div(expr, name) for name, expr in snode._body.indexing_exprs.items()):
+                    return snode
+
+                if not (
+                    isinstance(split_number, sympy.core.numbers.Integer)
+                    and isinstance(split_var, sympy.core.symbol.Symbol)
+                    and divide_index_name is not None
+                ):
+                    return snode
+
+                # Check Index2: The split dim is contiguous is contiguous at all other index_expr            
+                if not all(
+                    stride_at_vec_range(expr, split_var, cpu_vec_isa.pick_vec_isa().nelements(torch.float32)) == 1
+                    for name, expr in snode._body.indexing_exprs.items()
+                    if name != divide_index_name
+                ):
+                    return snode
+                
+                split_idx = current_iter_vars.index(split_var)
+                assert split_idx < len(current_iter_vars)
+
+                iter_ranges = []
+                for idx in range(len(current_iter_ranges)):
+                    if idx != split_idx:
+                        iter_ranges.append(current_iter_ranges[idx])
+                    else:
+                        val_to_split = current_iter_ranges[idx]
+                        iter_ranges.append(val_to_split // split_number)
+                        iter_ranges.append(split_number)
+                
+                print("iter_ranges is: {}".format(iter_ranges), flush=True)
+                # assert iter_ranges == [2, 9216, 32, 30]
+
+                reduce_ranges = []
+                (iter_vars, reduce_vars), var_ranges = dependencies.index_vars_no_squeeze(
+                    iter_ranges, reduce_ranges, prefix="z"
+                )
+
+                # def new_indexing_from_args_hard_code(indices):
+                #     # <TODO> Here we hardcode the expected index based on testcase
+                #     z0 = sympy.core.symbol.Symbol(f"z0", integer=True, nonnegative=True)
+                #     z1 = sympy.core.symbol.Symbol(f"z1", integer=True, nonnegative=True)
+                #     z2 = sympy.core.symbol.Symbol(f"z2", integer=True, nonnegative=True)
+                #     z3 = sympy.core.symbol.Symbol(f"z3", integer=True, nonnegative=True)
+                #     new_indexing = {
+                #         "index0": sympy.core.numbers.Integer(8847360)*z0 + sympy.core.numbers.Integer(960)*z1 + sympy.core.numbers.Integer(30)*z2 + z3,
+                #         "index1": sympy.core.numbers.Integer(32)*z0 + z2, # we ignore z3 // 30, since z3 range is among 0-29
+                #         "index2": z2 * 30 + z3,
+                #     }
+                #     return new_indexing
+                
+                def new_indexing_from_args(indices):
+                    # Replace z2 with 30*z2 + z3
+                    # Add a assert, so we can hardcode z3
+                    assert len([*snode._body.var_ranges.values()]) == 3
+                    z3 = sympy.core.symbol.Symbol(f"z3", integer=True, nonnegative=True)
+                    replacements = {split_var: split_var*split_number + z3}
+                    return {
+                        name: sympy_subs(expr, replacements)
+                        for name, expr in snode._body.indexing_exprs.items()
+                    }
+
+                # <TODO> Here should changed based on Loop order
+                # Here decide the final loop order
+                iter_vars_reindex = [*iter_vars]
+                reduce_vars_reindex = []
+
+                from unittest.mock import patch
+                with patch.object(original_body, "indexing_from_args", new_indexing_from_args):
+                    snode._body = ir.LoopBody(
+                        original_body, [iter_vars_reindex, reduce_vars_reindex], var_ranges
+                    )
+                snode._sizes = (iter_ranges, reduce_ranges)
+
+                group_fn = snode.scheduler.get_backend(snode.node.get_device()).group_fn
+                snode.group = (snode.node.get_device(), group_fn(snode._sizes))
+                snode.set_read_writes(
+                    dependencies.extract_read_writes(
+                        snode._body, *snode._sizes, normalize=True
+                    )
+                )
+                return snode
             
-            reduce_ranges = []
-            (iter_vars, reduce_vars), var_ranges = dependencies.index_vars_no_squeeze(
-                iter_ranges, reduce_ranges, prefix="z"
-            )
-
-            (
-                _,
-                original_body,
-                _,
-            ) = nodes[0].node.get_default_sizes_body()
-
-            def new_indexing_from_args(indices):
-                # <TODO> Here we hardcode the expected index based on testcase
-                z0 = sympy.core.symbol.Symbol(f"z0", integer=True, nonnegative=True)
-                z1 = sympy.core.symbol.Symbol(f"z1", integer=True, nonnegative=True)
-                z2 = sympy.core.symbol.Symbol(f"z2", integer=True, nonnegative=True)
-                z3 = sympy.core.symbol.Symbol(f"z3", integer=True, nonnegative=True)
-                new_indexing = {
-                    "index0": sympy.core.numbers.Integer(8847360)*z0 + z3 + sympy.core.numbers.Integer(30)*z2 + sympy.core.numbers.Integer(960)*z1,
-                    "index1": sympy.core.numbers.Integer(30)*z0 + z3,
-                    "index2": z3,
-                }
-                return new_indexing
-
-            # <TODO> Here should changed based on Loop order 
-            iter_vars_reindex = [*iter_vars]
-            reduce_vars_reindex = []
-
-            from unittest.mock import patch
-            with patch.object(original_body, "indexing_from_args", new_indexing_from_args):
-                nodes[0]._body = ir.LoopBody(
-                    original_body, [iter_vars_reindex, reduce_vars_reindex], var_ranges
-                )
-            nodes[0]._sizes = (iter_ranges, reduce_ranges)
-
-            group_fn = nodes[0].scheduler.get_backend(nodes[0].node.get_device()).group_fn
-            nodes[0].group = (nodes[0].node.get_device(), group_fn(nodes[0]._sizes))
-            nodes[0].set_read_writes(
-                dependencies.extract_read_writes(
-                    nodes[0]._body, *nodes[0]._sizes, normalize=True
-                )
-            )
+            nodes[0] = split_loop(nodes[0])
 
 
 
