@@ -37,7 +37,13 @@ GEMM_TEMPLATE = r"""
 {%- if x_scale is not none %}
 {%- set kernel_args = {"X": X, "W": W, "inp": inp, "x_scale": x_scale, "x_zp": x_zp, "w_scale": w_scale, "w_zp": w_zp,} %}
 {%- else %}
+
+{%- if qGroupSize is not none %}
+{%- set kernel_args = {"X": X, "W": W, "qGroupSize": qGroupSize, "ScaleZP": ScaleZP} %}
+{%- else %}
 {%- set kernel_args = {"X": X, "W": W, "inp": inp} %}
+{%- endif %}
+
 {%- endif %}
 
 extern "C" {{export_declaration}}
@@ -142,11 +148,24 @@ extern "C" {{export_declaration}}
                     {%- set tile_X = kernel.slice_nd(X, [("m_start", "m_end"), ("k_start", "k_end")]) %}
                     {%- set tile_W_3d = kernel.slice_nd(W, [("nc", "nc + 1"), ("k_start", "k_end"), ()]) %}
                     {%- set tile_W = kernel.view(tile_W_3d, ["k_end - k_start", micro_gemm.register_blocking.block_n]) %}
+                    
+                    {%- if qGroupSize is not none %}
+                    if (kc == k_block_start) {
+                        {%- set dequant_buf = kernel.local_buffers[acc_buf_name] %}
+                        {{ micro_gemm.codegen_call(kernel, tile_X, tile_W, acc, accum=False, int4=True)|indent(24, false) }}
+                    } else {
+                        {{ micro_gemm.codegen_call(kernel, tile_X, tile_W, acc, accum=True, int4=True)|indent(24, false) }}
+                    }
+
+                    {%- else %}
                     if (kc == k_block_start) {
                         {{ micro_gemm.codegen_call(kernel, tile_X, tile_W, acc, accum=False)|indent(24, false) }}
                     } else {
                         {{ micro_gemm.codegen_call(kernel, tile_X, tile_W, acc, accum=True)|indent(24, false) }}
                     }
+                    
+                    {%- endif %}
+                    
                 }
                 {%- if maybe_k_slicing %}
                 if (num_k_slices > 1) {
@@ -448,6 +467,36 @@ class CppPackedGemmTemplate(CppTemplate):
         input_indices=None,
         epilogue_creator: Optional[Callable[[ir.Buffer], ir.Pointwise]] = None,
     ):
+
+        def is_bf16_int4_gemm(act, weight, tansposed=False):
+            # N * K if tansposed==False
+            # K * N if tansposed==True
+            bf16_int4 = False
+            if isinstance(weight, ir.IRNode):
+                if (
+                    act.get_dtype() == torch.bfloat16
+                    and weight.get_dtype() == torch.int32
+                    and act.get_size()[-1] // 8 == weight.get_size()[-2 if tansposed else -1]
+                ):
+                    bf16_int4 = True
+                elif (
+                    act.get_dtype() == torch.bfloat16
+                    and weight.get_dtype() == torch.uint8
+                    and act.get_size()[-1] // 2 == weight.get_size()[-2 if tansposed else -1]
+                ):
+                    bf16_int4 = True
+            else:
+                if (
+                    act.dtype == torch.bfloat16
+                    and weight.dtype == torch.int32
+                ):
+                    bf16_int4 = True
+
+            return bf16_int4
+        
+        bf16_int4 = is_bf16_int4_gemm(input_nodes[0], input_nodes[1])
+        print("bf16_int4 is: {}".format(bf16_int4), flush=True)
+
         if input_indices is None:
             input_indices = list(range(len(input_nodes)))
 
@@ -473,15 +522,21 @@ class CppPackedGemmTemplate(CppTemplate):
             if isinstance(inputs[1], torch.Tensor):
                 W = inputs[1]
                 new_inputs[1] = W.to_dense() if W.is_mkldnn else W
+                # if is_bf16_int4_gemm(inputs[0], inputs[1]):
+                #     inner_k_tiles = 8
+                #     K0 = inputs[0].get_size()[-1]
+                #     new_inputs[1] = torch.ops.aten._convert_weight_to_int4unpack(inputs[1], inner_k_tiles, K0)
             return new_inputs, layout_or_out
 
         def normalize_shapes(inputs, layout_or_out):
             if not trans_w:
                 return inputs, layout_or_out
+            
+            bf16_int4 = is_bf16_int4_gemm(inputs[0], inputs[1])
             new_inputs = list(inputs)
             X = inputs[0]
             W = inputs[1]
-            B = inputs[2] if len(inputs) > 2 else None
+            B = inputs[2] if (len(inputs) > 2 and not bf16_int4) else None
             if isinstance(W, ir.IRNode):
                 if trans_w:
                     if not isinstance(W, ir.TensorBox):
@@ -509,7 +564,7 @@ class CppPackedGemmTemplate(CppTemplate):
         new_inputs, _ = normalize_shapes(
             *maybe_to_dense(*reorder_and_filter(input_nodes, layout))
         )
-        m, n, k, *_ = mm_args(new_inputs[0], new_inputs[1])
+        m, n, k, *_ = mm_args(new_inputs[0], new_inputs[1], use_4x8_dim=True if bf16_int4 else False)
         output_dtype, compute_dtype = get_gemm_template_output_and_compute_dtype(
             new_inputs[0].get_dtype()
         )
@@ -519,7 +574,7 @@ class CppPackedGemmTemplate(CppTemplate):
             n,
             k,
             input_dtype=new_inputs[0].get_dtype(),
-            input2_dtype=new_inputs[1].get_dtype(),
+            input2_dtype=new_inputs[0].get_dtype() if bf16_int4 else new_inputs[1].get_dtype(),
             output_dtype=output_dtype,
             compute_dtype=compute_dtype,
             alpha=alpha,
@@ -534,25 +589,60 @@ class CppPackedGemmTemplate(CppTemplate):
             new_inputs = list(inputs)
             blocked_w: Union[ir.IRNode, torch.Tensor] = W
             if isinstance(W, ir.IRNode):
-                new_size = [padded_n // block_n, k, block_n]
-                blocked_w = ir.Buffer(
-                    W.get_name(),  # Borrow the registered buffer name
-                    ir.FixedLayout(
-                        W.get_device(),
-                        W.get_dtype(),
-                        new_size,
-                        ir.FlexibleLayout.contiguous_strides(new_size),
-                        0,
-                    ),
-                )
+                if is_bf16_int4_gemm(inputs[0], inputs[1]):
+                    new_size = [padded_n // block_n, k//8, block_n]
+
+                    blocked_w = ir.Buffer(
+                        W.get_name(),  # Borrow the registered buffer name
+                        ir.FixedLayout(
+                            W.get_device(),
+                            W.get_dtype(),
+                            new_size,
+                            ir.FlexibleLayout.contiguous_strides(new_size),
+                            0,
+                        ),
+                    )
+                else:
+                    new_size = [padded_n // block_n, k, block_n]
+                    blocked_w = ir.Buffer(
+                        W.get_name(),  # Borrow the registered buffer name
+                        ir.FixedLayout(
+                            W.get_device(),
+                            W.get_dtype(),
+                            new_size,
+                            ir.FlexibleLayout.contiguous_strides(new_size),
+                            0,
+                        ),
+                    )
             else:
-                blocked_w = (
-                    torch.nn.functional.pad(W, (0, padded_n - n))
-                    .reshape(k, padded_n // block_n, block_n)
-                    .transpose(0, 1)
-                    .contiguous()
-                )
-                if micro_gemm.get_b_layout() != LayoutType.NORMAL:
+                if W.dtype == torch.int32:
+                    
+                    inner_k_tiles = 8
+                    # W is packed and with int32 data type
+                    # unpack and with int32 data type N * K//8
+                    K0 = inputs[0].size()[-1] if isinstance(inputs[0], torch.Tensor) else inputs[0].get_size()[-1]
+                    plain_W = torch.ops.aten._convert_weight_to_int4unpack(W, inner_k_tiles, K0)
+                    # K//8, N
+                    plain_W = plain_W.transpose(0, 1)
+
+                    # padded_n // block_n, K//8, block_n
+                    blocked_w = (
+                        torch.nn.functional.pad(plain_W, (0, padded_n - n))
+                        .reshape(k//8, padded_n // block_n, block_n)
+                        .transpose(0, 1)
+                        .contiguous()
+                    )    
+                else:
+                    blocked_w = (
+                        torch.nn.functional.pad(W, (0, padded_n - n))
+                        .reshape(k, padded_n // block_n, block_n)
+                        .transpose(0, 1)
+                        .contiguous()
+                    )
+                if (
+                    micro_gemm.get_b_layout() != LayoutType.NORMAL
+                    and not (W.dtype == torch.int32)
+                ):
                     layout_str = (
                         "VNNI4"
                         if micro_gemm.get_b_layout() == LayoutType.VNNI4
@@ -658,11 +748,34 @@ class CppPackedGemmTemplate(CppTemplate):
     ) -> str:
         assert len(self.input_nodes) >= 2
 
+
+        def is_bf16_int4_gemm(act, weight, tansposed=False):
+            # N * K if tansposed==False
+            # K * N if tansposed==True
+            bf16_int4 = False
+            if (
+                act.get_dtype() == torch.bfloat16
+                and weight.get_dtype() == torch.int32
+                # and act.get_size()[-1] // 8 == weight.get_size()[-2 if tansposed else -1]
+            ):
+                bf16_int4 = True
+            # elif (
+            #     act.get_dtype() == torch.bfloat16
+            #     and weight.get_dtype() == torch.uint8
+            #     # and act.get_size()[-1] // 2 == weight.get_size()[-2 if tansposed else -1]
+            # ):
+            #     bf16_int4 = True
+            return bf16_int4
+        
+        bf16_int4_gemm = is_bf16_int4_gemm(self.input_nodes[0], self.input_nodes[1])
+
         int8_gemm = self.input_nodes[0].get_dtype() == torch.uint8
         x_scale = None
         x_zp = None
         w_scale = None
         w_zp = None
+        qGroupSize = None
+        ScaleZP = None
         if int8_gemm:
             X, W = self.input_nodes[0], self.input_nodes[1]
             bias_idx = 2 if self.has_bias else 1
@@ -672,6 +785,11 @@ class CppPackedGemmTemplate(CppTemplate):
             w_scale = self.input_nodes[bias_idx + 3]
             w_zp = self.input_nodes[bias_idx + 4]
             Y = self.output_node
+        elif bf16_int4_gemm:
+            X, W = self.input_nodes[0], self.input_nodes[1]
+            qGroupSize, ScaleZP = self.input_nodes[2], self.input_nodes[3]
+            Y = self.output_node
+            inp = None
         else:
             X, W = self.input_nodes[0], self.input_nodes[1]
             Y = self.output_node
@@ -778,7 +896,7 @@ class CppPackedGemmTemplate(CppTemplate):
             self.n,
             self.k,
             input_dtype=X.get_dtype(),
-            input2_dtype=W.get_dtype(),
+            input2_dtype=X.get_dtype() if bf16_int4_gemm else W.get_dtype(),
             output_dtype=output_dtype,
             compute_dtype=compute_dtype,
             alpha=self.alpha,
@@ -819,6 +937,8 @@ class CppPackedGemmTemplate(CppTemplate):
             w_zp=w_zp,
             acc_buf_dtype=torch.int32 if int8_gemm else torch.float,
             DTYPE_TO_CPP=DTYPE_TO_CPP,
+            qGroupSize=qGroupSize,
+            ScaleZP=ScaleZP,
         )
         with contextlib.ExitStack() as stack:
             for buf in fake_buffers:

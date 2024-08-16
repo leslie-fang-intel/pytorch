@@ -193,6 +193,9 @@ class CppTemplateKernel(CppKernel):
         numel = f"{cexpr_index(buf.get_numel())}"
         return f"if (_{name} == nullptr) {{ _{name} = std::make_unique<{ctype}[]>({numel}); {name} = _{name}.get(); }}"
 
+    # def dequant(self, name):
+    #     return f"name; // hhh"
+
     def release_buffer(self, name):
         """Codegen the code to release the ownership of a local buffer to others"""
         assert name in self.local_buffers

@@ -3493,13 +3493,23 @@ Tensor _convert_weight_to_int4unpack_cpu(
   std::cout<<"---- K is: "<<K<<std::endl;
 
   auto weight_unpacked = at::empty(
-      {N, K/2},
-      at::TensorOptions().dtype(at::kByte));
+      {N, K/8},
+      at::TensorOptions().dtype(at::kInt));
 
   weight_to_int4unpack_stub(kCPU, weight_packed, weight_unpacked, N, K);
 
   return weight_unpacked;
 }
+Tensor _weight_int4pack_mm_tensor_cpu(
+    const Tensor& A,
+    const Tensor& B,
+    const Tensor& qGroupSize,
+    const Tensor& qScaleAndZeros) {
+    return _weight_int4pack_mm_cpu(
+        A, B, qGroupSize.item<int64_t>(), qScaleAndZeros
+    );
+}
+
 
 Tensor _weight_int4pack_mm_cpu(
     const Tensor& A,

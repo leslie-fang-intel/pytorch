@@ -1205,11 +1205,24 @@ def use_cpp_packed_gemm_template(layout, mat1, mat2, mat2_transposed=False):
     from .codegen.cpp_utils import get_gemm_template_output_and_compute_dtype
     from .kernel.mm_common import mm_args
 
+    bf16_int4 = False
+    if (
+        mat1.get_dtype() == torch.bfloat16
+        and mat2.get_dtype() == torch.int32
+        and mat2_transposed == True
+        and mat1.get_size()[-1] // 8 == mat2.get_size()[-1]
+    ):
+        bf16_int4 = True
+    
+    print("bf16_int4 is: {}".format(bf16_int4), flush=True)
+
     if not _use_template_for_cpu(layout) or not _use_autotune_backend("CPP"):
         return False
 
     if not config.cpp.weight_prepack:
         return False
+    
+
 
     int8_gemm = mat1.get_dtype() == torch.uint8
     layout_dtypes = [torch.float32, torch.bfloat16, torch.half, torch.uint8]
@@ -1218,6 +1231,7 @@ def use_cpp_packed_gemm_template(layout, mat1, mat2, mat2_transposed=False):
         mat2,
         out_dtype=layout.dtype if int8_gemm else None,
         mat2_transposed=mat2_transposed,
+        use_4x8_dim=bf16_int4,
     )
 
     # TODO(jgong5): support dynamic shapes for n or k
@@ -1233,7 +1247,7 @@ def use_cpp_packed_gemm_template(layout, mat1, mat2, mat2_transposed=False):
         n,
         k,
         input_dtype=mat1.get_dtype(),
-        input2_dtype=mat2.get_dtype(),
+        input2_dtype=mat1.get_dtype() if bf16_int4 else mat2.get_dtype(),
         output_dtype=output_dtype,
         num_threads=parallel_num_threads(),
     )

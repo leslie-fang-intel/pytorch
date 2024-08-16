@@ -22,6 +22,10 @@ aten__weight_int8pack_mm = ExternKernelChoice(
     torch._weight_int8pack_mm, "at::_weight_int8pack_mm", has_out_variant=False
 )
 
+aten__weight_int4pack_mm = ExternKernelChoice(
+    torch._weight_int4pack_mm, "at::_weight_int4pack_mm", has_out_variant=False
+)
+
 
 quantized = torch.ops.quantized
 _quantized = torch.ops._quantized
@@ -89,4 +93,76 @@ def register_woq_mm_ops():
 
         return autotune_select_algorithm(
             "_weight_int8pack_mm", choices, [mat1, mat2, scale], aten_layout
+        )
+
+    @register_lowering(aten._weight_int4pack_mm, type_promotion_kind=None)
+    def int4pack_mm(input, weight, qGroupSize, qScaleAndZeros, *, layout=None):
+
+        from . import ir
+        from .virtualized import ops, V
+        from .lowering import (
+            to_dtype,
+            view,
+        )
+        # weight has been packed into a specific layout....
+        plain_weight = view(weight, [-1, input.get_size()[-1] // 8])
+        _, _, _, layout, mat1, mat2 = mm_args(
+            input, plain_weight, layout=layout, mat2_transposed=True, use_4x8_dim=True
+        )
+        assert (
+            mat1.get_dtype() in [torch.bfloat16, torch.float16, torch.float]
+            and mat2.get_dtype() == torch.int32
+        )
+        aten_layout = layout
+
+        if not isinstance(qGroupSize, ir.TensorBox):
+            # assert type(qGroupSize) == long
+            qGroupSize = V.graph.add_tensor_constant(
+                torch.tensor(qGroupSize, dtype=torch.int64), name="qGroupSize"
+            )
+
+        # options to tune from
+        choices = (
+            [aten__weight_int4pack_mm.bind((mat1, weight, qGroupSize, qScaleAndZeros), aten_layout)]
+            if use_aten_gemm_kernels()
+            else []
+        )
+
+        assert len(choices) > 0
+
+        if (
+            use_cpp_packed_gemm_template(aten_layout, mat1, mat2, mat2_transposed=True)
+            and mat1.get_dtype() == torch.bfloat16
+            and mat2.get_dtype() == torch.int32
+        ):
+            CppPackedGemmTemplate.add_choices(
+                choices,
+                aten_layout,
+                [mat1, mat2, qGroupSize, qScaleAndZeros],
+                trans_w=True,
+            )
+        
+        print("---- len(choices) is: {}".format(len(choices)), flush=True)
+
+        # if (
+        #     len(choices) == 0
+        #     and inductor_config.autotune_fallback_to_aten
+        #     and not use_aten_gemm_kernels()
+        # ):
+        #     log.warning("No choices for GEMM, using ATen backend as fallback")
+        #     return aten__weight_int4pack_mm.bind(
+        #         (mat1, weight, qGroupSize, qScaleAndZeros), aten_layout
+        #     ).output_node()
+
+        input_gen_fns = {
+            1: lambda x: V.graph.constants[x.get_name()],
+            2: lambda x: V.graph.constants[x.get_name()],
+            3: lambda x: V.graph.constants[x.get_name()],
+        }
+        return autotune_select_algorithm(
+            "_weight_int8pack_mm",
+            choices,
+            [mat1, mat2, qGroupSize, qScaleAndZeros],
+            aten_layout,
+            input_gen_fns=input_gen_fns,
         )

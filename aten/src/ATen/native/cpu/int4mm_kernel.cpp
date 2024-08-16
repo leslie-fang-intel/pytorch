@@ -699,7 +699,8 @@ void weight_to_int4unpack_kernel(
     int N, int K) {
 
   const auto weight_packed_data = reinterpret_cast<uint8_t*>(weight_packed.data_ptr());
-  auto weight_data = weight.data_ptr<uint8_t>();
+  // auto weight_data = weight.data_ptr<uint8_t>();
+  auto weight_data = reinterpret_cast<uint8_t*>(weight.data_ptr());
 
   // 64 for avx512 and 32 for avx2/non-vectorized
   constexpr int BLOCK_N = vec::Vectorized<float>::size() * 4;
