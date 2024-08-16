@@ -121,14 +121,16 @@ def register_woq_mm_ops():
                 torch.tensor(qGroupSize, dtype=torch.int64), name="qGroupSize"
             )
 
-        # options to tune from
-        choices = (
-            [aten__weight_int4pack_mm.bind((mat1, weight, qGroupSize, qScaleAndZeros), aten_layout)]
-            if use_aten_gemm_kernels()
-            else []
-        )
+        # # options to tune from
+        # choices = (
+        #     [aten__weight_int4pack_mm.bind((mat1, weight, qGroupSize, qScaleAndZeros), aten_layout)]
+        #     if use_aten_gemm_kernels()
+        #     else []
+        # )
 
-        assert len(choices) > 0
+        # assert len(choices) > 0
+
+        choices = []
 
         if (
             use_cpp_packed_gemm_template(aten_layout, mat1, mat2, mat2_transposed=True)

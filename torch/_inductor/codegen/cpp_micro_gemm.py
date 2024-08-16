@@ -47,40 +47,6 @@ class CppMicroGemm:
 
     # TODO(jgong5): support constant shapes and lds as template args.
     DECLARE_KERNEL = r"""
-
-const bfloat16* dequant(
-    const int* in_ptr){
-
-    bfloat16* out_ptr = std::make_unique<bfloat16[]>(12288).get();
-
-    static constexpr float lut[16] = {
-        -8.0f, -7.0f, -6.0f, -5.0f,
-        -4.0f, -3.0f, -2.0f, -1.0f,
-        0.0f, 1.0f, 2.0f, 3.0f,
-        4.0f, 5.0f, 6.0f, 7.0f
-    };
-    
-    int N = 48;
-    int K = 256;
-
-    for (int n = 0; n < N; n += 1) {
-        for (int k = 0; k < K; k += 1) {
-            int kb = k / 256;  
-                                                                       
-            // const auto scale = static_cast<float>(ScaleAndZeros[kb * N * 2 + n * 2]);
-            // const auto zero = static_cast<float>(ScaleAndZeros[kb * N * 2 + n * 2 + 1]);
-                                                                       
-            long idx = (n * K + k) / 2;
-            long offset = 1 - (n * K + k) % 2;
-            unsigned char val = in_ptr[idx];
-            int index = ((val & (0xF << (offset * 4))) >> (offset * 4));
-            // const bfloat16 b_val = static_cast<bfloat16>(lut[index] * scale + zero);
-            // out_ptr[n * K + k] = b_val;
-        }
-    }
-    return out_ptr;
-    
-}
     
 template <bool accum>
 inline void {{kernel_name}}(
@@ -176,8 +142,8 @@ inline void {{kernel_name}}(
         lda = kernel.stride(A, 0)
         ldb = kernel.stride(B, 0)
         ldc = kernel.stride(C, 0)
-        if int4:
-            B_ptr = f"dequant({B_ptr})"
+        # if int4:
+        #     B_ptr = f"dequant({B_ptr})"
         res = IndentedBuffer()
         res.writeline(f"{self.name}<{value_to_cpp(accum, 'bool')}>(")
         with res.indent():
@@ -279,7 +245,14 @@ class CppMicroGemmRef(CppMicroGemm):
         for (int64_t n = 0; n < N; ++n) {
             {{compute_t}} result = accum ? C[m * ldc + n] : 0;
             for (int64_t k = 0; k < K; ++k) {
+                // std::cout<<"---- m: "<<m<<", n: "<<n<<", k: "<<k<<std::endl;
+                // std::cout<<"---- A[m * lda + k]: "<<A[m * lda + k]<<std::endl;
+                // std::cout<<"---- B[k * ldb + n]: "<<B[k * ldb + n]<<std::endl;
+            
                 result += ({{compute_t}})A[m * lda + k] * ({{compute_t}})B[k * ldb + n] * {{alpha}};
+
+                // std::cout<<"---- result: "<<result<<std::endl;
+                
             }
             C[m * ldc + n] = result;
         }
@@ -314,12 +287,12 @@ class CppMicroGemmRef(CppMicroGemm):
         [(8, 48, 1), (8, 32, 1), (16, 16, 1)],
         input_dtype=torch.float,
     ),
-    *generate_gemm_config(
-        VecAVX512,
-        [(8, 48, 1), (8, 32, 1), (16, 16, 1)],
-        input_dtype=torch.bfloat16,
-        output_dtype=torch.float,
-    ),
+    # *generate_gemm_config(
+    #     VecAVX512,
+    #     [(8, 48, 1), (8, 32, 1), (16, 16, 1)],
+    #     input_dtype=torch.bfloat16,
+    #     output_dtype=torch.float,
+    # ),
     *generate_gemm_config(
         VecAVX512,
         [(8, 48, 1), (8, 32, 1), (16, 16, 1)],
@@ -339,12 +312,12 @@ class CppMicroGemmRef(CppMicroGemm):
         [(4, 24, 1), (4, 16, 1), (8, 8, 1)],
         input_dtype=torch.float,
     ),
-    *generate_gemm_config(
-        VecAVX2,
-        [(4, 24, 1), (4, 16, 1), (8, 8, 1)],
-        input_dtype=torch.bfloat16,
-        output_dtype=torch.float,
-    ),
+    # *generate_gemm_config(
+    #     VecAVX2,
+    #     [(4, 24, 1), (4, 16, 1), (8, 8, 1)],
+    #     input_dtype=torch.bfloat16,
+    #     output_dtype=torch.float,
+    # ),
     *generate_gemm_config(
         VecAVX2,
         [(4, 24, 1), (4, 16, 1), (8, 8, 1)],
@@ -520,13 +493,13 @@ def check_amx_extra(config, m, n, k, alpha, num_threads):
         compute_dtype=torch.float,
         extra_check=check_amx_extra,
     ),
-    *generate_gemm_config(
-        VecAMX,
-        [(32, 32, 32), (48, 16, 32), (16, 48, 32)],
-        input_dtype=torch.bfloat16,
-        output_dtype=torch.float,
-        extra_check=check_amx_extra,
-    ),
+    # *generate_gemm_config(
+    #     VecAMX,
+    #     [(32, 32, 32), (48, 16, 32), (16, 48, 32)],
+    #     input_dtype=torch.bfloat16,
+    #     output_dtype=torch.float,
+    #     extra_check=check_amx_extra,
+    # ),
     *generate_gemm_config(
         VecAMX,
         [(32, 32, 64), (48, 16, 64)],

@@ -32,6 +32,57 @@ log = logging.getLogger(__name__)
 GEMM_TEMPLATE = r"""
 {{template.header().getvalue()}}
 
+{%- if qGroupSize is not none %}
+const bfloat16* dequant(
+    const int* in_ptr,
+    const bfloat16*  ScaleAndZeros,
+    bfloat16* out_ptr,
+    long M,
+    long N,
+    long K){
+
+    // bfloat16* out_ptr = std::make_unique<bfloat16[]>(12288).get();
+
+    static constexpr float lut[16] = {
+        -8.0f, -7.0f, -6.0f, -5.0f,
+        -4.0f, -3.0f, -2.0f, -1.0f,
+        0.0f, 1.0f, 2.0f, 3.0f,
+        4.0f, 5.0f, 6.0f, 7.0f
+    };
+
+    // long K = 256;
+    // long N = 16;
+    int K_int = K / 8;
+
+    int N_loop = 1;   
+
+    std::cout<<"in_ptr 2 is: "<<in_ptr[2]<<std::endl;
+    std::cout<<"in_ptr 7 is: "<<in_ptr[7]<<std::endl;
+    std::cout<<"in_ptr 8 is: "<<in_ptr[8]<<std::endl;
+
+
+    const unsigned char* in_ptr_cast = reinterpret_cast<const unsigned char*>(in_ptr);
+    for (int n = 0; n < N_loop; n += 1) {
+        for (int k = 0; k < K; k += 1) {
+            int kb = k / 256;  
+                                                                       
+            const auto scale = static_cast<float>(ScaleAndZeros[0]);
+            const auto zero = static_cast<float>(ScaleAndZeros[1]);
+                                                                       
+            long idx = (n * K + k) / 2;
+            long offset = 1 - (n * K + k) % 2;
+            unsigned char val = in_ptr_cast[idx];
+            int index = ((val & (0xF << (offset * 4))) >> (offset * 4));
+            const bfloat16 b_val = static_cast<bfloat16>(lut[index] * scale + zero);
+            out_ptr[n * K + k] = b_val;
+
+            // std::cout<<"---- n is: "<<n<<" k is: "<<k<<" val is: "<<static_cast<int>(val)<<" deqaunt_val is: "<<b_val<<std::endl;
+        }
+    }
+    return out_ptr;
+}
+{%- endif %}
+
 {{micro_gemm.codegen_define(kernel)}}
 
 {%- if x_scale is not none %}
@@ -49,6 +100,7 @@ GEMM_TEMPLATE = r"""
 extern "C" {{export_declaration}}
 {{kernel.def_kernel(inputs=kernel_args, outputs={"Y": Y}, aliases=aliases)}}
 {
+    std::cout<<"---- start a gemm run ----"<<std::endl;
     {{kernel.maybe_codegen_profile()}}
     constexpr int64_t num_threads = {{num_threads}};
     constexpr int64_t N = {{N}};
@@ -124,6 +176,25 @@ extern "C" {{export_declaration}}
         const int64_t k_block_end = K0_blocks;
     {%- endif %}
         {{ micro_gemm.codegen_init(kernel) }}
+
+        std::cout<<"m_block_start is: "<<m_block_start<<std::endl;
+        std::cout<<"m_block_end is: "<<m_block_end<<std::endl;
+        std::cout<<"Mc_blocks is: "<<Mc_blocks<<std::endl;
+        std::cout<<"M0 is: "<<M0<<std::endl;
+
+
+        std::cout<<"n_block_end is: "<<n_block_end<<std::endl;
+        std::cout<<"n_block_start is: "<<n_block_start<<std::endl;
+        // std::cout<<"micro_gemm.register_blocking.block_n is: "<<micro_gemm.register_blocking.block_n<<std::endl;
+        std::cout<<"N0 is: "<<N0<<std::endl;
+
+
+        std::cout<<"k_block_end is: "<<k_block_end<<std::endl;
+        std::cout<<"k_block_start is: "<<k_block_start<<std::endl;
+        std::cout<<"Kc_blocks is: "<<Kc_blocks<<std::endl;
+        std::cout<<"K0 is: "<<K0<<std::endl;
+
+        
         for (int64_t mc = m_block_start; mc < m_block_end; mc += Mc_blocks) {
             const int64_t m_start = mc * M0;
             const int64_t m_end = std::min(std::min(mc + Mc_blocks, m_block_end) * M0, M);
@@ -150,11 +221,19 @@ extern "C" {{export_declaration}}
                     {%- set tile_W = kernel.view(tile_W_3d, ["k_end - k_start", micro_gemm.register_blocking.block_n]) %}
                     
                     {%- if qGroupSize is not none %}
+
+                    {%- set dequant_buf_name = "int4_dequant_buf" %}
+                    {{ kernel.define_buffer(dequant_buf_name, ["k_end - k_start", micro_gemm.register_blocking.block_n], dequant_buf_dtype) }}
+                    {%- set dequant_buf = kernel.local_buffers[dequant_buf_name] %}
+                    {%- set ScaleZP_View = kernel.slice_nd(ScaleZP, [("k_start", "k_end"), ("nc", "nc + 1"), ()]) %}
+                    
+                    std::cout<<"run micro gemm n_start is: "<<n_start<<std::endl;
+
+                    {{ kernel.dequant(tile_W, ScaleZP_View, dequant_buf, X, W) }}
                     if (kc == k_block_start) {
-                        {%- set dequant_buf = kernel.local_buffers[acc_buf_name] %}
-                        {{ micro_gemm.codegen_call(kernel, tile_X, tile_W, acc, accum=False, int4=True)|indent(24, false) }}
+                        {{ micro_gemm.codegen_call(kernel, tile_X, dequant_buf, acc, accum=False, int4=True)|indent(24, false) }}
                     } else {
-                        {{ micro_gemm.codegen_call(kernel, tile_X, tile_W, acc, accum=True, int4=True)|indent(24, false) }}
+                        {{ micro_gemm.codegen_call(kernel, tile_X, dequant_buf, acc, accum=True, int4=True)|indent(24, false) }}
                     }
 
                     {%- else %}
@@ -476,13 +555,13 @@ class CppPackedGemmTemplate(CppTemplate):
                 if (
                     act.get_dtype() == torch.bfloat16
                     and weight.get_dtype() == torch.int32
-                    and act.get_size()[-1] // 8 == weight.get_size()[-2 if tansposed else -1]
+                    # and act.get_size()[-1] // 8 == weight.get_size()[-2 if tansposed else -1]
                 ):
                     bf16_int4 = True
                 elif (
                     act.get_dtype() == torch.bfloat16
                     and weight.get_dtype() == torch.uint8
-                    and act.get_size()[-1] // 2 == weight.get_size()[-2 if tansposed else -1]
+                    # and act.get_size()[-1] // 2 == weight.get_size()[-2 if tansposed else -1]
                 ):
                     bf16_int4 = True
             else:
@@ -543,7 +622,7 @@ class CppPackedGemmTemplate(CppTemplate):
                         W = ir.TensorBox(W)
                     W = L.permute(W, [1, 0])
             else:
-                if trans_w:
+                if trans_w and not bf16_int4:
                     assert isinstance(W, torch.Tensor)
                     W = W.transpose(0, 1)
             if B is not None:
@@ -939,6 +1018,7 @@ class CppPackedGemmTemplate(CppTemplate):
             DTYPE_TO_CPP=DTYPE_TO_CPP,
             qGroupSize=qGroupSize,
             ScaleZP=ScaleZP,
+            dequant_buf_dtype=torch.bfloat16,
         )
         with contextlib.ExitStack() as stack:
             for buf in fake_buffers:
