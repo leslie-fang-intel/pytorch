@@ -13,10 +13,31 @@ from torch._inductor.virtualized import V
 from .. import config as inductor_config
 from ..runtime.runtime_utils import next_power_of_2
 from ..utils import ceildiv as cdiv
+from torch._inductor import ir
 
 
 log = logging.getLogger(__name__)
 
+
+def is_woq_gemm(mat1, mat2):
+    if isinstance(mat1, ir.IRNode) and isinstance(mat2, ir.IRNode):
+        return (
+            mat1.get_dtype() in [torch.bfloat16,]
+            and mat2.get_dtype() in [torch.int32,]
+        )
+    elif isinstance(mat1, torch.Tensor) and isinstance(mat2, torch.Tensor):
+        return (
+            mat1.dtype in [torch.bfloat16,]
+            and mat2.dtype in [torch.int32,]
+        )
+    else:
+        # For the case of postprocessor
+        # we can w from constant but x is still TensorBox
+        assert isinstance(mat1, ir.IRNode) and isinstance(mat2, torch.Tensor)
+        return (
+            mat1.get_dtype() in [torch.bfloat16,]
+            and mat2.dtype in [torch.int32,]
+        )
 
 def triton_config(num_stages, num_warps, **kwargs):
     from triton import Config
@@ -426,11 +447,22 @@ def mm_args(
     Common arg processing for mm,bmm,addmm,etc
     """
     mat1, mat2 = realize_inputs(mat1, mat2)
-    *b1, m, k1 = mat1.get_size()
-    if mat2_transposed:
-        *b2, n, k2 = mat2.get_size()
+    if is_woq_gemm(mat1, mat2):
+        # mat2 has been packed into internal format 4D with dtype of int32
+        # https://github.com/pytorch/pytorch/blob/ae000635700e78161e0ed1a18f62b5db4030e343/
+        # aten/src/ATen/native/LinearAlgebra.cpp#L3468-L3470
+        assert len(mat1.get_size()) == 2
+        *b1, m, k1 = mat1.get_size()
+        k2 = k1
+        b2 = b1
+        mat2_num_elem = torch.prod(torch.tensor(mat2.get_size(), dtype=torch.int)).item()
+        n = mat2_num_elem // k2 * 8
     else:
-        *b2, k2, n = mat2.get_size()
+        *b1, m, k1 = mat1.get_size()
+        if mat2_transposed:
+            *b2, n, k2 = mat2.get_size()
+        else:
+            *b2, k2, n = mat2.get_size()
     b = [V.graph.sizevars.guard_equals(a, b) for a, b in zip(b1, b2)]
     if use_4x2_dim:
         k2 = k2 * 2

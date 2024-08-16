@@ -485,6 +485,8 @@ def check_amx_extra(config, m, n, k, alpha, num_threads):
     *generate_gemm_config(
         VecAMX,
         [(32, 32, 32), (48, 16, 32), (16, 48, 32)],
+        # [(32, 32, 32),],
+        # [(48, 16, 32),],
         input_dtype=torch.bfloat16,
         output_dtype=torch.float,
         extra_check=check_amx_extra,

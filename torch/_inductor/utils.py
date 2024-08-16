@@ -1203,7 +1203,7 @@ def use_cpp_packed_gemm_template(layout, mat1, mat2, mat2_transposed=False):
     from . import ir
     from .codegen.cpp_micro_gemm import create_micro_gemm
     from .codegen.cpp_utils import get_gemm_template_output_and_compute_dtype
-    from .kernel.mm_common import mm_args
+    from .kernel.mm_common import mm_args, is_woq_gemm
 
     if not _use_template_for_cpu(layout) or not _use_autotune_backend("CPP"):
         return False
@@ -1233,7 +1233,7 @@ def use_cpp_packed_gemm_template(layout, mat1, mat2, mat2_transposed=False):
         n,
         k,
         input_dtype=mat1.get_dtype(),
-        input2_dtype=mat2.get_dtype(),
+        input2_dtype=mat1.get_dtype() if is_woq_gemm(mat1, mat2) else mat2.get_dtype(),
         output_dtype=output_dtype,
         num_threads=parallel_num_threads(),
     )
