@@ -3433,6 +3433,7 @@ Tensor kron(const Tensor& self, const Tensor& other) {
 
 // Weight Only Quantization Gemm
 DEFINE_DISPATCH(weight_to_int4pack_stub);
+DEFINE_DISPATCH(weight_to_int4unpack_stub);
 DEFINE_DISPATCH(int4pack_mm_stub);
 DEFINE_DISPATCH(int8pack_mm_stub);
 
@@ -3471,6 +3472,33 @@ Tensor _convert_weight_to_int4pack_cpu(
 
   weight_to_int4pack_stub(kCPU, weight_packed, weight, N, K);
   return weight_packed;
+}
+
+Tensor _convert_weight_to_int4unpack_cpu(
+    const Tensor& in,
+    int64_t innerKTiles,
+    int64_t K) {
+
+  auto weight_packed = in.contiguous();
+
+  auto nTiles = weight_packed.size(0);
+  auto kSuperTiles = weight_packed.size(1);
+  TORCH_CHECK(weight_packed.size(2) == 32, "expect dim 2 as 32");
+  
+  // auto K = 256; // K can be get from Matrix A
+  auto total_elem = weight_packed.size(0) * weight_packed.size(1) * weight_packed.size(2) * weight_packed.size(3) * 8;
+  auto N = total_elem / K;
+
+  std::cout<<"---- N is: "<<N<<std::endl;
+  std::cout<<"---- K is: "<<K<<std::endl;
+
+  auto weight_unpacked = at::empty(
+      {N, K/2},
+      at::TensorOptions().dtype(at::kByte));
+
+  weight_to_int4unpack_stub(kCPU, weight_packed, weight_unpacked, N, K);
+
+  return weight_unpacked;
 }
 
 Tensor _weight_int4pack_mm_cpu(
