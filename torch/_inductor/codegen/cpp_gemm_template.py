@@ -40,7 +40,8 @@ const bfloat16* dequant(
     bfloat16* out_ptr,
     long M,
     long N,
-    long K){
+    long K,
+    const long* qGroupSize){
 
     static constexpr float lut[16] = {
         -8.0f, -7.0f, -6.0f, -5.0f,
@@ -57,17 +58,17 @@ const bfloat16* dequant(
     const unsigned char* in_ptr_cast = reinterpret_cast<const unsigned char*>(in_ptr);
     for (int n = 0; n < N_loop; n += 1) {
         for (int k = 0; k < K; k += 1) {
-            int kb = k / 256;  
+            int kb = k / qGroupSize[0];  
                                                                        
-            const auto scale = static_cast<float>(ScaleAndZeros[0]);
-            const auto zero = static_cast<float>(ScaleAndZeros[1]);
+            const auto scale = static_cast<float>(ScaleAndZeros[kb * N * 2]);
+            const auto zero = static_cast<float>(ScaleAndZeros[kb * N * 2 + 1]);
                                                                        
             long idx = (n * K + k) / 2;
             long offset = 1 - (n * K + k) % 2;
             unsigned char val = in_ptr_cast[idx];
             int index = ((val & (0xF << (offset * 4))) >> (offset * 4));
-            const bfloat16 b_val = static_cast<bfloat16>(lut[index] * scale + zero);
-            out_ptr[n * K + k] = b_val;
+            const float b_val = lut[index] * scale + zero;
+            out_ptr[n * K + k] = static_cast<bfloat16>(b_val);
 
             // std::cout<<"---- n is: "<<n<<" k is: "<<k<<" val is: "<<static_cast<int>(val)<<" deqaunt_val is: "<<b_val<<std::endl;
         }
@@ -200,8 +201,11 @@ extern "C" {{export_declaration}}
                     {%- set dequant_buf_name = "int4_dequant_buf" %}
                     {{ kernel.define_buffer(dequant_buf_name, ["k_end - k_start", micro_gemm.register_blocking.block_n], dequant_buf_dtype) }}
                     {%- set dequant_buf = kernel.local_buffers[dequant_buf_name] %}
-                    {%- set ScaleZP_View = kernel.slice_nd(ScaleZP, [("k_start", "k_end"), ("nc", "nc + 1"), ()]) %}
-                    {{ kernel.dequant(tile_W, ScaleZP_View, dequant_buf, X, W) }}
+                    int64_t qGroupSize_int = *qGroupSize;
+                    int64_t k_start_woq_scale_zp = k_start / qGroupSize_int;
+                    int64_t k_end_woq_scale_zp = k_end / qGroupSize_int;
+                    {%- set ScaleZP_View = kernel.slice_nd(ScaleZP, [("k_start_woq_scale_zp", "k_end_woq_scale_zp"), ("nc", "nc + 1"), ()]) %}
+                    {{ kernel.dequant(tile_W, ScaleZP_View, dequant_buf, X, W, qGroupSize) }}
                     {%- set tile_W = dequant_buf %}
                     {%- endif %}
 
