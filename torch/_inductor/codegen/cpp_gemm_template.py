@@ -36,12 +36,15 @@ GEMM_TEMPLATE = r"""
 {%- if qGroupSize is not none %}
 const bfloat16* dequant(
     const int* in_ptr,
-    const bfloat16*  ScaleAndZeros,
+    const bfloat16* ScaleAndZeros,
+    const long* qGroupSize,
     bfloat16* out_ptr,
-    long M,
-    long N,
-    long K,
-    const long* qGroupSize){
+    long block_n_size,
+    long block_k_size,
+    long ldb,
+    long bn){
+
+    long N = bn * block_n_size;
 
     static constexpr float lut[16] = {
         -8.0f, -7.0f, -6.0f, -5.0f,
@@ -50,27 +53,32 @@ const bfloat16* dequant(
         4.0f, 5.0f, 6.0f, 7.0f
     };
 
-    // long K = 256;
-    // long N = 16;
-    int K_int = K / 8;
-    int N_loop = 1;   
-
     const unsigned char* in_ptr_cast = reinterpret_cast<const unsigned char*>(in_ptr);
-    for (int n = 0; n < N_loop; n += 1) {
-        for (int k = 0; k < K; k += 1) {
-            int kb = k / qGroupSize[0];  
+    for (int k = 0; k < block_k_size; k += 1) {
+        for (int n = 0; n < block_n_size; n += 1) {
+            
+            // TODO: here has the assumpation that block_k_size == K
+            int kb = k / qGroupSize[0]; 
                                                                        
-            const auto scale = static_cast<float>(ScaleAndZeros[kb * N * 2]);
-            const auto zero = static_cast<float>(ScaleAndZeros[kb * N * 2 + 1]);
+            const auto scale = static_cast<float>(ScaleAndZeros[kb * N * 2 + n * 2]);
+            const auto zero = static_cast<float>(ScaleAndZeros[kb * N * 2 + n * 2 + 1]);
                                                                        
-            long idx = (n * K + k) / 2;
-            long offset = 1 - (n * K + k) % 2;
+            long idx = (k / 2 * block_n_size + n);
+            long offset = 1 - k % 2;
             unsigned char val = in_ptr_cast[idx];
             int index = ((val & (0xF << (offset * 4))) >> (offset * 4));
             const float b_val = lut[index] * scale + zero;
-            out_ptr[n * K + k] = static_cast<bfloat16>(b_val);
 
-            // std::cout<<"---- n is: "<<n<<" k is: "<<k<<" val is: "<<static_cast<int>(val)<<" deqaunt_val is: "<<b_val<<std::endl;
+            // Important: need to write output_ptr with vnni2 layout
+            {%- if micro_gemm.get_b_layout().value == 1 %}
+            // VNNI2 layout
+            out_ptr[k / 2 * block_n_size * 2 + n * 2 + k % 2] = static_cast<bfloat16>(b_val);
+            {%- else %}
+            // For ref micro gemm, write to contiguous layout
+            out_ptr[k * block_n_size + n] = static_cast<bfloat16>(b_val);
+            {%- endif %}
+            // std::cout<<"---- n is: "<<n<<" k is: "<<k<<" scale is: "<<scale<<" zero is: "<<zero<<std::endl;
+            // std::cout<<"---- n is: "<<n<<" k is: "<<k<<" index is: "<<index<<" val is: "<<static_cast<int>(val)<<" deqaunt_val is: "<<b_val<<std::endl;
         }
     }
     return out_ptr;
@@ -193,9 +201,17 @@ extern "C" {{export_declaration}}
                     int64_t k_start = kc * K0;
                     int64_t k_end = std::min(std::min(kc + Kc_blocks, k_block_end) * K0, K);
                     {%- set tile_X = kernel.slice_nd(X, [("m_start", "m_end"), ("k_start", "k_end")]) %}
-                    {%- set tile_W_3d = kernel.slice_nd(W, [("nc", "nc + 1"), ("k_start", "k_end"), ()]) %}
-                    {%- set tile_W = kernel.view(tile_W_3d, ["k_end - k_start", micro_gemm.register_blocking.block_n]) %}
 
+                    {%- if qGroupSize is not none %}
+                    int64_t k_start_woq = kc * K0 / 8;
+                    int64_t k_end_woq = std::min(std::min(kc + Kc_blocks, k_block_end) * K0, K) / 8;
+                    {%- set tile_W_3d = kernel.slice_nd(W, [("nc", "nc + 1"), ("k_start_woq", "k_end_woq"), ()]) %}
+                    {%- set tile_W = kernel.view(tile_W_3d, ["k_end_woq - k_start_woq", micro_gemm.register_blocking.block_n]) %}    
+                    {%- else %}
+                    {%- set tile_W_3d = kernel.slice_nd(W, [("nc", "nc + 1"), ("k_start", "k_end"), ()]) %}
+                    {%- set tile_W = kernel.view(tile_W_3d, ["k_end - k_start", micro_gemm.register_blocking.block_n]) %}                
+                    {%- endif %}
+                    
                     {%- if qGroupSize is not none %}
 
                     {%- set dequant_buf_name = "int4_dequant_buf" %}
@@ -204,7 +220,7 @@ extern "C" {{export_declaration}}
                     int64_t qGroupSize_int = *qGroupSize;
                     int64_t k_start_woq_scale_zp = k_start / qGroupSize_int;
                     int64_t k_end_woq_scale_zp = k_end / qGroupSize_int;
-                    {%- set ScaleZP_View = kernel.slice_nd(ScaleZP, [("k_start_woq_scale_zp", "k_end_woq_scale_zp"), ("nc", "nc + 1"), ()]) %}
+                    {%- set ScaleZP_View = kernel.slice_nd(ScaleZP, [("k_start_woq_scale_zp", "k_end_woq_scale_zp"), ("n_start", "n_end"), ()]) %}
                     {{ kernel.dequant(tile_W, ScaleZP_View, dequant_buf, X, W, qGroupSize) }}
                     {%- set tile_W = dequant_buf %}
                     {%- endif %}
@@ -570,12 +586,17 @@ class CppPackedGemmTemplate(CppTemplate):
                     inner_k_tiles = 8
                     K0 = inputs[0].size()[-1] if isinstance(inputs[0], torch.Tensor) else inputs[0].get_size()[-1]
                     # unpack W: [N, K//2] of uint8 
-                    W = torch.ops.aten._convert_weight_to_int4unpack(W, inner_k_tiles, K0) 
-                    # view back to [N, K//8] of int32
-                    W = W.view(torch.int32)
-                if trans_w:
+                    W = torch.ops.aten._convert_weight_to_int4unpack(W, inner_k_tiles, K0)
+                    assert trans_w
                     assert isinstance(W, torch.Tensor)
-                    W = W.transpose(0, 1)
+                    # transpose to [K//2, N] of uint8
+                    W = W.transpose(0, 1).contiguous()
+                    # view back to [K//2, N//4] of int32
+                    W = W.view(torch.int32)
+                else:
+                    if trans_w:
+                        assert isinstance(W, torch.Tensor)
+                        W = W.transpose(0, 1)
             if B is not None:
                 if isinstance(B, ir.IRNode):
                     if not isinstance(B, ir.TensorBox):
@@ -622,7 +643,7 @@ class CppPackedGemmTemplate(CppTemplate):
             blocked_w: Union[ir.IRNode, torch.Tensor] = W
             if isinstance(W, ir.IRNode):
                 if woq_gemm:
-                    # W is with size [K//8, N] of int32
+                    # W is with size [K//2, N//4] of int32
                     new_size = [padded_n // block_n, k//8, block_n]
                     blocked_w = ir.Buffer(
                         W.get_name(),  # Borrow the registered buffer name
@@ -648,13 +669,22 @@ class CppPackedGemmTemplate(CppTemplate):
                     )
             else:
                 if woq_gemm:
-                    # W is unpacked to size [K//8, N] of int32
+                    # W is unpacked to size [K//2, N//4] of int32
+                    # view back to [K//2, N] of uint8
+                    W = W.view(torch.uint8)
+
+                    # blocked_w: [padded_n // block_n, k//2, block_n] of uint8
                     blocked_w = (
                         torch.nn.functional.pad(W, (0, padded_n - n))
-                        .reshape(k//8, padded_n // block_n, block_n)
+                        .reshape(k//2, padded_n // block_n, block_n)
                         .transpose(0, 1)
                         .contiguous()
                     )
+
+                    # blocked_w view to [padded_n // block_n, k//8, block_n] of int32
+                    blocked_w = blocked_w.flatten().view(torch.int32)
+                    blocked_w = blocked_w.reshape(padded_n // block_n, k//8, block_n)
+
                 else:
                     blocked_w = (
                         torch.nn.functional.pad(W, (0, padded_n - n))

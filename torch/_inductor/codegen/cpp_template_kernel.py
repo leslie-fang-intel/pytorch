@@ -197,12 +197,12 @@ class CppTemplateKernel(CppKernel):
         in_ptr = f"&({self.index(in_buf, [0, 0])})"
         ScaleAndZeros_ptr = f"&({self.index(ScaleAndZeros, [0, 0, 0])})"
         out_ptr = f"&({self.index(dequant, [0, 0])})"
-        # print("X size is: {}".format(self.size(X, 1)), flush=True)
-        M = self.size(X, 0)
-        K = self.size(X, 1)
-        N = self.size(W, 0)
+        ldb = self.size(X, 1) # used to index wgt before quant
+        block_k_size = self.size(dequant, 0)
+        block_n_size = self.size(dequant, 1)
+        num_n_blocks = self.size(W, 0)  # used to index ScaleAndZeros, usually is 1
         qGroupSize_ptr = f"&({self.index(qGroupSize, [])})"
-        return f"dequant({in_ptr}, {ScaleAndZeros_ptr}, {out_ptr}, {M}, {N}, {K}, {qGroupSize_ptr}); // hhh"
+        return f"dequant({in_ptr}, {ScaleAndZeros_ptr}, {qGroupSize_ptr}, {out_ptr}, {block_n_size}, {block_k_size}, {ldb}, {num_n_blocks}); // hhh"
 
     def release_buffer(self, name):
         """Codegen the code to release the ownership of a local buffer to others"""
