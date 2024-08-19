@@ -42,7 +42,8 @@ const bfloat16* dequant(
     long block_n_size,
     long block_k_size,
     long ldb,
-    long bn){
+    long bn,
+    long k_start){
 
     long N = bn * block_n_size;
 
@@ -56,9 +57,9 @@ const bfloat16* dequant(
     const unsigned char* in_ptr_cast = reinterpret_cast<const unsigned char*>(in_ptr);
     for (int k = 0; k < block_k_size; k += 1) {
         for (int n = 0; n < block_n_size; n += 1) {
-            
-            // TODO: here has the assumpation that block_k_size == K
-            int kb = k / qGroupSize[0]; 
+
+            int k_out = k_start + k;
+            int kb = k_out / qGroupSize[0] - k_start / qGroupSize[0];
                                                                        
             const auto scale = static_cast<float>(ScaleAndZeros[kb * N * 2 + n * 2]);
             const auto zero = static_cast<float>(ScaleAndZeros[kb * N * 2 + n * 2 + 1]);
@@ -219,9 +220,9 @@ extern "C" {{export_declaration}}
                     {%- set dequant_buf = kernel.local_buffers[dequant_buf_name] %}
                     int64_t qGroupSize_int = *qGroupSize;
                     int64_t k_start_woq_scale_zp = k_start / qGroupSize_int;
-                    int64_t k_end_woq_scale_zp = k_end / qGroupSize_int;
+                    int64_t k_end_woq_scale_zp = (k_end + qGroupSize_int - 1) / qGroupSize_int;
                     {%- set ScaleZP_View = kernel.slice_nd(ScaleZP, [("k_start_woq_scale_zp", "k_end_woq_scale_zp"), ("n_start", "n_end"), ()]) %}
-                    {{ kernel.dequant(tile_W, ScaleZP_View, dequant_buf, X, W, qGroupSize) }}
+                    {{ kernel.dequant(tile_W, ScaleZP_View, dequant_buf, X, W, qGroupSize, "k_start") }}
                     {%- set tile_W = dequant_buf %}
                     {%- endif %}
 
