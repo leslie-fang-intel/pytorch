@@ -55,9 +55,119 @@ const bfloat16* dequant(
     };
 
     const unsigned char* in_ptr_cast = reinterpret_cast<const unsigned char*>(in_ptr);
+
+
+#if defined(CPU_CAPABILITY_AVX512) && !defined(_MSC_VER)
+    {{kernel.assert_function}}(
+        block_n_size % 16 == 0,
+        "Not all partitions are assigned."
+    );
+    using Vectorized_fp32 = at::vec::Vectorized<float>;
+    using Vectorized_bf16 = at::vec::Vectorized<bfloat16>;
+    for (int k = 0; k < block_k_size; k += 2) {
+        for (int n = 0; n < block_n_size; n += 16) {
+            int kb = (k_start + k) / qGroupSize[0] - k_start / qGroupSize[0];
+            int kb2 = (k_start + k + 1) / qGroupSize[0] - k_start / qGroupSize[0];
+
+            // TODO: Support the block_k_size cross the group_size
+            // if (kb == kb2) {
+            // } else 
+
+            // Step 1: Get the scale and zero point         
+            // s0, z0, s2, z2 .... s30, z30
+            const auto scale_zp = Vectorized_bf16::loadu(ScaleAndZeros + (kb * N * 2 + n * 2));
+            // s1, z1, s3 z3 .... s31, z31
+            const auto scale_zp2 = Vectorized_bf16::loadu(ScaleAndZeros + (kb2 * N * 2 + n * 2));
+
+            // s0, s2, ... s30
+            __m512 scale1, scale2, zp1, zp2;
+            at::vec::cvtbf16_fp32(
+                _mm512_cvtepi32_epi16(scale_zp),
+                scale1
+            );
+            // s1, s3, ... s31
+            at::vec::cvtbf16_fp32(
+                _mm512_cvtepi32_epi16(scale_zp2),
+                scale2
+            );
+            // zp0, zp2, ... zp30
+            at::vec::cvtbf16_fp32(
+                _mm512_cvtepi32_epi16(
+                    _mm512_srli_epi32(scale_zp, 16)
+                ),
+                zp1
+            );
+            // zp1, zp3, ... zp31
+            at::vec::cvtbf16_fp32(
+                _mm512_cvtepi32_epi16(
+                    _mm512_srli_epi32(scale_zp2, 16)
+                ),
+                zp2
+            );
+                                                         
+            // Step 2: load the wgt data
+            // total 32 elements with 4x2 * 16
+            __m128i b4 = _mm_loadu_si128((__m128i*)(in_ptr_cast + (k / 2 * block_n_size + n)));
+            const __m128i lowMask = _mm_set1_epi8(0xF);
+            __m128i high = _mm_andnot_si128(lowMask, b4);
+            __m128i low = _mm_and_si128(lowMask, b4);
+
+            __m512i high_512 = _mm512_cvtepu16_epi32(
+                _mm256_srli_epi16(_mm256_cvtepu8_epi16(high), 4)
+            );
+            __m512i low_512 = _mm512_cvtepu16_epi32(
+                _mm256_cvtepu8_epi16(low)
+            );
+
+            static const __m512 lut = _mm512_set_ps(
+                7.0f, 6.0f, 5.0f, 4.0f,
+                3.0f, 2.0f, 1.0f, 0.0f,
+                -1.0f, -2.0f, -3.0f, -4.0f,
+                -5.0f, -6.0f, -7.0f, -8.0f);
+
+            // Step 3: mul scale and add zp
+            const __m512 b_val = _mm512_permutexvar_ps(high_512, lut) * scale1 + zp1;
+            const __m512 b_val2 = _mm512_permutexvar_ps(low_512, lut) * scale2 + zp2;
+
+            // cvt 2 FP32 to 1 BF16
+            const __m512i b_val_bf16 = at::vec::cvtfp32_bf16(b_val2, b_val);
+
+            // Step 4: shuffle the BF16 by interleave
+            //  From: b0, b1, ... b15, b16, b17, ... b31
+            //  TO: b0, b16, b1, b17, b2, b18, ... b15, b31
+            static const uint16_t control[16] = {
+                0, 16, 1, 17, 2, 18, 3, 19, 4, 20, 5, 21, 6, 22, 7, 23,
+            };
+            __m256i vec_control = _mm256_loadu_si256((__m256i*)control);
+
+            static const uint16_t control2[16] = {
+                8, 24, 9, 25, 10, 26, 11, 27, 12, 28, 13, 29, 14, 30, 15, 31
+            };
+            __m256i vec_control2 = _mm256_loadu_si256((__m256i*)control2);
+                                                
+            __m256i lower_256 = _mm512_castsi512_si256(b_val_bf16);
+            __m256i higher_256 = _mm512_extracti64x4_epi64(b_val_bf16, 1);
+
+            __m256i shuffled = _mm256_permutex2var_epi16(lower_256, vec_control, higher_256);
+            __m256i shuffled2 = _mm256_permutex2var_epi16(lower_256, vec_control2, higher_256);
+            
+            __m512i vec_512 = _mm512_castsi256_si512(shuffled2);
+            vec_512 = _mm512_inserti64x4(vec_512, shuffled, 1);
+
+            // Step 5: store the result back
+            {%- if micro_gemm.get_b_layout().value == 1 %}
+            // VNNI2 layout
+            // out_ptr[k / 2 * block_n_size * 2 + n * 2 + k % 2] = static_cast<bfloat16>(b_val);
+            _mm512_storeu_si512((__m512i*)(out_ptr + (k / 2 * block_n_size * 2 + n * 2)), vec_512);
+            {%- else %}
+            // For ref micro gemm, write to contiguous layout
+            // out_ptr[k * block_n_size + n] = static_cast<bfloat16>(b_val);
+            {%- endif %}
+        }
+    }
+#else
     for (int k = 0; k < block_k_size; k += 1) {
         for (int n = 0; n < block_n_size; n += 1) {
-
             int k_out = k_start + k;
             int kb = k_out / qGroupSize[0] - k_start / qGroupSize[0];
                                                                        
@@ -82,6 +192,7 @@ const bfloat16* dequant(
             // std::cout<<"---- n is: "<<n<<" k is: "<<k<<" index is: "<<index<<" val is: "<<static_cast<int>(val)<<" deqaunt_val is: "<<b_val<<std::endl;
         }
     }
+#endif
     return out_ptr;
 }
 {%- endif %}
