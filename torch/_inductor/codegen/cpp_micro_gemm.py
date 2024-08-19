@@ -276,12 +276,12 @@ class CppMicroGemmRef(CppMicroGemm):
         [(8, 48, 1), (8, 32, 1), (16, 16, 1)],
         input_dtype=torch.float,
     ),
-    *generate_gemm_config(
-        VecAVX512,
-        [(8, 48, 1), (8, 32, 1), (16, 16, 1)],
-        input_dtype=torch.bfloat16,
-        output_dtype=torch.float,
-    ),
+    # *generate_gemm_config(
+    #     VecAVX512,
+    #     [(8, 48, 1), (8, 32, 1), (16, 16, 1)],
+    #     input_dtype=torch.bfloat16,
+    #     output_dtype=torch.float,
+    # ),
     *generate_gemm_config(
         VecAVX512,
         [(8, 48, 1), (8, 32, 1), (16, 16, 1)],
@@ -301,12 +301,12 @@ class CppMicroGemmRef(CppMicroGemm):
         [(4, 24, 1), (4, 16, 1), (8, 8, 1)],
         input_dtype=torch.float,
     ),
-    *generate_gemm_config(
-        VecAVX2,
-        [(4, 24, 1), (4, 16, 1), (8, 8, 1)],
-        input_dtype=torch.bfloat16,
-        output_dtype=torch.float,
-    ),
+    # *generate_gemm_config(
+    #     VecAVX2,
+    #     [(4, 24, 1), (4, 16, 1), (8, 8, 1)],
+    #     input_dtype=torch.bfloat16,
+    #     output_dtype=torch.float,
+    # ),
     *generate_gemm_config(
         VecAVX2,
         [(4, 24, 1), (4, 16, 1), (8, 8, 1)],
@@ -482,13 +482,13 @@ def check_amx_extra(config, m, n, k, alpha, num_threads):
         compute_dtype=torch.float,
         extra_check=check_amx_extra,
     ),
-    *generate_gemm_config(
-        VecAMX,
-        [(32, 32, 32), (48, 16, 32), (16, 48, 32)],
-        input_dtype=torch.bfloat16,
-        output_dtype=torch.float,
-        extra_check=check_amx_extra,
-    ),
+    # *generate_gemm_config(
+    #     VecAMX,
+    #     [(32, 32, 32), (48, 16, 32), (16, 48, 32)],
+    #     input_dtype=torch.bfloat16,
+    #     output_dtype=torch.float,
+    #     extra_check=check_amx_extra,
+    # ),
     *generate_gemm_config(
         VecAMX,
         [(32, 32, 64), (48, 16, 64)],

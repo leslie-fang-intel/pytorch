@@ -4150,6 +4150,10 @@
     MPS: _weight_int4pack_mm_mps
     CUDA: _weight_int4pack_mm_cuda
 
+- func: _weight_int4pack_mm.tensor(Tensor self, Tensor mat2, Tensor qGroupSize, Tensor qScaleAndZeros) -> Tensor
+  dispatch:
+    CPU: _weight_int4pack_mm_tensor_cpu
+
 - func: _weight_int8pack_mm(Tensor self, Tensor mat2, Tensor scales) -> Tensor
   dispatch:
     CPU: _weight_int8pack_mm_cpu

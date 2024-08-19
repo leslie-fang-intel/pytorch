@@ -11,7 +11,7 @@ import torch.utils
 
 from ..._dynamo.utils import counters
 from .. import config, ir, lowering as L
-from ..kernel.mm_common import mm_args
+from ..kernel.mm_common import mm_args, is_woq_gemm
 from ..select_algorithm import DataProcessorTemplateWrapper
 from ..utils import cache_on_self, has_free_symbols, parallel_num_threads
 from ..virtualized import V
@@ -32,12 +32,64 @@ log = logging.getLogger(__name__)
 GEMM_TEMPLATE = r"""
 {{template.header().getvalue()}}
 
+
+{%- if qGroupSize is not none %}
+const bfloat16* dequant(
+    const int* in_ptr,
+    const bfloat16*  ScaleAndZeros,
+    bfloat16* out_ptr,
+    long M,
+    long N,
+    long K){
+
+    static constexpr float lut[16] = {
+        -8.0f, -7.0f, -6.0f, -5.0f,
+        -4.0f, -3.0f, -2.0f, -1.0f,
+        0.0f, 1.0f, 2.0f, 3.0f,
+        4.0f, 5.0f, 6.0f, 7.0f
+    };
+
+    // long K = 256;
+    // long N = 16;
+    int K_int = K / 8;
+    int N_loop = 1;   
+
+    const unsigned char* in_ptr_cast = reinterpret_cast<const unsigned char*>(in_ptr);
+    for (int n = 0; n < N_loop; n += 1) {
+        for (int k = 0; k < K; k += 1) {
+            int kb = k / 256;  
+                                                                       
+            const auto scale = static_cast<float>(ScaleAndZeros[0]);
+            const auto zero = static_cast<float>(ScaleAndZeros[1]);
+                                                                       
+            long idx = (n * K + k) / 2;
+            long offset = 1 - (n * K + k) % 2;
+            unsigned char val = in_ptr_cast[idx];
+            int index = ((val & (0xF << (offset * 4))) >> (offset * 4));
+            const bfloat16 b_val = static_cast<bfloat16>(lut[index] * scale + zero);
+            out_ptr[n * K + k] = b_val;
+
+            // std::cout<<"---- n is: "<<n<<" k is: "<<k<<" val is: "<<static_cast<int>(val)<<" deqaunt_val is: "<<b_val<<std::endl;
+        }
+    }
+    return out_ptr;
+}
+{%- endif %}
+
+
 {{micro_gemm.codegen_define(kernel)}}
 
 {%- if x_scale is not none %}
 {%- set kernel_args = {"X": X, "W": W, "inp": inp, "x_scale": x_scale, "x_zp": x_zp, "w_scale": w_scale, "w_zp": w_zp,} %}
 {%- else %}
+
+{%- if qGroupSize is not none %}
+{%- set kernel_args = {"X": X, "W": W, "qGroupSize": qGroupSize, "ScaleZP": ScaleZP} %}
+{%- else %}
 {%- set kernel_args = {"X": X, "W": W, "inp": inp} %}
+{%- endif %}
+
+
 {%- endif %}
 
 extern "C" {{export_declaration}}
@@ -142,11 +194,23 @@ extern "C" {{export_declaration}}
                     {%- set tile_X = kernel.slice_nd(X, [("m_start", "m_end"), ("k_start", "k_end")]) %}
                     {%- set tile_W_3d = kernel.slice_nd(W, [("nc", "nc + 1"), ("k_start", "k_end"), ()]) %}
                     {%- set tile_W = kernel.view(tile_W_3d, ["k_end - k_start", micro_gemm.register_blocking.block_n]) %}
+
+                    {%- if qGroupSize is not none %}
+
+                    {%- set dequant_buf_name = "int4_dequant_buf" %}
+                    {{ kernel.define_buffer(dequant_buf_name, ["k_end - k_start", micro_gemm.register_blocking.block_n], dequant_buf_dtype) }}
+                    {%- set dequant_buf = kernel.local_buffers[dequant_buf_name] %}
+                    {%- set ScaleZP_View = kernel.slice_nd(ScaleZP, [("k_start", "k_end"), ("nc", "nc + 1"), ()]) %}
+                    {{ kernel.dequant(tile_W, ScaleZP_View, dequant_buf, X, W) }}
+                    {%- set tile_W = dequant_buf %}
+                    {%- endif %}
+
                     if (kc == k_block_start) {
                         {{ micro_gemm.codegen_call(kernel, tile_X, tile_W, acc, accum=False)|indent(24, false) }}
                     } else {
                         {{ micro_gemm.codegen_call(kernel, tile_X, tile_W, acc, accum=True)|indent(24, false) }}
                     }
+
                 }
                 {%- if maybe_k_slicing %}
                 if (num_k_slices > 1) {
@@ -476,18 +540,35 @@ class CppPackedGemmTemplate(CppTemplate):
             return new_inputs, layout_or_out
 
         def normalize_shapes(inputs, layout_or_out):
+            woq_gemm = is_woq_gemm(inputs[0], inputs[1])
+
             if not trans_w:
                 return inputs, layout_or_out
             new_inputs = list(inputs)
             X = inputs[0]
             W = inputs[1]
-            B = inputs[2] if len(inputs) > 2 else None
+            B = inputs[2] if (len(inputs) > 2 and not woq_gemm) else None
             if isinstance(W, ir.IRNode):
+                if not isinstance(W, ir.TensorBox):
+                    W = ir.TensorBox(W)
+                if woq_gemm:
+                    # W has been packed to 4D of int32
+                    # View to [N, (K // 8)] of int32
+                    mat2_num_elem = torch.prod(torch.tensor(W.get_size(), dtype=torch.int)).item()
+                    W = L.view(W, [mat2_num_elem // X.get_size()[1] * 8, X.get_size()[1] // 8])
                 if trans_w:
-                    if not isinstance(W, ir.TensorBox):
-                        W = ir.TensorBox(W)
                     W = L.permute(W, [1, 0])
             else:
+                if woq_gemm:
+                    # W has been packed to 4D of int32
+                    # View to [N, (K // 8)] of int32
+                    mat2_num_elem = torch.prod(torch.tensor(W.size(), dtype=torch.int)).item()
+                    inner_k_tiles = 8
+                    K0 = inputs[0].size()[-1] if isinstance(inputs[0], torch.Tensor) else inputs[0].get_size()[-1]
+                    # unpack W: [N, K//2] of uint8 
+                    W = torch.ops.aten._convert_weight_to_int4unpack(W, inner_k_tiles, K0) 
+                    # view back to [N, K//8] of int32
+                    W = W.view(torch.int32)
                 if trans_w:
                     assert isinstance(W, torch.Tensor)
                     W = W.transpose(0, 1)
@@ -519,7 +600,7 @@ class CppPackedGemmTemplate(CppTemplate):
             n,
             k,
             input_dtype=new_inputs[0].get_dtype(),
-            input2_dtype=new_inputs[1].get_dtype(),
+            input2_dtype=new_inputs[0].get_dtype() if is_woq_gemm(new_inputs[0], new_inputs[1]) else new_inputs[1].get_dtype(),
             output_dtype=output_dtype,
             compute_dtype=compute_dtype,
             alpha=alpha,
@@ -530,29 +611,57 @@ class CppPackedGemmTemplate(CppTemplate):
         padded_n = get_padded_n(n, block_n)
 
         def pack_weight(inputs, layout_or_out):
+            woq_gemm = is_woq_gemm(inputs[0], inputs[1])
+
             W = inputs[1]
             new_inputs = list(inputs)
             blocked_w: Union[ir.IRNode, torch.Tensor] = W
             if isinstance(W, ir.IRNode):
-                new_size = [padded_n // block_n, k, block_n]
-                blocked_w = ir.Buffer(
-                    W.get_name(),  # Borrow the registered buffer name
-                    ir.FixedLayout(
-                        W.get_device(),
-                        W.get_dtype(),
-                        new_size,
-                        ir.FlexibleLayout.contiguous_strides(new_size),
-                        0,
-                    ),
-                )
+                if woq_gemm:
+                    # W is with size [K//8, N] of int32
+                    new_size = [padded_n // block_n, k//8, block_n]
+                    blocked_w = ir.Buffer(
+                        W.get_name(),  # Borrow the registered buffer name
+                        ir.FixedLayout(
+                            W.get_device(),
+                            W.get_dtype(),
+                            new_size,
+                            ir.FlexibleLayout.contiguous_strides(new_size),
+                            0,
+                        ),
+                    )
+                else:
+                    new_size = [padded_n // block_n, k, block_n]
+                    blocked_w = ir.Buffer(
+                        W.get_name(),  # Borrow the registered buffer name
+                        ir.FixedLayout(
+                            W.get_device(),
+                            W.get_dtype(),
+                            new_size,
+                            ir.FlexibleLayout.contiguous_strides(new_size),
+                            0,
+                        ),
+                    )
             else:
-                blocked_w = (
-                    torch.nn.functional.pad(W, (0, padded_n - n))
-                    .reshape(k, padded_n // block_n, block_n)
-                    .transpose(0, 1)
-                    .contiguous()
-                )
-                if micro_gemm.get_b_layout() != LayoutType.NORMAL:
+                if woq_gemm:
+                    # W is unpacked to size [K//8, N] of int32
+                    blocked_w = (
+                        torch.nn.functional.pad(W, (0, padded_n - n))
+                        .reshape(k//8, padded_n // block_n, block_n)
+                        .transpose(0, 1)
+                        .contiguous()
+                    )
+                else:
+                    blocked_w = (
+                        torch.nn.functional.pad(W, (0, padded_n - n))
+                        .reshape(k, padded_n // block_n, block_n)
+                        .transpose(0, 1)
+                        .contiguous()
+                    )
+                if (
+                    micro_gemm.get_b_layout() != LayoutType.NORMAL
+                    and not woq_gemm  # BF16-INT4 gemm has 4x2 storage
+                ):
                     layout_str = (
                         "VNNI4"
                         if micro_gemm.get_b_layout() == LayoutType.VNNI4
@@ -659,10 +768,13 @@ class CppPackedGemmTemplate(CppTemplate):
         assert len(self.input_nodes) >= 2
 
         int8_gemm = self.input_nodes[0].get_dtype() == torch.uint8
+        woq_gemm = is_woq_gemm(self.input_nodes[0], self.input_nodes[1])
         x_scale = None
         x_zp = None
         w_scale = None
         w_zp = None
+        qGroupSize = None
+        ScaleZP = None
         if int8_gemm:
             X, W = self.input_nodes[0], self.input_nodes[1]
             bias_idx = 2 if self.has_bias else 1
@@ -672,6 +784,11 @@ class CppPackedGemmTemplate(CppTemplate):
             w_scale = self.input_nodes[bias_idx + 3]
             w_zp = self.input_nodes[bias_idx + 4]
             Y = self.output_node
+        elif woq_gemm:
+            X, W = self.input_nodes[0], self.input_nodes[1]
+            qGroupSize, ScaleZP = self.input_nodes[2], self.input_nodes[3]
+            Y = self.output_node
+            inp = None
         else:
             X, W = self.input_nodes[0], self.input_nodes[1]
             Y = self.output_node
@@ -778,7 +895,7 @@ class CppPackedGemmTemplate(CppTemplate):
             self.n,
             self.k,
             input_dtype=X.get_dtype(),
-            input2_dtype=W.get_dtype(),
+            input2_dtype=X.get_dtype() if woq_gemm else W.get_dtype(),
             output_dtype=output_dtype,
             compute_dtype=compute_dtype,
             alpha=self.alpha,
@@ -819,6 +936,9 @@ class CppPackedGemmTemplate(CppTemplate):
             w_zp=w_zp,
             acc_buf_dtype=torch.int32 if int8_gemm else torch.float,
             DTYPE_TO_CPP=DTYPE_TO_CPP,
+            qGroupSize=qGroupSize,
+            ScaleZP=ScaleZP,
+            dequant_buf_dtype=X.get_dtype(),
         )
         with contextlib.ExitStack() as stack:
             for buf in fake_buffers:

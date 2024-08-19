@@ -193,6 +193,16 @@ class CppTemplateKernel(CppKernel):
         numel = f"{cexpr_index(buf.get_numel())}"
         return f"if (_{name} == nullptr) {{ _{name} = std::make_unique<{ctype}[]>({numel}); {name} = _{name}.get(); }}"
 
+    def dequant(self, in_buf, ScaleAndZeros, dequant, X, W):
+        in_ptr = f"&({self.index(in_buf, [0, 0])})"
+        ScaleAndZeros_ptr = f"&({self.index(ScaleAndZeros, [0, 0, 0])})"
+        out_ptr = f"&({self.index(dequant, [0, 0])})"
+        # print("X size is: {}".format(self.size(X, 1)), flush=True)
+        M = self.size(X, 0)
+        K = self.size(X, 1)
+        N = self.size(W, 0)
+        return f"dequant({in_ptr}, {ScaleAndZeros_ptr}, {out_ptr}, {M}, {N}, {K}); // hhh"
+
     def release_buffer(self, name):
         """Codegen the code to release the ownership of a local buffer to others"""
         assert name in self.local_buffers
