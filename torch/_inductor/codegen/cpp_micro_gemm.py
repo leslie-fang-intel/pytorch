@@ -276,12 +276,12 @@ class CppMicroGemmRef(CppMicroGemm):
         [(8, 48, 1), (8, 32, 1), (16, 16, 1)],
         input_dtype=torch.float,
     ),
-    # *generate_gemm_config(
-    #     VecAVX512,
-    #     [(8, 48, 1), (8, 32, 1), (16, 16, 1)],
-    #     input_dtype=torch.bfloat16,
-    #     output_dtype=torch.float,
-    # ),
+    *generate_gemm_config(
+        VecAVX512,
+        [(8, 48, 1), (8, 32, 1), (16, 16, 1)],
+        input_dtype=torch.bfloat16,
+        output_dtype=torch.float,
+    ),
     *generate_gemm_config(
         VecAVX512,
         [(8, 48, 1), (8, 32, 1), (16, 16, 1)],

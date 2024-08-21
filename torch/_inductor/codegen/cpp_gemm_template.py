@@ -161,7 +161,8 @@ const bfloat16* dequant(
                 _mm512_storeu_si512((__m512i*)(out_ptr + (k / 2 * block_n_size * 2 + n * 2)), out_vec);
                 {%- else %}
                 // For ref micro gemm, write to contiguous layout
-                _mm512_storeu_si512((__m512i*)(out_ptr + (k / 2 * block_n_size * 2 + n * 2)), b_val_bf16);
+                _mm256_storeu_si256((__m256i*)(out_ptr + (k * block_n_size + n)), higher_256);
+                _mm256_storeu_si256((__m256i*)(out_ptr + ((k + 1) * block_n_size + n)), lower_256);
                 {%- endif %}
             }
         }
@@ -796,6 +797,8 @@ class CppPackedGemmTemplate(CppTemplate):
                         .transpose(0, 1)
                         .contiguous()
                     )
+
+                    assert k%8 == 0, "k should be divisible by 8 for WOQ GEMM"
 
                     # blocked_w view to [padded_n // block_n, k//8, block_n] of int32
                     blocked_w = blocked_w.flatten().view(torch.int32)
