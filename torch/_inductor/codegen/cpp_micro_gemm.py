@@ -301,12 +301,12 @@ class CppMicroGemmRef(CppMicroGemm):
         [(4, 24, 1), (4, 16, 1), (8, 8, 1)],
         input_dtype=torch.float,
     ),
-    # *generate_gemm_config(
-    #     VecAVX2,
-    #     [(4, 24, 1), (4, 16, 1), (8, 8, 1)],
-    #     input_dtype=torch.bfloat16,
-    #     output_dtype=torch.float,
-    # ),
+    *generate_gemm_config(
+        VecAVX2,
+        [(4, 24, 1), (4, 16, 1), (8, 8, 1)],
+        input_dtype=torch.bfloat16,
+        output_dtype=torch.float,
+    ),
     *generate_gemm_config(
         VecAVX2,
         [(4, 24, 1), (4, 16, 1), (8, 8, 1)],
