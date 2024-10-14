@@ -113,8 +113,14 @@ def post_grad_passes(gm: torch.fx.GraphModule, is_inference: bool):
             "group_batch_fusion_passes",
         )
         apply_pass(lambda: remove_noop_ops(gm.graph), "remove_noop_ops")
+        
+        print("gm.graph before pass_patterns", gm.graph, flush=True)
+
         for i, patterns in enumerate(pass_patterns):
             apply_pass(lambda: patterns.apply(gm.graph), f"pass_pattern_{i}")  # type: ignore[arg-type]
+        
+        print("gm.graph after pass_patterns", gm.graph, flush=True)
+        
         for pass_name in config.post_grad_fusion_options:
             # skip all patterns for group batch fusions
             if pass_name in POST_GRAD_FUSIONS:
