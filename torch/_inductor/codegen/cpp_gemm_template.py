@@ -1103,3 +1103,7 @@ class CppPackedGemmTemplate(CppTemplate):
                     patch.object(V.graph, "get_dtype", self._fake_get_dtype(buf))
                 )
             return self._template_from_string(GEMM_TEMPLATE).render(**options)
+
+    # def codegen_epilogus(self):
+    #     res = IndentedBuffer()
+    #     return res

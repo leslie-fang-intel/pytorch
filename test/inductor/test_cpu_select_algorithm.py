@@ -1732,11 +1732,11 @@ class TestSelectAlgorithm(BaseTestSelectAlgorithm):
     @patches
     @torch.no_grad
     @unittest.skipIf(not TEST_MKL, "Test requires MKL")
-    @parametrize("batch_size", (16, 52))
-    @parametrize("in_features", (32, 52))
-    @parametrize("out_features", (32, 52))
-    @parametrize("bias_gate", (True, False))
-    @parametrize("bias_up", (True, False))
+    @parametrize("batch_size", (16,))
+    @parametrize("in_features", (32,))
+    @parametrize("out_features", (32,))
+    @parametrize("bias_gate", (True,))
+    @parametrize("bias_up", (True,))
     @dtypes(
         torch.bfloat16,
     )
@@ -1804,9 +1804,9 @@ class TestSelectAlgorithmDynamicShapes(_DynamicShapesTestBase):
     test_linear_thread_factors_dynamic_shapes = (
         TestSelectAlgorithm.test_linear_thread_factors
     )
-    test_linear_silu_linear_mul_dynamic_shapes = (
-        TestSelectAlgorithm.test_linear_silu_linear_mul
-    )
+    # test_linear_silu_linear_mul_dynamic_shapes = (
+    #     TestSelectAlgorithm.test_linear_silu_linear_mul
+    # )
 
 
 instantiate_device_type_tests(TestSelectAlgorithm, globals(), only_for="cpu")

@@ -11,7 +11,7 @@ from ..._dynamo.utils import counters
 from .. import config, ir, lowering as L
 from ..kernel.mm_common import mm_args
 from ..select_algorithm import DataProcessorTemplateWrapper
-from ..utils import parallel_num_threads
+from ..utils import IndentedBuffer, parallel_num_threads
 from ..virtualized import V
 from .cpp import get_export_declaration
 from .cpp_gemm_template import CppPackedGemmTemplate, get_padded_n
@@ -28,97 +28,18 @@ log = logging.getLogger(__name__)
 
 
 # TODO<Leslie>: We should merge this with GEMM Template to save redundant code
-GEMM_TEMPLATE = r"""
+eiolugue_g = r"""
+{% macro set_and_use_variable() %}
+  {{ kernel.silu_mul(tile_acc, tile_acc1, tile_inp, tile_inp1, tile_Y, has_gate_bias, has_up_bias) }}
+{% endmacro %}
+"""
+
+GEMM_TEMPLATE = eiolugue_g + r"""
 {{template.header().getvalue()}}
 
-template <bool has_gate_bias, bool has_up_bias>
-inline void silu_mul_epilogue_fusion(
-    float* in_ptr0,
-    float* in_ptr1,
-    const bfloat16* inp0,
-    const bfloat16* inp1,
-    bfloat16* out_ptr,
-    int64_t M,
-    int64_t N,
-    int64_t in_lda,
-    int64_t out_lda) {
-    int64_t n_scalar_start = 0;
-#if defined(CPU_CAPABILITY_AVX512) && !defined(_MSC_VER)
-    using Vectorized_fp32 = at::vec::Vectorized<float>;
-    using Vectorized_bf16 = at::vec::Vectorized<bfloat16>;
-    int64_t N1 = N / 32 * 32;
-    int64_t N2 = N / 16 * 16;
-    n_scalar_start = N2;
-#endif
-    for (int64_t m = 0; m < M; m += 1) {
-#if defined(CPU_CAPABILITY_AVX512) && !defined(_MSC_VER)
-        for (int64_t n = 0; n < N1; n += 32) {
-            Vectorized_fp32 tmp0 = Vectorized_fp32::loadu(in_ptr0 + (m * in_lda + n));
-            Vectorized_fp32 tmp0_1 = Vectorized_fp32::loadu(in_ptr0 + (m * in_lda + n + 16));
-            Vectorized_fp32 tmp1 = Vectorized_fp32::loadu(in_ptr1 + (m * in_lda + n));
-            Vectorized_fp32 tmp1_1 = Vectorized_fp32::loadu(in_ptr1 + (m * in_lda + n + 16));
-            if constexpr (has_gate_bias) {
-                const auto inp_bf16_vec = Vectorized_bf16::loadu(inp0 + n);
-                at::vec::VectorizedN<float, 2> inp_fp32_vecs = at::vec::convert<float, 2, bfloat16, 1>(inp_bf16_vec);
-                tmp0 = tmp0 + Vectorized_fp32(inp_fp32_vecs[0]);
-                tmp0_1 = tmp0_1 + Vectorized_fp32(inp_fp32_vecs[1]);
-            }
-            if constexpr (has_up_bias) {
-                const auto inp_bf16_vec = Vectorized_bf16::loadu(inp1 + n);
-                at::vec::VectorizedN<float, 2> inp_fp32_vecs = at::vec::convert<float, 2, bfloat16, 1>(inp_bf16_vec);
-                tmp1 = tmp1 + Vectorized_fp32(inp_fp32_vecs[0]);
-                tmp1_1 = tmp1_1 + Vectorized_fp32(inp_fp32_vecs[1]);
-            }
-            tmp0 = tmp0 * (decltype(tmp0)(1)/(decltype(tmp0)(1) + tmp0.neg().exp()));
-            tmp0_1 = tmp0_1 * (decltype(tmp0_1)(1)/(decltype(tmp0_1)(1) + tmp0_1.neg().exp()));
-            tmp0 = tmp0 * tmp1;
-            tmp0_1 = tmp0_1 * tmp1_1;
-            at::vec::VectorizedN<float, 2> out_fp32_vec(tmp0, tmp0_1);
-            Vectorized_bf16 out_bf16_vec = at::vec::convert<bfloat16, 1, float, 2>(out_fp32_vec);
-            out_bf16_vec.store(out_ptr + (m * out_lda + n));
-        }
-        for (int64_t n = N1; n < N2; n += 16) {
-            Vectorized_fp32 tmp0 = Vectorized_fp32::loadu(in_ptr0 + (m * in_lda + n));
-            Vectorized_fp32 tmp1 = Vectorized_fp32::loadu(in_ptr1 + (m * in_lda + n));
-            if constexpr (has_gate_bias) {
-                const auto inp_bf16_vec = Vectorized_bf16::loadu(inp0 + n, 16);
-                Vectorized_fp32 inp_fp32_vec = at::vec::convert<float, 1, bfloat16, 1>(inp_bf16_vec);
-                tmp0 = tmp0 + inp_fp32_vec;
-            }
-            if constexpr (has_up_bias) {
-                const auto inp_bf16_vec = Vectorized_bf16::loadu(inp1 + n, 16);
-                Vectorized_fp32 inp_fp32_vec = at::vec::convert<float, 1, bfloat16, 1>(inp_bf16_vec);
-                tmp1 = tmp1 + inp_fp32_vec;
-            }
-            tmp0 = tmp0 * (decltype(tmp0)(1)/(decltype(tmp0)(1) + tmp0.neg().exp()));
-            tmp0 = tmp0 * tmp1;
-            Vectorized_bf16 out_bf16_vec = at::vec::convert<bfloat16, 1, float, 1>(tmp0);
-            out_bf16_vec.store(out_ptr + (m * out_lda + n), 16);
-        }
-#endif
-        for (int64_t n = n_scalar_start; n < N; n += 1) {
-            float tmp0 = in_ptr0[m * in_lda + n];
-            float tmp1 = in_ptr1[m * in_lda + n];
-            // Bias add
-            if constexpr (has_gate_bias) {
-                tmp0 = tmp0 + (float)inp0[n];
-            }
-            if constexpr (has_up_bias) {
-                tmp1 = tmp1 + (float)inp1[n];
-            }
-            // Silu
-            tmp0 = tmp0 * (1.0 / ( 1.0 + std::exp(-tmp0)));
-            // Mul
-            tmp0 = tmp0 * tmp1;
-            // Store output
-            out_ptr[m * out_lda + n] = (bfloat16)tmp0;
-        }
-    }
-}
+{{template.codegen_epilogus().getvalue()}}
 
 {{micro_gemm.codegen_define(kernel)}}
-
-{%- set kernel_args = {"X": X, "W": W, "W1": W1, "inp": inp, "inp1": inp1} %}
 
 extern "C" {{export_declaration}}
 {{kernel.def_kernel(inputs=kernel_args, outputs={"Y": Y}, aliases=aliases)}}
@@ -228,10 +149,11 @@ extern "C" {{export_declaration}}
 {%- endif %}
         {{ micro_gemm.codegen_init(kernel) }}
 {%- if use_local_acc %}
-    {%- set acc_buf_name = "local_acc_buf" %}
-        {{ kernel.define_buffer(acc_buf_name, ["Mc_blocks*Mr", "Nc_blocks*Nr"], acc_buf_dtype) }}
-    {%- set acc_buf2_name = "local_acc_buf2" %}
-        {{ kernel.define_buffer(acc_buf2_name, ["Mc_blocks*Mr", "Nc_blocks*Nr"], acc_buf_dtype) }}
+    {%- set acc_buf_names = ["local_acc_buf", "local_acc_buf2"] %}
+    {% for buf_name in acc_buf_names %}
+        {{ kernel.define_buffer(buf_name, ["Mc_blocks*Mr", "Nc_blocks*Nr"], acc_buf_dtype) }}
+    {% endfor %}
+
 {%- endif %}
         for (int64_t mc_block_id = 0; mc_block_id < num_Mc_blocks_per_thread; mc_block_id++) {
             const int64_t my_mc_block_id = (mc_block_id + n_slice_id) % num_Mc_blocks_per_thread;
@@ -246,19 +168,26 @@ extern "C" {{export_declaration}}
                 // NB: assume we pad N, nc_block_end won't exceed padded N here.
                 const int64_t nc_block_end = std::min(nc + Nc_blocks, n_block_end);
 {%- if use_local_acc %}
-    {%- set acc = kernel.local_buffers[acc_buf_name] %}
-                {{ kernel.reinit_buffer_if_null(acc_buf_name) }}
-    {%- set acc2 = kernel.local_buffers[acc_buf2_name] %}
-                {{ kernel.reinit_buffer_if_null(acc_buf2_name) }}
+
+    {% set acc_buf_list = [] %}
+    {% for buf_name in acc_buf_names %}
+        {% set acc_buf_list = acc_buf_list.append(kernel.local_buffers[buf_name]) %}
+        {{ kernel.reinit_buffer_if_null(buf_name) }}
+    {% endfor %}
+
+    {% set acc0 = acc_buf_list[0] %}
+    {% set acc2 = acc_buf_list[1] %}
+
+                
 {%- else %}
-    {%- set acc = kernel.slice_nd(GemmOut, [("m_start", "m_end"), ("n_start", "n_end")]) %}
+    {%- set acc0 = kernel.slice_nd(GemmOut, [("m_start", "m_end"), ("n_start", "n_end")]) %}
 {%- endif %}
                 for (int64_t kc = k_block_start; kc < k_block_end; kc += Kc_blocks) {
                     int64_t k_start = kc * Kr;
                     int64_t k_end = std::min(std::min(kc + Kc_blocks, k_block_end) * Kr, K);
 {%- set tile_X = kernel.slice_nd(X, [("m_start", "m_end"), ("k_start", "k_end")]) %}
                     for (int64_t nci = nc; nci < nc_block_end; nci++) {
-{%- set acc_slice = kernel.slice_nd(acc, [("0", "m_end - m_start"), ("(nci - nc)*Nr", "(nci - nc + 1)*Nr")]) %}
+{%- set acc_slice = kernel.slice_nd(acc0, [("0", "m_end - m_start"), ("(nci - nc)*Nr", "(nci - nc + 1)*Nr")]) %}
 {%- set acc2_slice = kernel.slice_nd(acc2, [("0", "m_end - m_start"), ("(nci - nc)*Nr", "(nci - nc + 1)*Nr")]) %}
 {%- set tile_W_3d = kernel.slice_nd(W, [("nci", "nci + 1"), ("k_start", "k_end"), ()]) %}
 {%- set tile_W = kernel.view(tile_W_3d, ["k_end - k_start", micro_gemm.register_blocking.block_n]) %}
@@ -276,7 +205,7 @@ extern "C" {{export_declaration}}
 
                 {
 {%- set tile_Y = kernel.slice_nd(Y_2d, [("m_start", "m_end"), ("n_start", "n_end")]) %}
-{%- set tile_acc = kernel.slice_nd(acc, [("0", "m_end - m_start"), ("0", "n_end - n_start")]) %}
+{%- set tile_acc = kernel.slice_nd(acc0, [("0", "m_end - m_start"), ("0", "n_end - n_start")]) %}
 {%- set tile_acc1 = kernel.slice_nd(acc2, [("0", "m_end - m_start"), ("0", "n_end - n_start")]) %}
 {%- if has_gate_bias %}
 {%- set tile_inp = kernel.slice_nd(inp, [("m_start", "m_end"), ("n_start", "n_end")]) %}
@@ -289,7 +218,7 @@ extern "C" {{export_declaration}}
 {%- set tile_inp1 = tile_Y %}
 {%- endif %}
                     // silu-mul epilogues
-                    {{ kernel.silu_mul(tile_acc, tile_acc1, tile_inp, tile_inp1, tile_Y, has_gate_bias, has_up_bias) }}
+                    {{ set_and_use_variable() }}
                 }
             }
         }
@@ -636,6 +565,7 @@ class CppPackedMLPTemplate(CppPackedGemmTemplate):
             inp1=inp1,
             has_gate_bias=self.has_bias[0],
             has_up_bias=self.has_bias[1],
+            kernel_args = {"X": X, "W": W, "W1": W1, "inp": inp, "inp1": inp1},
         )
         with contextlib.ExitStack() as stack:
             for buf in fake_buffers:
@@ -643,3 +573,102 @@ class CppPackedMLPTemplate(CppPackedGemmTemplate):
                     patch.object(V.graph, "get_dtype", self._fake_get_dtype(buf))
                 )
             return self._template_from_string(GEMM_TEMPLATE).render(**options)
+    
+    def codegen_epilogus(self):
+        res = IndentedBuffer()
+        epilogue_func = r"""
+template <bool has_gate_bias, bool has_up_bias>
+inline void silu_mul_epilogue_fusion(
+    float* in_ptr0,
+    float* in_ptr1,
+    const bfloat16* inp0,
+    const bfloat16* inp1,
+    bfloat16* out_ptr,
+    int64_t M,
+    int64_t N,
+    int64_t in_lda,
+    int64_t out_lda) {
+    int64_t n_scalar_start = 0;
+#if defined(CPU_CAPABILITY_AVX512) && !defined(_MSC_VER)
+    using Vectorized_fp32 = at::vec::Vectorized<float>;
+    using Vectorized_bf16 = at::vec::Vectorized<bfloat16>;
+    int64_t N1 = N / 32 * 32;
+    int64_t N2 = N / 16 * 16;
+    n_scalar_start = N2;
+#endif
+    for (int64_t m = 0; m < M; m += 1) {
+#if defined(CPU_CAPABILITY_AVX512) && !defined(_MSC_VER)
+        for (int64_t n = 0; n < N1; n += 32) {
+            Vectorized_fp32 tmp0 = Vectorized_fp32::loadu(in_ptr0 + (m * in_lda + n));
+            Vectorized_fp32 tmp0_1 = Vectorized_fp32::loadu(in_ptr0 + (m * in_lda + n + 16));
+            Vectorized_fp32 tmp1 = Vectorized_fp32::loadu(in_ptr1 + (m * in_lda + n));
+            Vectorized_fp32 tmp1_1 = Vectorized_fp32::loadu(in_ptr1 + (m * in_lda + n + 16));
+            if constexpr (has_gate_bias) {
+                const auto inp_bf16_vec = Vectorized_bf16::loadu(inp0 + n);
+                at::vec::VectorizedN<float, 2> inp_fp32_vecs = at::vec::convert<float, 2, bfloat16, 1>(inp_bf16_vec);
+                tmp0 = tmp0 + Vectorized_fp32(inp_fp32_vecs[0]);
+                tmp0_1 = tmp0_1 + Vectorized_fp32(inp_fp32_vecs[1]);
+            }
+            if constexpr (has_up_bias) {
+                const auto inp_bf16_vec = Vectorized_bf16::loadu(inp1 + n);
+                at::vec::VectorizedN<float, 2> inp_fp32_vecs = at::vec::convert<float, 2, bfloat16, 1>(inp_bf16_vec);
+                tmp1 = tmp1 + Vectorized_fp32(inp_fp32_vecs[0]);
+                tmp1_1 = tmp1_1 + Vectorized_fp32(inp_fp32_vecs[1]);
+            }
+            tmp0 = tmp0 * (decltype(tmp0)(1)/(decltype(tmp0)(1) + tmp0.neg().exp()));
+            tmp0_1 = tmp0_1 * (decltype(tmp0_1)(1)/(decltype(tmp0_1)(1) + tmp0_1.neg().exp()));
+            tmp0 = tmp0 * tmp1;
+            tmp0_1 = tmp0_1 * tmp1_1;
+            at::vec::VectorizedN<float, 2> out_fp32_vec(tmp0, tmp0_1);
+            Vectorized_bf16 out_bf16_vec = at::vec::convert<bfloat16, 1, float, 2>(out_fp32_vec);
+            out_bf16_vec.store(out_ptr + (m * out_lda + n));
+        }
+        for (int64_t n = N1; n < N2; n += 16) {
+            Vectorized_fp32 tmp0 = Vectorized_fp32::loadu(in_ptr0 + (m * in_lda + n));
+            Vectorized_fp32 tmp1 = Vectorized_fp32::loadu(in_ptr1 + (m * in_lda + n));
+            if constexpr (has_gate_bias) {
+                const auto inp_bf16_vec = Vectorized_bf16::loadu(inp0 + n, 16);
+                Vectorized_fp32 inp_fp32_vec = at::vec::convert<float, 1, bfloat16, 1>(inp_bf16_vec);
+                tmp0 = tmp0 + inp_fp32_vec;
+            }
+            if constexpr (has_up_bias) {
+                const auto inp_bf16_vec = Vectorized_bf16::loadu(inp1 + n, 16);
+                Vectorized_fp32 inp_fp32_vec = at::vec::convert<float, 1, bfloat16, 1>(inp_bf16_vec);
+                tmp1 = tmp1 + inp_fp32_vec;
+            }
+            tmp0 = tmp0 * (decltype(tmp0)(1)/(decltype(tmp0)(1) + tmp0.neg().exp()));
+            tmp0 = tmp0 * tmp1;
+            Vectorized_bf16 out_bf16_vec = at::vec::convert<bfloat16, 1, float, 1>(tmp0);
+            out_bf16_vec.store(out_ptr + (m * out_lda + n), 16);
+        }
+#endif
+        for (int64_t n = n_scalar_start; n < N; n += 1) {
+            float tmp0 = in_ptr0[m * in_lda + n];
+            float tmp1 = in_ptr1[m * in_lda + n];
+            // Bias add
+            if constexpr (has_gate_bias) {
+                tmp0 = tmp0 + (float)inp0[n];
+            }
+            if constexpr (has_up_bias) {
+                tmp1 = tmp1 + (float)inp1[n];
+            }
+            // Silu
+            tmp0 = tmp0 * (1.0 / ( 1.0 + std::exp(-tmp0)));
+            // Mul
+            tmp0 = tmp0 * tmp1;
+            // Store output
+            out_ptr[m * out_lda + n] = (bfloat16)tmp0;
+        }
+    }
+}
+        """
+        res.splice(epilogue_func)
+        return res
+
+    def codegen_kernel_args(self):
+        res = IndentedBuffer()
+        epilogue_func = r"""
+{%- set kernel_args = {"X": X, "W": W, "W1": W1, "inp": inp, "inp1": inp1} %}
+        """
+        res.splice(epilogue_func)
+        return res
