@@ -164,6 +164,21 @@ extern "C" {{export_declaration}}
     {%- set acc_buf_name = "local_acc_buf" %}
         {{ kernel.define_buffer(acc_buf_name, ["Mc_blocks*Mr", "Nc_blocks*Nr"], acc_buf_dtype) }}
 {%- endif %}
+
+{%- if config.cpp.cpp_gemm_horizontal_transverse %}
+        for (int64_t nc = n_block_start; nc < n_block_end; nc += Nc_blocks) {
+            const int64_t n_start = nc * Nr;
+            const int64_t n_end = std::min(std::min(nc + Nc_blocks, n_block_end) * Nr, N);
+            const int64_t n_size = n_end - n_start;
+            // NB: assume we pad N, nc_block_end won't exceed padded N here.
+            const int64_t nc_block_end = std::min(nc + Nc_blocks, n_block_end);
+            for (int64_t mc_block_id = 0; mc_block_id < num_Mc_blocks_per_thread; mc_block_id++) {
+                const int64_t my_mc_block_id = (mc_block_id + n_slice_id) % num_Mc_blocks_per_thread;
+                const int64_t mc = m_block_start + my_mc_block_id * Mc_blocks;
+                const int64_t m_start = mc * Mr;
+                const int64_t m_end = std::min(std::min(mc + Mc_blocks, m_block_end) * Mr, M);
+                const int64_t m_size = m_end - m_start;
+{%- else %}
         for (int64_t mc_block_id = 0; mc_block_id < num_Mc_blocks_per_thread; mc_block_id++) {
             const int64_t my_mc_block_id = (mc_block_id + n_slice_id) % num_Mc_blocks_per_thread;
             const int64_t mc = m_block_start + my_mc_block_id * Mc_blocks;
@@ -176,6 +191,8 @@ extern "C" {{export_declaration}}
                 const int64_t n_size = n_end - n_start;
                 // NB: assume we pad N, nc_block_end won't exceed padded N here.
                 const int64_t nc_block_end = std::min(nc + Nc_blocks, n_block_end);
+{%- endif %}
+
 {%- if use_local_acc %}
     {%- set acc = kernel.local_buffers[acc_buf_name] %}
                 {{ kernel.reinit_buffer_if_null(acc_buf_name) }}
@@ -185,17 +202,33 @@ extern "C" {{export_declaration}}
                 for (int64_t kc = k_block_start; kc < k_block_end; kc += Kc_blocks) {
                     int64_t k_start = kc * Kr;
                     int64_t k_end = std::min(std::min(kc + Kc_blocks, k_block_end) * Kr, K);
+
+{%- if config.cpp.cpp_gemm_horizontal_transverse %}
+                   for (int64_t mci = m_start; mci < m_end; mci+=Mr) {
+                        const int64_t m_start_i = mci;
+                        const int64_t m_end_i = m_start_i + Mr;
+{%- set tile_X = kernel.slice_nd(X, [("m_start_i", "m_end_i"), ("k_start", "k_end")]) %}
+{%- else %}
 {%- set tile_X = kernel.slice_nd(X, [("m_start", "m_end"), ("k_start", "k_end")]) %}
-                    for (int64_t nci = nc; nci < nc_block_end; nci++) {
+{%- endif %}
+                        for (int64_t nci = nc; nci < nc_block_end; nci++) {
+{%- if config.cpp.cpp_gemm_horizontal_transverse %}
+{%- set acc_slice = kernel.slice_nd(acc, [("m_start_i - m_start", "m_end_i - m_start"), ("(nci - nc)*Nr", "(nci - nc + 1)*Nr")]) %}
+{%- else %}
 {%- set acc_slice = kernel.slice_nd(acc, [("0", "m_end - m_start"), ("(nci - nc)*Nr", "(nci - nc + 1)*Nr")]) %}
+{%- endif %}
 {%- set tile_W_3d = kernel.slice_nd(W, [("nci", "nci + 1"), ("k_start", "k_end"), ()]) %}
 {%- set tile_W = kernel.view(tile_W_3d, ["k_end - k_start", micro_gemm.register_blocking.block_n]) %}
-                        if (kc == k_block_start) {
-                            {{ micro_gemm.codegen_call(kernel, tile_X, tile_W, acc_slice, accum=False)|indent(28, false) }}
-                        } else {
-                            {{ micro_gemm.codegen_call(kernel, tile_X, tile_W, acc_slice, accum=True)|indent(28, false) }}
+                            if (kc == k_block_start) {
+                                {{ micro_gemm.codegen_call(kernel, tile_X, tile_W, acc_slice, accum=False)|indent(28, false) }}
+                            } else {
+                                {{ micro_gemm.codegen_call(kernel, tile_X, tile_W, acc_slice, accum=True)|indent(28, false) }}
+                            }
                         }
+{%- if config.cpp.cpp_gemm_horizontal_transverse %}
                     }
+{%- endif %}
+                        
                 }
 {%- if maybe_k_slicing %}
                 if (num_Kt_blocks > 1) {
@@ -453,38 +486,69 @@ class CppPackedGemmTemplate(CppTemplate):
             # 2) Make cache blocks of A L2-reside, which would limit Mc. We want to reuse A
             #    along N, where we have two sub-strategies (see notes below) to decide Mc and Nc.
 
-            # Step 1: Decide Kc assuming B block is L1-reside.
-            size_cache_B = Kr * Kt_blocks * Nr * num_byte_B
-            Kc_blocks = Kt_blocks
-            if size_cache_B > L1:
-                Kc_blocks = math.floor(L1 / (Kr * Nr * num_byte_B))
+            if config.cpp.cpp_gemm_horizontal_transverse:
+                # Step 1: Decide Kc assuming A block is L1-reside.
+                size_cache_A = Kr * Kt_blocks * Mr * num_byte_A
+                Kc_blocks = Kt_blocks
+                if size_cache_A > L1:
+                    Kc_blocks = math.floor(L1 / (Kr * Mr * num_byte_A))
 
-            # Step 2: Decide Mc assuming A block is L2-reside.
-            min_Mc_ratio = 2  # TODO(jgong5): something to tune?
-            min_Mc_blocks = math.ceil(min_Mc_ratio * Mr / Nr)
-            assert min_Mc_blocks >= 1
-            Kt_bytes = Kt_blocks * Kr * num_byte_A
-            if min_Mc_blocks * Mr * Kt_bytes < L2:
-                # Strategy 1: A (Mc x Kt) resides in L2 and reused by all Nt
-                # when Nc_blocks is kept 1. Mc should be large enough (>= min_Mc_blocks)
-                # to reuse B (Kc x Nr) in L1. This makes C (Mc x Nr) small enough to reside
-                # in L1.
-                Mc_blocks = min(Mt_blocks, math.floor(L2 / (Mr * Kt_bytes)))
-                Nc_blocks = 1
+                # Step 2: Decide Nc assuming B block is L2-reside.
+                min_Nc_ratio = 2  # TODO(jgong5): something to tune?
+                min_Nc_blocks = math.ceil(min_Nc_ratio * Nr / Mr)
+                assert min_Nc_blocks >= 1
+                Kt_bytes = Kt_blocks * Kr * num_byte_B
+                if min_Nc_blocks * Nr * Kt_bytes < L2:
+                    Nc_blocks = min(Nt_blocks, math.floor(L2 / (Nr * Kt_bytes)))
+                    Mc_blocks = 1
+                else:
+                    # Strategy 2: Kt is too large to hold A (Mc x Kt) in L2, we reuse
+                    # A (Mc x Kc) in L2 by B (Kc x Nc). C (Mc x Nc) resides in L2.
+                    Nc_blocks = Nt_blocks
+                    Mc_blocks = min(math.ceil(Nc_blocks * Nr / Mr), Mt_blocks)
+                    Mc_bytes = Mc_blocks * Mr * 4  # assume C or acc is float32/int32
+                    Kc_bytes = Kc_blocks * Kr * num_byte_B
+                    if Nc_blocks * Nr * (Kc_bytes + Mc_bytes) > L2:
+                        # The following is the solution for 4*Mc*Nc + Mc*Kc_bytes = L2,
+                        # assuming Mc == Nc for good data reuse.
+                        N_max = (math.sqrt(Kc_bytes * Kc_bytes + 16 * L2) - Kc_bytes) / 8
+                        if N_max < Nc_blocks * Nr:
+                            Nc_blocks = math.floor(N_max / Nr)
+                            Mc_blocks = min(math.ceil(Nc_blocks * Nr / Mr), Mt_blocks)
+
             else:
-                # Strategy 2: Kt is too large to hold A (Mc x Kt) in L2, we reuse
-                # A (Mc x Kc) in L2 by B (Kc x Nc). C (Mc x Nc) resides in L2.
-                Mc_blocks = Mt_blocks
-                Nc_blocks = min(math.ceil(Mc_blocks * Mr / Nr), Nt_blocks)
-                Nc_bytes = Nc_blocks * Nr * 4  # assume C or acc is float32/int32
-                Kc_bytes = Kc_blocks * Kr * num_byte_A
-                if Mc_blocks * Mr * (Kc_bytes + Nc_bytes) > L2:
-                    # The following is the solution for 4*Mc*Nc + Mc*Kc_bytes = L2,
-                    # assuming Mc == Nc for good data reuse.
-                    M_max = (math.sqrt(Kc_bytes * Kc_bytes + 16 * L2) - Kc_bytes) / 8
-                    if M_max < Mc_blocks * Mr:
-                        Mc_blocks = math.floor(M_max / Mr)
-                        Nc_blocks = min(math.ceil(Mc_blocks * Mr / Nr), Nt_blocks)
+                # Step 1: Decide Kc assuming B block is L1-reside.
+                size_cache_B = Kr * Kt_blocks * Nr * num_byte_B
+                Kc_blocks = Kt_blocks
+                if size_cache_B > L1:
+                    Kc_blocks = math.floor(L1 / (Kr * Nr * num_byte_B))
+
+                # Step 2: Decide Mc assuming A block is L2-reside.
+                min_Mc_ratio = 2  # TODO(jgong5): something to tune?
+                min_Mc_blocks = math.ceil(min_Mc_ratio * Mr / Nr)
+                assert min_Mc_blocks >= 1
+                Kt_bytes = Kt_blocks * Kr * num_byte_A
+                if min_Mc_blocks * Mr * Kt_bytes < L2:
+                    # Strategy 1: A (Mc x Kt) resides in L2 and reused by all Nt
+                    # when Nc_blocks is kept 1. Mc should be large enough (>= min_Mc_blocks)
+                    # to reuse B (Kc x Nr) in L1. This makes C (Mc x Nr) small enough to reside
+                    # in L1.
+                    Mc_blocks = min(Mt_blocks, math.floor(L2 / (Mr * Kt_bytes)))
+                    Nc_blocks = 1
+                else:
+                    # Strategy 2: Kt is too large to hold A (Mc x Kt) in L2, we reuse
+                    # A (Mc x Kc) in L2 by B (Kc x Nc). C (Mc x Nc) resides in L2.
+                    Mc_blocks = Mt_blocks
+                    Nc_blocks = min(math.ceil(Mc_blocks * Mr / Nr), Nt_blocks)
+                    Nc_bytes = Nc_blocks * Nr * 4  # assume C or acc is float32/int32
+                    Kc_bytes = Kc_blocks * Kr * num_byte_A
+                    if Mc_blocks * Mr * (Kc_bytes + Nc_bytes) > L2:
+                        # The following is the solution for 4*Mc*Nc + Mc*Kc_bytes = L2,
+                        # assuming Mc == Nc for good data reuse.
+                        M_max = (math.sqrt(Kc_bytes * Kc_bytes + 16 * L2) - Kc_bytes) / 8
+                        if M_max < Mc_blocks * Mr:
+                            Mc_blocks = math.floor(M_max / Mr)
+                            Nc_blocks = min(math.ceil(Mc_blocks * Mr / Nr), Nt_blocks)
 
             return Mc_blocks, Nc_blocks, Kc_blocks
 
@@ -635,6 +699,7 @@ class CppPackedGemmTemplate(CppTemplate):
             compute_dtype=compute_dtype,
             alpha=alpha,
             num_threads=num_threads,
+            horizontal_transverse=config.cpp.cpp_gemm_horizontal_transverse,
         )
         assert micro_gemm is not None
         _, block_n, _ = micro_gemm.register_blocking
@@ -1055,6 +1120,7 @@ class CppPackedGemmTemplate(CppTemplate):
             compute_dtype=compute_dtype,
             alpha=self.alpha,
             num_threads=self.num_threads,
+            horizontal_transverse=config.cpp.cpp_gemm_horizontal_transverse,
         )
         assert micro_gemm is not None
         assert self.register_blocking == micro_gemm.register_blocking

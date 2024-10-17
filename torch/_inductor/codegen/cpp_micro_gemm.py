@@ -73,6 +73,7 @@ inline void {{kernel_name}}(
         compute_dtype,
         register_blocking,
         alpha=1,
+        horizontal_transverse=False,
     ) -> None:
         self.name = name
         self.input_dtype = input_dtype
@@ -82,12 +83,14 @@ inline void {{kernel_name}}(
         self.compute_dtype = compute_dtype
         self.register_blocking = register_blocking
         self.alpha = alpha
+        self.horizontal_transverse = horizontal_transverse
 
     def get_common_options(self):
         if self.input_dtype == torch.uint8:
             assert self.compute_dtype == torch.int32
             assert self.output_dtype == torch.int32
             assert self.input2_dtype == torch.int8
+        print("self.horizontal_transverse is: {}".format(self.horizontal_transverse), flush=True)
         return {
             "torch": torch,
             "kernel_name": self.name,
@@ -104,6 +107,7 @@ inline void {{kernel_name}}(
             "int8_gemm": self.input_dtype == torch.uint8,
             "vnni_size": 4 if self.input_dtype == torch.uint8 else 2,
             "restrict_keyword": get_restrict_keyword(),
+            "horizontal_transverse": self.horizontal_transverse,
         }
 
     def get_kernel_declaration(self):
@@ -250,7 +254,7 @@ class CppMicroGemmRef(CppMicroGemm):
 """
 
     def __init__(
-        self, name, input_dtype, input2_dtype, output_dtype, compute_dtype, alpha
+        self, name, input_dtype, input2_dtype, output_dtype, compute_dtype, alpha, horizontal_transverse=False
     ) -> None:
         super().__init__(
             name,
@@ -260,6 +264,7 @@ class CppMicroGemmRef(CppMicroGemm):
             compute_dtype,
             GemmBlocking(1, 1, 1),
             alpha,
+            horizontal_transverse,
         )
 
     def codegen_define(self, kernel: CppTemplateKernel) -> str:
@@ -634,14 +639,28 @@ inline void {{kernel_name}}_amx_kernel_{{num_rows}}_{{num_columns}}(
         {%- set tile_idx_b = tile_offset_b + tile_col %}
         {%- set tile_idx_c = tile_row * num_columns + tile_col %}
         {%- if tile_col == 0 %}
+
+        {%- if horizontal_transverse %}
+        _tile_loadd({{tile_idx_a}}, A + {{tile_row * 16}} * lda + k, lda * sizeof({{input_t}}));
+        {%- else %}
         _tile_stream_loadd({{tile_idx_a}}, A + {{tile_row * 16}} * lda + k, lda * sizeof({{input_t}}));
+        {%- endif %}
+        
+        
         {%- endif %}
         {%- if tile_row == 0 %}
             {%- if input_dtype == torch.bfloat16 and input2_dtype == torch.int8 %}
         load_B_in_buf(const_cast<{{input2_t}}*>(B) + k * ldb + {{tile_col * 16 * vnni_size}});
         _tile_loadd({{tile_idx_b}}, bf16_weights_buf, 64);
             {%- else %}
+        
+        {%- if horizontal_transverse %}
+        _tile_stream_loadd({{tile_idx_b}}, B + k * ldb + {{tile_col * 16 * vnni_size}}, ldb * {{vnni_size}} * sizeof({{input_t}}));
+        {%- else %}
         _tile_loadd({{tile_idx_b}}, B + k * ldb + {{tile_col * 16 * vnni_size}}, ldb * {{vnni_size}} * sizeof({{input_t}}));
+        {%- endif %}
+        
+        
             {%- endif %}
         {%- endif %}
         {%- if int8_gemm %}
@@ -749,6 +768,7 @@ def create_micro_gemm(
     alpha=1,
     num_threads=-1,
     use_ref=True,
+    horizontal_transverse=False,
 ) -> Optional[CppMicroGemm]:
     def create_from_config(cls, config: CppMicroGemmConfig):
         return cls(
@@ -759,6 +779,7 @@ def create_micro_gemm(
             config.compute_dtype,
             config.register_blocking,
             alpha,
+            horizontal_transverse,
         )
 
     assert isinstance(n, int) or n.is_number, n
