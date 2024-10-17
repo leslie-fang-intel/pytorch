@@ -51,6 +51,8 @@ fx_graph_cache = (
     os.environ.get("TORCHINDUCTOR_FX_GRAPH_CACHE", "0" if is_fbcode() else "1") == "1"
 )
 
+enable_linear_silu_linear_mul = False
+
 # use remote fx aot graph codegen cache
 # False: Disables the cache
 # True: Enables the cache
