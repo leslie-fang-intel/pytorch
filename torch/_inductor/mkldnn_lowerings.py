@@ -9,6 +9,7 @@ from torch._inductor.kernel.mm_common import mm_args
 
 from . import ir
 from .codegen.cpp_gemm_template import CppPackedGemmTemplate
+from .codegen.cpp_gemm_template_horizontal import CppPackedGemmTemplateHorizontal
 from .codegen.cpp_utils import create_epilogue_with_attr
 from .ir import TensorBox
 from .lowering import (
@@ -196,7 +197,7 @@ def register_onednn_fusion_ops():
                     )
                     if b is not None:
                         kwargs["input_indices"] = [2, 0, 1]  # type: ignore[assignment]
-                    CppPackedGemmTemplate.add_choices(
+                    CppPackedGemmTemplateHorizontal.add_choices(
                         choices,
                         layout,
                         [x, w] if b is None else [x, w, b],
