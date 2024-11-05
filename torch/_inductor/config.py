@@ -888,6 +888,11 @@ class cpp:
     # decomposed into 7x4x2 thread blocks along MxNxK of a GEMM.
     gemm_thread_factors = os.environ.get("TORCHINDUCTOR_CPP_GEMM_THREAD_FACTORS", None)
 
+    cpp_gemm_horizontal_transverse = (
+        os.environ.get("TORCHINDUCTOR_CPP_GEMM_HORIZONTAL_TRANSVERSE_FLAG", "0")
+        == "1"
+    )
+
     # Whether to enable masked vectorization for the tail_loop.
     enable_loop_tail_vec = True
 
