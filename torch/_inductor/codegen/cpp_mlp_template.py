@@ -417,27 +417,56 @@ class CppPackedMLPTemplate(CppPackedGemmTemplate):
                     Kc_blocks = math.floor(L1 / (Kr * Mr * num_byte_A))
 
                 # Step 2: Decide Nc assuming B block is L2-reside.
+                # For MLP fusion
+                num_byte_B = num_byte_B * 2
+                
                 min_Nc_ratio = 2  # TODO(jgong5): something to tune?
                 min_Nc_blocks = math.ceil(min_Nc_ratio * Nr / Mr)
                 assert min_Nc_blocks >= 1
                 Kt_bytes = Kt_blocks * Kr * num_byte_B
-                if min_Nc_blocks * Nr * Kt_bytes < L2:
-                    Nc_blocks = min(Nt_blocks, math.floor(L2 / (Nr * Kt_bytes)))
-                    Mc_blocks = 1
-                else:
-                    # Strategy 2: Kt is too large to hold A (Mc x Kt) in L2, we reuse
-                    # A (Mc x Kc) in L2 by B (Kc x Nc). C (Mc x Nc) resides in L2.
-                    Nc_blocks = Nt_blocks
-                    Mc_blocks = min(math.ceil(Nc_blocks * Nr / Mr), Mt_blocks)
-                    Mc_bytes = Mc_blocks * Mr * 4  # assume C or acc is float32/int32
-                    Kc_bytes = Kc_blocks * Kr * num_byte_B
-                    if Nc_blocks * Nr * (Kc_bytes + Mc_bytes) > L2:
-                        # The following is the solution for 4*Mc*Nc + Mc*Kc_bytes = L2,
-                        # assuming Mc == Nc for good data reuse.
-                        N_max = (math.sqrt(Kc_bytes * Kc_bytes + 16 * L2) - Kc_bytes) / 8
-                        if N_max < Nc_blocks * Nr:
-                            Nc_blocks = math.floor(N_max / Nr)
-                            Mc_blocks = min(math.ceil(Nc_blocks * Nr / Mr), Mt_blocks)
+                Kc_bytes = Kc_blocks * Kr * num_byte_B
+
+                # Nc_blocks = min(Nt_blocks, math.floor(L2 / (Nr * Kc_bytes)))
+                # Mc_blocks = 1
+
+                # Only keep Strategy 2: Kc is too large to hold B (Nc x Kc) in L2, we reuse
+                # A (Mc x Kc) in L2 by B (Kc x Nc). C (Mc x Nc) resides in L2.
+                Nc_blocks = Nt_blocks
+                Mc_blocks = min(math.ceil(Nc_blocks * Nr / Mr), Mt_blocks)
+                Mc_bytes = Mc_blocks * Mr * 4  # assume C or acc is float32/int32
+                Kc_bytes = Kc_blocks * Kr * num_byte_B
+                if Nc_blocks * Nr * (Kc_bytes + Mc_bytes) > L2:
+                    # The following is the solution for 4*Mc*Nc + Mc*Kc_bytes = L2,
+                    # assuming Mc == Nc for good data reuse.
+                    N_max = (math.sqrt(Kc_bytes * Kc_bytes + 16 * L2) - Kc_bytes) / 8
+                    if N_max < Nc_blocks * Nr:
+                        Nc_blocks = math.floor(N_max / Nr)
+                        Mc_blocks = min(math.ceil(Nc_blocks * Nr / Mr), Mt_blocks)
+
+
+                # if min_Nc_blocks * Nr * Kt_bytes < L2:
+                #     # Strategy 1: A (Nc x Kc) resides in L2 and reused by all Mr x Kc
+                #     Nc_blocks = min(Nt_blocks, math.floor(L2 / (Nr * Kt_bytes)))
+                #     Mc_blocks = 1
+                # else:
+                #     # Strategy 2: Kc is too large to hold B (Nc x Kc) in L2, we reuse
+                #     # A (Mc x Kc) in L2 by B (Kc x Nc). C (Mc x Nc) resides in L2.
+                #     Nc_blocks = Nt_blocks
+                #     Mc_blocks = min(math.ceil(Nc_blocks * Nr / Mr), Mt_blocks)
+                #     Mc_bytes = Mc_blocks * Mr * 4  # assume C or acc is float32/int32
+                #     Kc_bytes = Kc_blocks * Kr * num_byte_B
+                #     if Nc_blocks * Nr * (Kc_bytes + Mc_bytes) > L2:
+                #         # The following is the solution for 4*Mc*Nc + Mc*Kc_bytes = L2,
+                #         # assuming Mc == Nc for good data reuse.
+                #         N_max = (math.sqrt(Kc_bytes * Kc_bytes + 16 * L2) - Kc_bytes) / 8
+                #         if N_max < Nc_blocks * Nr:
+                #             Nc_blocks = math.floor(N_max / Nr)
+                #             Mc_blocks = min(math.ceil(Nc_blocks * Nr / Mr), Mt_blocks)
+        
+                print("Mc_blocks is: {}".format(Mc_blocks), flush=True)
+                print("Nc_blocks is: {}".format(Nc_blocks), flush=True)
+                print("Kc_blocks is: {}".format(Kc_blocks), flush=True)
+
 
             else:
                 # Step 1: Decide Kc assuming B block is L1-reside.
