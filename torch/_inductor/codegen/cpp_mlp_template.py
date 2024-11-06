@@ -11,7 +11,7 @@ from ..._dynamo.utils import counters
 from .. import config, ir, lowering as L
 from ..kernel.mm_common import mm_args
 from ..select_algorithm import DataProcessorTemplateWrapper
-from ..utils import parallel_num_threads
+from ..utils import cache_on_self, parallel_num_threads
 from ..virtualized import V
 from .cpp import get_export_declaration
 from .cpp_gemm_template import CppPackedGemmTemplate, get_padded_n
@@ -348,6 +348,140 @@ class CppPackedMLPTemplate(CppPackedGemmTemplate):
             has_bias,
             epilogue_creator,
         )
+
+    @cache_on_self
+    def cache_blocking(self) -> GemmBlocking:
+
+        import math
+
+        def get_cache_blocking(register_blocking, thread_blocking):
+            Mr = register_blocking.block_m
+            Nr = register_blocking.block_n
+            Kr = register_blocking.block_k
+
+            Mt_blocks = thread_blocking.block_m
+            Nt_blocks = thread_blocking.block_n
+            Kt_blocks = thread_blocking.block_k
+
+            if config.cpp.gemm_cache_blocking is not None:
+                blockings = [int(i) for i in config.cpp.gemm_cache_blocking.split(",")]
+                assert len(blockings) == 3
+                Mc_blocks, Nc_blocks, Kc_blocks = blockings
+                return (
+                    min(Mc_blocks, Mt_blocks),
+                    min(Nc_blocks, Nt_blocks),
+                    min(Kc_blocks, Kt_blocks),
+                )
+
+            # The ratios below are empirically determined to decide
+            # the effective sizes of L1 and L2.
+            # TODO: tune the factor here
+            L1_limit_factor = 0.8
+            L2_limit_factor = 0.5
+
+            L1_cache_size = (
+                torch._C._cpu._L1d_cache_size()
+            )  # per core cache size in Bytes
+            assert (
+                L1_cache_size > 0
+            ), f"Expect L1_cache_size > 0 but got {L1_cache_size}"
+            L1 = L1_cache_size * L1_limit_factor
+
+            L2_cache_size = (
+                torch._C._cpu._L2_cache_size()
+            )  # per core cache size in Bytes
+            assert (
+                L2_cache_size > 0
+            ), f"Expect L2_cache_size > 0 but got {L2_cache_size}"
+            L2 = L2_cache_size * L2_limit_factor
+
+            def get_num_byte(dtype):
+                return torch.tensor([], dtype=dtype).element_size()
+
+            num_byte_A = get_num_byte(self.input_nodes[0].get_dtype())
+            num_byte_B = get_num_byte(self.input_nodes[1].get_dtype())
+
+            # NOTE [CPP GEMM Cache Blocking Algorithm]
+            # Our overall strategy is to
+            # 1) Make cache blocks of B L1-reside and reused by multiple rows of A, i.e. Mc.
+            #    Here, B is Kc x Nr where Nr is a single register block. We use L1 size to
+            #    decide Kc. We want to make Mc large enough to better reuse B.
+            # 2) Make cache blocks of A L2-reside, which would limit Mc. We want to reuse A
+            #    along N, where we have two sub-strategies (see notes below) to decide Mc and Nc.
+
+            if config.cpp.cpp_gemm_horizontal_transverse:
+                # Step 1: Decide Kc assuming A block is L1-reside.
+                size_cache_A = Kr * Kt_blocks * Mr * num_byte_A
+                Kc_blocks = Kt_blocks
+                if size_cache_A > L1:
+                    Kc_blocks = math.floor(L1 / (Kr * Mr * num_byte_A))
+
+                # Step 2: Decide Nc assuming B block is L2-reside.
+                min_Nc_ratio = 2  # TODO(jgong5): something to tune?
+                min_Nc_blocks = math.ceil(min_Nc_ratio * Nr / Mr)
+                assert min_Nc_blocks >= 1
+                Kt_bytes = Kt_blocks * Kr * num_byte_B
+                if min_Nc_blocks * Nr * Kt_bytes < L2:
+                    Nc_blocks = min(Nt_blocks, math.floor(L2 / (Nr * Kt_bytes)))
+                    Mc_blocks = 1
+                else:
+                    # Strategy 2: Kt is too large to hold A (Mc x Kt) in L2, we reuse
+                    # A (Mc x Kc) in L2 by B (Kc x Nc). C (Mc x Nc) resides in L2.
+                    Nc_blocks = Nt_blocks
+                    Mc_blocks = min(math.ceil(Nc_blocks * Nr / Mr), Mt_blocks)
+                    Mc_bytes = Mc_blocks * Mr * 4  # assume C or acc is float32/int32
+                    Kc_bytes = Kc_blocks * Kr * num_byte_B
+                    if Nc_blocks * Nr * (Kc_bytes + Mc_bytes) > L2:
+                        # The following is the solution for 4*Mc*Nc + Mc*Kc_bytes = L2,
+                        # assuming Mc == Nc for good data reuse.
+                        N_max = (math.sqrt(Kc_bytes * Kc_bytes + 16 * L2) - Kc_bytes) / 8
+                        if N_max < Nc_blocks * Nr:
+                            Nc_blocks = math.floor(N_max / Nr)
+                            Mc_blocks = min(math.ceil(Nc_blocks * Nr / Mr), Mt_blocks)
+
+            else:
+                # Step 1: Decide Kc assuming B block is L1-reside.
+                size_cache_B = Kr * Kt_blocks * Nr * num_byte_B
+                Kc_blocks = Kt_blocks
+                if size_cache_B > L1:
+                    Kc_blocks = math.floor(L1 / (Kr * Nr * num_byte_B))
+
+                # Step 2: Decide Mc assuming A block is L2-reside.
+                min_Mc_ratio = 2  # TODO(jgong5): something to tune?
+                min_Mc_blocks = math.ceil(min_Mc_ratio * Mr / Nr)
+                assert min_Mc_blocks >= 1
+                Kt_bytes = Kt_blocks * Kr * num_byte_A
+                if min_Mc_blocks * Mr * Kt_bytes < L2:
+                    # Strategy 1: A (Mc x Kt) resides in L2 and reused by all Nt
+                    # when Nc_blocks is kept 1. Mc should be large enough (>= min_Mc_blocks)
+                    # to reuse B (Kc x Nr) in L1. This makes C (Mc x Nr) small enough to reside
+                    # in L1.
+                    Mc_blocks = min(Mt_blocks, math.floor(L2 / (Mr * Kt_bytes)))
+                    Nc_blocks = 1
+                else:
+                    # Strategy 2: Kt is too large to hold A (Mc x Kt) in L2, we reuse
+                    # A (Mc x Kc) in L2 by B (Kc x Nc). C (Mc x Nc) resides in L2.
+                    Mc_blocks = Mt_blocks
+                    Nc_blocks = min(math.ceil(Mc_blocks * Mr / Nr), Nt_blocks)
+                    Nc_bytes = Nc_blocks * Nr * 4  # assume C or acc is float32/int32
+                    Kc_bytes = Kc_blocks * Kr * num_byte_A
+                    if Mc_blocks * Mr * (Kc_bytes + Nc_bytes) > L2:
+                        # The following is the solution for 4*Mc*Nc + Mc*Kc_bytes = L2,
+                        # assuming Mc == Nc for good data reuse.
+                        M_max = (math.sqrt(Kc_bytes * Kc_bytes + 16 * L2) - Kc_bytes) / 8
+                        if M_max < Mc_blocks * Mr:
+                            Mc_blocks = math.floor(M_max / Mr)
+                            Nc_blocks = min(math.ceil(Mc_blocks * Mr / Nr), Nt_blocks)
+
+            return Mc_blocks, Nc_blocks, Kc_blocks
+
+        assert (
+            not self.is_dynamic_M
+        ), "Unable to determine cache blocking for dynamic M."
+        register_blocking = self.register_blocking
+        thread_blocking = self.thread_blocking()
+
+        return GemmBlocking(*get_cache_blocking(register_blocking, thread_blocking))
 
     @staticmethod
     def add_choices(
