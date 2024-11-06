@@ -261,22 +261,44 @@ extern "C" {{export_declaration}}
                 for (int64_t kc = k_block_start; kc < k_block_end; kc += Kc_blocks) {
                     int64_t k_start = kc * Kr;
                     int64_t k_end = std::min(std::min(kc + Kc_blocks, k_block_end) * Kr, K);
+
+{%- if config.cpp.cpp_gemm_horizontal_transverse %}
+                   for (int64_t mci = m_start; mci < m_end; mci+=Mr) {
+                        const int64_t m_start_i = mci;
+                        const int64_t m_end_i = m_start_i + Mr;
+{%- set tile_X = kernel.slice_nd(X, [("m_start_i", "m_end_i"), ("k_start", "k_end")]) %}
+{%- else %}
 {%- set tile_X = kernel.slice_nd(X, [("m_start", "m_end"), ("k_start", "k_end")]) %}
-                    for (int64_t nci = nc; nci < nc_block_end; nci++) {
+{%- endif %}
+
+
+                        for (int64_t nci = nc; nci < nc_block_end; nci++) {
+{%- if config.cpp.cpp_gemm_horizontal_transverse %}
+{%- set acc_slice = kernel.slice_nd(acc, [("m_start_i - m_start", "m_end_i - m_start"), ("(nci - nc)*Nr", "(nci - nc + 1)*Nr")]) %}
+{%- set acc2_slice = kernel.slice_nd(acc2, [("m_start_i - m_start", "m_end_i - m_start"), ("(nci - nc)*Nr", "(nci - nc + 1)*Nr")]) %}
+{%- else %}
 {%- set acc_slice = kernel.slice_nd(acc, [("0", "m_end - m_start"), ("(nci - nc)*Nr", "(nci - nc + 1)*Nr")]) %}
 {%- set acc2_slice = kernel.slice_nd(acc2, [("0", "m_end - m_start"), ("(nci - nc)*Nr", "(nci - nc + 1)*Nr")]) %}
+{%- endif %}
+
 {%- set tile_W_3d = kernel.slice_nd(W, [("nci", "nci + 1"), ("k_start", "k_end"), ()]) %}
 {%- set tile_W = kernel.view(tile_W_3d, ["k_end - k_start", micro_gemm.register_blocking.block_n]) %}
 {%- set tile_W1_3d = kernel.slice_nd(W1, [("nci", "nci + 1"), ("k_start", "k_end"), ()]) %}
 {%- set tile_W1 = kernel.view(tile_W1_3d, ["k_end - k_start", micro_gemm.register_blocking.block_n]) %}
-                        if (kc == k_block_start) {
-                            {{ micro_gemm.codegen_call(kernel, tile_X, tile_W, acc_slice, accum=False)|indent(28, false) }}
-                            {{ micro_gemm.codegen_call(kernel, tile_X, tile_W1, acc2_slice, accum=False)|indent(28, false) }}
-                        } else {
-                            {{ micro_gemm.codegen_call(kernel, tile_X, tile_W, acc_slice, accum=True)|indent(28, false) }}
-                            {{ micro_gemm.codegen_call(kernel, tile_X, tile_W1, acc2_slice, accum=True)|indent(28, false) }}
+                            if (kc == k_block_start) {
+                                {{ micro_gemm.codegen_call(kernel, tile_X, tile_W, acc_slice, accum=False)|indent(28, false) }}
+                                {{ micro_gemm.codegen_call(kernel, tile_X, tile_W1, acc2_slice, accum=False)|indent(28, false) }}
+                            } else {
+                                {{ micro_gemm.codegen_call(kernel, tile_X, tile_W, acc_slice, accum=True)|indent(28, false) }}
+                                {{ micro_gemm.codegen_call(kernel, tile_X, tile_W1, acc2_slice, accum=True)|indent(28, false) }}
+                            }
                         }
+
+{%- if config.cpp.cpp_gemm_horizontal_transverse %}
                     }
+{%- endif %}
+
+                        
                 }
 
                 {
@@ -425,6 +447,7 @@ class CppPackedMLPTemplate(CppPackedGemmTemplate):
             compute_dtype=compute_dtype,
             alpha=alpha,
             num_threads=num_threads,
+            horizontal_transverse=config.cpp.cpp_gemm_horizontal_transverse,
         )
         assert micro_gemm is not None
         _, block_n, _ = micro_gemm.register_blocking
@@ -600,6 +623,7 @@ class CppPackedMLPTemplate(CppPackedGemmTemplate):
             compute_dtype=compute_dtype,
             alpha=self.alpha,
             num_threads=self.num_threads,
+            horizontal_transverse=config.cpp.cpp_gemm_horizontal_transverse,
         )
         assert micro_gemm is not None
         assert self.register_blocking == micro_gemm.register_blocking
