@@ -898,6 +898,8 @@ class cpp:
     # Whether to enable masked vectorization for the tail_loop.
     enable_loop_tail_vec = True
 
+    enable_concat_linear = os.environ.get("TORCHINDUCTOR_CONCAT_LINEAR", "0") == "1"
+
 
 # config specific to codegen/triton.py
 class triton:

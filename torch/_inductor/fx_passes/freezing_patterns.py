@@ -119,12 +119,19 @@ def addmm_patterns_init():
         device = "cuda"
     else:
         device = "cpu"
+        if not config.cpp.enable_concat_linear:
+            return
     val = functools.partial(torch.empty, (10, 10), device=device, requires_grad=False)
 
     def check_concat_weights(match):
         weight_inputs = ["w1", "w2"]
         if "w3" in match.kwargs:
             weight_inputs.append("w3")
+
+        # TODO: temporarily disable linear-silu and linear-mul fusion
+        if "w3" not in match.kwargs:
+            print(match.kwargs["w1"].meta["val"].shape)
+            return False
 
         equal_shape_inputs = [weight_inputs]
 
