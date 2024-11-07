@@ -238,6 +238,21 @@ extern "C" {{export_declaration}}
     {%- set acc_buf2_name = "local_acc_buf2" %}
         {{ kernel.define_buffer(acc_buf2_name, ["Mc_blocks*Mr", "Nc_blocks*Nr"], acc_buf_dtype) }}
 {%- endif %}
+
+{%- if config.cpp.cpp_gemm_horizontal_transverse %}
+        for (int64_t nc = n_block_start; nc < n_block_end; nc += Nc_blocks) {
+            const int64_t n_start = nc * Nr;
+            const int64_t n_end = std::min(std::min(nc + Nc_blocks, n_block_end) * Nr, N);
+            const int64_t n_size = n_end - n_start;
+            // NB: assume we pad N, nc_block_end won't exceed padded N here.
+            const int64_t nc_block_end = std::min(nc + Nc_blocks, n_block_end);
+            for (int64_t mc_block_id = 0; mc_block_id < num_Mc_blocks_per_thread; mc_block_id++) {
+                const int64_t my_mc_block_id = (mc_block_id + n_slice_id) % num_Mc_blocks_per_thread;
+                const int64_t mc = m_block_start + my_mc_block_id * Mc_blocks;
+                const int64_t m_start = mc * Mr;
+                const int64_t m_end = std::min(std::min(mc + Mc_blocks, m_block_end) * Mr, M);
+                const int64_t m_size = m_end - m_start;
+{%- else %}
         for (int64_t mc_block_id = 0; mc_block_id < num_Mc_blocks_per_thread; mc_block_id++) {
             const int64_t my_mc_block_id = (mc_block_id + n_slice_id) % num_Mc_blocks_per_thread;
             const int64_t mc = m_block_start + my_mc_block_id * Mc_blocks;
@@ -250,6 +265,8 @@ extern "C" {{export_declaration}}
                 const int64_t n_size = n_end - n_start;
                 // NB: assume we pad N, nc_block_end won't exceed padded N here.
                 const int64_t nc_block_end = std::min(nc + Nc_blocks, n_block_end);
+{%- endif %}
+
 {%- if use_local_acc %}
     {%- set acc = kernel.local_buffers[acc_buf_name] %}
                 {{ kernel.reinit_buffer_if_null(acc_buf_name) }}
