@@ -514,11 +514,11 @@ class CppMicroGemmAMX(CppMicroGemm):
 {%- if use_cached_dequantized_B %}
     // Create a stack-allocated buffer for tiles of B.
     // Except maybe for the tail-case, an AMX tile of B has 16x32 BF16 elements.
-    const auto num_elements_per_b_tile = 512;
     const auto last_k_offset = K / {{block_k}} * {{block_k}};
     const auto tail_k_size = K - last_k_offset;
     // we cache K * {{block_n}} elements of dequantized B
-    const auto buf_size = K * {{block_n}} * sizeof({{input_t}});
+    const auto buf_size = K * {{block_n}};
+
     {%- if is_msvc_compiler %}
     // MSVC doesn't support stack-allocated dynamic-sized arrays, so using heap memory here.
     std::unique_ptr<{{input_t}}[]> heap_deq_b_buf_ptr(new {{input_t}}[buf_size]);
@@ -531,36 +531,17 @@ class CppMicroGemmAMX(CppMicroGemm):
     alignas(4096) {{input_t}} dequantized_B_buf[buf_size];
     {%- endif %}
 
-    const auto b_tile_ptr_stride = ldb * {{vnni_size}};
-
-    auto load_B_row = [&]({{input2_t}}* {{restrict_keyword}} src, {{input_t}}* {{restrict_keyword}} dst) {
-        auto b_int8 = at::vec::Vectorized<int8_t>::loadu(src, static_cast<int64_t>(32));
-        auto b_bf16 = at::vec::convert<{{input_t}}>(b_int8);
-        b_bf16.store(dst);
-    };
-
-    auto load_B_tile = [&]({{input2_t}}* B_ptr, int idx, int num_b_rows) {
-        {{input_t}}* base_addr = dequantized_B_buf + idx;
-        {{kernel.unroll_pragma(8)}}
-        for (int i = 0; i < num_b_rows; i++) {
-            load_B_row(
-                B_ptr + i * b_tile_ptr_stride,
-                base_addr + i * 32
-            );
-        }
-    };
     auto load_dequantized_B = [&](int n) {
         // Load a tile of B & cache it in L1D.
-        {{kernel.unroll_pragma(4)}}
-        for (int k = 0; k < K; k += {{block_k}}) {
-            int num_b_rows = (k < last_k_offset) ? 16 : tail_k_size;
-            {{kernel.unroll_pragma(2)}}
-            for (int tile_col = 0; tile_col <= 1; tile_col++) {
-                load_B_tile(
-                    const_cast<{{input2_t}}*>(B) + n + k * ldb + tile_col * {{16 * vnni_size}},
-                    (k / {{block_k // 2}} + tile_col) * num_elements_per_b_tile,
-                    num_b_rows
-                );
+        for (int idx=0; idx<(K * {{block_n}}); idx+=32) {
+            if ((idx + 32) < (K * {{block_n}})) {
+                auto b_int8 = at::vec::Vectorized<int8_t>::loadu(const_cast<{{input2_t}}*>(B) + idx, static_cast<int64_t>(32));
+                auto b_bf16 = at::vec::convert<{{input_t}}>(b_int8);
+                b_bf16.store(dequantized_B_buf + idx);
+            } else {
+                for (int idx2 = idx; idx2 < (K * {{block_n}}); idx2 ++) {
+                   dequantized_B_buf[idx2] =  static_cast<{{input_t}}>(*(const_cast<{{input2_t}}*>(B) + idx2));
+                }
             }
         }
     };
@@ -673,11 +654,6 @@ inline void {{kernel_name}}_amx_kernel_{{num_rows}}_{{num_columns}}(
     }
 
     auto compute = [&](int k) {
-{%- if use_cached_dequantized_B %}
-    // base index for dequantized B
-    const auto num_elements_per_b_tile = 512;
-    const auto base_idx_of_deq_B = (k / {{block_k // 2}}) * num_elements_per_b_tile;
-{%- endif %}
 {%- set tile_offset_a = num_rows // 16 * num_columns %}
 {%- set tile_offset_b = tile_offset_a + num_rows // 16 %}
 {%- for tile_row in range(num_rows // 16) %}
@@ -689,11 +665,7 @@ inline void {{kernel_name}}_amx_kernel_{{num_rows}}_{{num_columns}}(
         _tile_stream_loadd({{tile_idx_a}}, A + {{tile_row * 16}} * lda + k, lda * sizeof({{input_t}}));
         {%- endif %}
         {%- if tile_row == 0 %}
-            {%- if use_cached_dequantized_B %}
-        _tile_loadd({{tile_idx_b}}, B + base_idx_of_deq_B + {{tile_col}} * num_elements_per_b_tile, 64);
-            {%- else %}
         _tile_loadd({{tile_idx_b}}, B + k * ldb + {{tile_col * 16 * vnni_size}}, ldb * {{vnni_size}} * sizeof({{input_t}}));
-            {%- endif %}
         {%- endif %}
         {%- if int8_gemm %}
         _tile_dpbusd({{tile_idx_c}}, {{tile_idx_a}}, {{tile_idx_b}});
