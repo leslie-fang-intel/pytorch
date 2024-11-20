@@ -474,6 +474,7 @@ class CppPackedMLPTemplate(CppPackedGemmTemplate):
         template_buffer_node: Optional[ir.CppTemplateBuffer] = None,
         flag_template_buffer_has_other_users: Optional[bool] = None,
         epilogue_nodes: Optional[List[ir.IRNode]] = None,
+        template_buffer_node2: Optional[ir.CppTemplateBuffer] = None,
         **kwargs,
     ) -> str:
         assert len(self.input_nodes) >= 3
@@ -491,7 +492,9 @@ class CppPackedMLPTemplate(CppPackedGemmTemplate):
         if template_buffer_node is not None:
             # Use the updated prepacked weight buffer
             W = template_buffer_node.inputs[1]
-            W1 = template_buffer_node.inputs[2]
+            # W1 = template_buffer_node.inputs[2]
+            assert template_buffer_node2
+            W1 = template_buffer_node2.inputs[1]
             Y = template_buffer_node
             counters["inductor"]["cpp_mlp_template"] += 1
 

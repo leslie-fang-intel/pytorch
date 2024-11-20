@@ -366,6 +366,7 @@ class CppTemplateCaller(ir.ChoiceCaller):
             [
                 ir.CppTemplateBuffer,
                 bool,
+                "CppTemplate",
                 Optional[List[ir.IRNode]],
             ],
             str,

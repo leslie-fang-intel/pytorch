@@ -4550,10 +4550,31 @@ class CppScheduling(BaseScheduling):
         flag_template_buffer_has_other_users = template_buffer_has_other_users(
             ctb, template_node.outputs_by_name, epilogue_ir_nodes
         )
+
+        from .cpp_mlp_template import CppPackedMLPTemplate
+        new_input_nodes = [
+            ctb.template.input_nodes[0],
+            ctb.template.input_nodes[1],
+            ctb.template.input_nodes[1],
+        ]
+        new_template = CppPackedMLPTemplate(
+            new_input_nodes, # ctb.template.input_nodes,
+            ctb.template.layout,
+            ctb.template.num_threads,
+            ctb.template.register_blocking,
+            ctb.template.beta,
+            ctb.template.alpha,
+            [False, False], # ctb.template.has_bias,
+            ctb.template.epilogue_creator,
+        )
+        ctb.template = new_template
+
         kernel, render = ctb.make_kernel_render(
             ctb,
             flag_template_buffer_has_other_users=flag_template_buffer_has_other_users,
+            template=ctb.template,
             epilogue_nodes=epilogue_ir_nodes,
+            template_node2=ctb,
         )
         with kernel:
             for node in [template_node, *epilogue_nodes]:

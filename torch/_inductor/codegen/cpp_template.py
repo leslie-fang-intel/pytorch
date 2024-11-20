@@ -83,17 +83,20 @@ class CppTemplate(KernelTemplate):
         def make_kernel_render(
             template_node: ir.CppTemplateBuffer,
             flag_template_buffer_has_other_users: bool,
+            template: CppTemplate,
             epilogue_nodes: Optional[List[ir.IRNode]] = None,
+            template_node2: Optional[ir.CppTemplateBuffer] = None,
         ):
             kernel = CppTemplateKernel(
                 kernel_name=str(Placeholder.KERNEL_NAME), num_threads=self.num_threads
             )
             render = functools.partial(
                 kernel.render,
-                self,
+                template,
                 template_buffer_node=template_node,
                 flag_template_buffer_has_other_users=flag_template_buffer_has_other_users,
                 epilogue_nodes=epilogue_nodes,
+                template_buffer_node2=template_node2,
                 **kwargs,
             )
             return kernel, render
