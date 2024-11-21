@@ -255,6 +255,9 @@ if torch._C._has_mkldnn:
 
     def _is_valid_computation_mlp_silu_mul_fusion():
         def fn(match):
+
+            return False
+
             computation_nodes = filter_nodes(
                 match.nodes, mkldnn._linear_pointwise.default
             )

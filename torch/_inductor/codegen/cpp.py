@@ -4514,6 +4514,7 @@ class CppScheduling(BaseScheduling):
         self,
         template_node: BaseSchedulerNode,
         epilogue_nodes: Sequence[BaseSchedulerNode],
+        template_node1: Optional[BaseSchedulerNode] = None,
     ):
         """
         Codegen a CPP template, possibly with fused epilogues
@@ -4551,10 +4552,12 @@ class CppScheduling(BaseScheduling):
             ctb, template_node.outputs_by_name, epilogue_ir_nodes
         )
 
+        ctb1: ir.CppTemplateBuffer = cast(ir.CppTemplateBuffer, template_node1.node)
+
         from .cpp_mlp_template import CppPackedMLPTemplate
         new_input_nodes = [
             ctb.template.input_nodes[0],
-            ctb.template.input_nodes[1],
+            ctb1.template.input_nodes[1],
             ctb.template.input_nodes[1],
         ]
         new_template = CppPackedMLPTemplate(
@@ -4574,7 +4577,7 @@ class CppScheduling(BaseScheduling):
             flag_template_buffer_has_other_users=flag_template_buffer_has_other_users,
             template=ctb.template,
             epilogue_nodes=epilogue_ir_nodes,
-            template_node2=ctb,
+            template_node2=ctb1,
         )
         with kernel:
             for node in [template_node, *epilogue_nodes]:

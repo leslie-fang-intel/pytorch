@@ -1847,6 +1847,9 @@ class Scheduler:
             self.nodes = comms.reorder_compute_and_comm_for_overlap(self.nodes)
         if config.combo_kernels:
             self.create_combo_kernel_nodes(num_ck_nodes=None)
+        
+        self.create_group_linear()
+
         self.process_grouped_nodes()
         self.compute_last_usage()
         V.debug.ir_post_fusion(self.nodes)
@@ -2635,6 +2638,26 @@ class Scheduler:
         nodes = self.topological_sort_schedule(nodes)
         self.prune_redundant_deps(nodes)
         return nodes
+    
+    def create_group_linear(self):
+        device = self.nodes[0].get_device()
+        backend = self.get_backend(device)
+        if device.type == "cpu":
+            if len(self.nodes) == 2:
+                # <TODO> write the fusion check, here for POC we only have 2 nodes
+                fused_nodes = set(self.nodes)
+                node1 = self.nodes[0]
+                node2 = self.nodes[1]
+                node3 = FusedSchedulerNode.fuse(node1, node2)
+
+                fused_nodes.remove(node1)
+                fused_nodes.remove(node2)
+                fused_nodes.add(node3)
+
+            self.nodes = sorted(fused_nodes, key=lambda x: x.min_order)
+            self.nodes = self.topological_sort_schedule(self.nodes)
+            log.info("Generated Group Linear nodes")
+            self.prune_redundant_deps(self.nodes)
 
     def create_combo_kernel_nodes(self, num_ck_nodes: Optional[int] = None) -> None:
         """
@@ -3548,8 +3571,23 @@ class Scheduler:
             self.buffer_names_to_free.update(node.last_usage)
 
             if node.is_template():
-                node, *epilogue = node.get_nodes()
-                self.get_backend(device).codegen_template(node, epilogue)
+                nodes = node.get_nodes()
+                template_node_count = 0
+                for _node in nodes:
+                    if _node.is_template():
+                        template_node_count += 1
+                if template_node_count > 1:
+                    assert device.type == "cpu"
+                    # TODO how to know which epilogue belong to which template
+                    # Maybe need to extend the FusedScheduler node to a specific IR
+                    # in which we can maintain this information.
+
+                    # <TODO> we hardcode: template node0, template node1 and its epilogue nodes
+                    node0, node1, *epilogue = node.get_nodes()
+                    self.get_backend(device).codegen_template(node0, epilogue, node1)
+                else:
+                    node, *epilogue = node.get_nodes()
+                    self.get_backend(device).codegen_template(node, epilogue)
             elif node.is_extern():
                 node = typing.cast(ExternKernelSchedulerNode, node)
                 self.codegen_extern_call(node)

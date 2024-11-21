@@ -493,7 +493,7 @@ class CppPackedMLPTemplate(CppPackedGemmTemplate):
             # Use the updated prepacked weight buffer
             W = template_buffer_node.inputs[1]
             # W1 = template_buffer_node.inputs[2]
-            assert template_buffer_node2
+            # assert template_buffer_node2
             W1 = template_buffer_node2.inputs[1]
             Y = template_buffer_node
             counters["inductor"]["cpp_mlp_template"] += 1
