@@ -39,7 +39,7 @@ GEMM_TEMPLATE = r"""
 {{micro_gemm.codegen_define(kernel)}}
 
 extern "C" {{export_declaration}}
-{{kernel.def_kernel(inputs=kernel_args, outputs={"Y": Y}, aliases=aliases)}}
+{{kernel.def_kernel(inputs=kernel_args, outputs={"Y": Y, "Y2": Y2}, aliases=aliases)}}
 {
     {{kernel.maybe_codegen_profile()}}
     {{ template.codegen_blocks(
@@ -111,6 +111,8 @@ extern "C" {{export_declaration}}
                 }
                 {
 {%- set tile_Y = kernel.slice_nd(Y_2d, [("m_start", "m_end"), ("n_start", "n_end")]) %}
+{%- set tile_Y2 = kernel.slice_nd(Y2_2d, [("m_start", "m_end"), ("n_start", "n_end")]) %}
+{%- set tile_Y_list = [tile_Y, tile_Y2] %}
 {%- set tile_acc_list = [] %}
 {%- for gemm_idx in range(0, gemm_group_num, 1) %}
     {%- set tile_acc_list = tile_acc_list.append(
@@ -118,7 +120,7 @@ extern "C" {{export_declaration}}
     ) %}
 {%- endfor %}
                     {{ kernel.store_output(
-                        tile_Y, tile_acc_list, GemmOuts, epilogue_nodes, offsets=("m_start", "n_start"), reindexers=reindexers
+                        tile_Y_list, tile_acc_list, GemmOuts, [epilogue_nodes, epilogue_nodes2] , offsets=("m_start", "n_start"), reindexers=reindexers
                     )|indent(20, false)
                     }}
                 }
@@ -154,6 +156,7 @@ class CppGroupGemmTemplate(CppPackedGemmTemplate):
         epilogue_creator: Optional[Callable[..., ir.Pointwise]] = None,
         act_mapping: Optional[dict[int, ir.TensorBox]] = None,
         gemm_group_num: int = 1,
+        epilogue_creator2: Optional[Callable[..., ir.Pointwise]] = None,
     ) -> None:
         """
         Template for Group of GEMMs:
@@ -175,6 +178,7 @@ class CppGroupGemmTemplate(CppPackedGemmTemplate):
         )
         self.act_mapping = act_mapping
         self.gemm_group_num = gemm_group_num
+        self.epilogue_creator2 = epilogue_creator2
 
     @staticmethod
     def add_choices(
@@ -187,6 +191,7 @@ class CppGroupGemmTemplate(CppPackedGemmTemplate):
         trans_w=False,
         input_indices=None,
         epilogue_creator: Optional[Callable[..., ir.Pointwise]] = None,
+        epilogue_creator2: Optional[Callable[..., ir.Pointwise]] = None,
         act_mapping: Optional[
             dict[int, ir.TensorBox]
         ] = None,  # gemm idx to its act buf
@@ -307,6 +312,7 @@ class CppGroupGemmTemplate(CppPackedGemmTemplate):
             epilogue_creator=epilogue_creator,
             act_mapping=act_mapping,
             gemm_group_num=gemm_group_num,
+            epilogue_creator2=epilogue_creator2,
         )
         template.maybe_append_choice(choices)
         return template
@@ -333,19 +339,22 @@ class CppGroupGemmTemplate(CppPackedGemmTemplate):
                 inp = self.input_nodes[cur_idx]
                 cur_idx += 1
             inp_list.append(inp)
-        Y = self.output_node
+        Y = self.output_nodes[0]
+        Y2 = self.output_nodes[1]
 
         if template_buffer_node is not None:
             W_list = template_buffer_node.inputs[
                 wgt_start_idx : wgt_start_idx + self.gemm_group_num
             ]
-            Y = template_buffer_node
+            Y = template_buffer_node.outputs[0]
+            Y2 = template_buffer_node.outputs[1]
             counters["inductor"]["cpp_group_gemm_template"] += 1
 
         template_buffer = Y
         fake_buffers: List[ir.Buffer] = []
         Y_aliases: Set[str] = set()
         Y_2d: Union[ir.Buffer, ir.ReinterpretView] = Y
+        Y2_2d: Union[ir.Buffer, ir.ReinterpretView] = Y2
         output_dtype, compute_dtype = get_gemm_template_output_and_compute_dtype(
             X_list[0].get_dtype()
         )
@@ -374,12 +383,18 @@ class CppGroupGemmTemplate(CppPackedGemmTemplate):
         assert L2_cache_size > 0, f"Expect L2_cache_size > 0 but got {L2_cache_size}"
 
         epilogues: List[ir.IRNode] = []
+        epilogues2: List[ir.IRNode] = []
         reindexers: List[Optional[Callable[[List[Any]], List[Any]]]] = []
         gemm_output_buffers: list[ir.Buffer] = []
         for out_buf_idx in range(self.gemm_group_num):
             gemm_output_name = f"{template_buffer.get_name()}_GemmOut" + str(
                 out_buf_idx
             )
+            # # template_buffer.layout which is multioutput layout
+            # if isinstance(template_buffer.layout, ir.MultiOutputLayout):
+            #     gemm_output_layout = template_buffer.outputs[0].layout
+            # else:
+            #     gemm_output_layout = template_buffer.layout
             gemm_output_buffers.append(
                 ir.Buffer(name=gemm_output_name, layout=template_buffer.layout)
             )
@@ -394,17 +409,27 @@ class CppGroupGemmTemplate(CppPackedGemmTemplate):
                 )
             )
             reindexers.append(None)
+        if self.epilogue_creator2:
+            epilogues2.append(
+                ir.ComputedBuffer(
+                    name=buffer_name,
+                    layout=template_buffer.layout,
+                    data=self.epilogue_creator2(gemm_output_buffers, inp_list),
+                )
+            )
+            reindexers.append(None)
 
         if epilogue_nodes:
-            epilogues.extend(epilogue_nodes)
-            assert Y.get_numel() == epilogues[-1].get_numel()
-            Y = cast(ir.Buffer, epilogues[-1])
-            Y_2d, reindexers = gen_2d_view_of_epilogue_buf(
-                Y,
-                template_buffer,
-                epilogue_nodes,
-                reindexers,
-            )
+            # epilogues.extend(epilogue_nodes)
+            # assert Y.get_numel() == epilogues[-1].get_numel()
+            # Y = cast(ir.Buffer, epilogues[-1])
+            # Y_2d, reindexers = gen_2d_view_of_epilogue_buf(
+            #     Y,
+            #     template_buffer,
+            #     epilogue_nodes,
+            #     reindexers,
+            # )
+            assert False
 
         kernel_args = {}
         for x_idx in range(wgt_start_idx):
@@ -416,6 +441,7 @@ class CppGroupGemmTemplate(CppPackedGemmTemplate):
 
         options = dict(
             Y=Y,
+            Y2=Y2,
             N=self.n,
             K=self.k,
             PADDED_N=self.padded_n,
@@ -429,12 +455,14 @@ class CppGroupGemmTemplate(CppPackedGemmTemplate):
             kernel=kernel,
             export_declaration=get_export_declaration(),
             Y_2d=Y_2d,
+            Y2_2d=Y2_2d,
             acc_buf_dtype=torch.float,
             DTYPE_TO_CPP=DTYPE_TO_CPP,
             L1_cache_size=L1_cache_size,
             L2_cache_size=L2_cache_size,
             config=config,
             epilogue_nodes=epilogues,
+            epilogue_nodes2=epilogues2,
             GemmOuts=gemm_output_buffers,
             reindexers=reindexers,
             kernel_args=kernel_args,

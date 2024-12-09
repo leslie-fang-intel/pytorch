@@ -36,6 +36,91 @@ if torch._C._has_mkldnn:
     _linear_args = [Arg() for _ in range(6)]
     _conv_transpose_args = [Arg() for _ in range(11)]
 
+    def group_gemm_pass(graph: torch.fx.Graph):
+        """
+        Group GEMM has multi output nodes which is compilicated to define a Pattern.
+        Use below way to connect the pattern to the lowering.
+        """
+        print("graph before group gemm pass is: {}".format(graph), flush=True)
+        computation_op = mkldnn._linear_pointwise.default
+        def toy_fn(*args, **kwargs):
+            # computation_args = [
+            #     args[0],
+            #     args[1],
+            #     None,
+            #     "none",
+            #     [],
+            #     "",
+            # ]
+            # computation2_args = [
+            #     args[0],
+            #     args[2],
+            #     None,
+            #     "none",
+            #     [],
+            #     "",
+            # ]
+            # return L[computation_op](*computation_args), L[computation_op](*computation2_args)
+            computation_silu_mul_args = [
+                args[0],
+                [args[1], args[2]],
+                [None, None],
+                "none",
+                [],
+                "",
+            ]    
+            from ..mkldnn_lowerings import linear_silu_linear_mul
+            # return linear_silu_linear_mul(*computation_silu_mul_args), linear_silu_linear_mul(*computation_silu_mul_args)
+            return linear_silu_linear_mul(*computation_silu_mul_args)
+
+        toy_fn._inductor_lowering_function = True 
+        for node in graph.nodes:
+            if node.target == torch.ops.mkldnn._linear_pointwise.default:
+                with graph.inserting_after(node):
+                    act = node.all_input_nodes[0]
+                    users = list(act.users)
+                    if all([user.target == torch.ops.mkldnn._linear_pointwise.default for user in users]):
+                        print("---- hit -----", flush=True)
+                        for args in node.all_input_nodes:
+                            print("args: {}".format(args), flush=True)
+                        
+                        lowering_linear_node = graph.create_node(
+                            "call_function",
+                            toy_fn,
+                            (
+                                node.all_input_nodes[0],
+                                node.all_input_nodes[1],
+                                users[1].all_input_nodes[1],
+                            )  # no bias
+                        )
+                        with graph.inserting_after(lowering_linear_node):
+                            get_item0 = graph.create_node(
+                                "call_function",
+                                operator.getitem,
+                                (
+                                    lowering_linear_node,
+                                    0,
+                                )
+                            )
+                            get_item1 = graph.create_node(
+                                "call_function",
+                                operator.getitem,
+                                (
+                                    lowering_linear_node,
+                                    1,
+                                )
+                            )
+                            node.replace_all_uses_with(get_item0)
+                            users[1].replace_all_uses_with(get_item1)
+                            # Update Meta
+                            # lowering_linear_node.meta.update(node.meta)
+                            lowering_linear_node.meta["val"] = (node.meta["val"], users[1].meta["val"])
+                            graph.erase_node(node)
+                            graph.erase_node(users[1])
+                            break
+        print("graph after group gemm pass is: {}".format(graph), flush=True)
+        return
+
     def _conv_call(users=1):
         return CallFunction(
             mkldnn._convolution_pointwise.default, *_conv_args, _users=users
@@ -1368,7 +1453,7 @@ if torch._C._has_mkldnn:
             _register_binary_fusion()
             _register_quantization_lowerings()
             _register_woq_lowerings()
-            _register_linear_silu_linear_mul_fusion()
+            # _register_linear_silu_linear_mul_fusion()
 
     @functools.lru_cache(None)
     def _mkldnn_weight_pack_init():

@@ -470,8 +470,18 @@ class AllocateLine(MemoryPlanningLine):
 
     def codegen(self, code: IndentedBuffer) -> None:
         assert self.node.get_name() not in V.graph.removed_buffers
-        line = self.wrapper.make_buffer_allocation(self.node)
-        code.writeline(line)
+        if (
+            isinstance(self.node, ir.CppTemplateBuffer)
+            and isinstance(self.node.layout, ir.MultiOutputLayout)
+        ):
+            line0 = self.wrapper.make_buffer_allocation(self.node.outputs[0])
+            line1 = self.wrapper.make_buffer_allocation(self.node.outputs[1])
+            code.writeline(line0)
+            code.writeline(line1)
+            code.writeline(f"{self.node.get_name()} = [{self.node.outputs[0].get_name()}, {self.node.outputs[1].get_name()}]")
+        else:
+            line = self.wrapper.make_buffer_allocation(self.node)
+            code.writeline(line)
 
 
 @dataclasses.dataclass
@@ -2061,6 +2071,7 @@ class PythonWrapperCodegen(CodeGen):
     def make_allocation(self, name, device, dtype, shape, stride):
         if device.type in ("cpu", "cuda", "xpu"):
             # optimized path for faster allocations, saving ~2us versus the stuff below
+            print("--- hit the allocation ----", flush=True)
             return (
                 f"{name} = empty_strided_{device.type}("
                 f"{self.codegen_shape_tuple(shape)}, "

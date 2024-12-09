@@ -67,13 +67,48 @@ def linear_silu_linear_mul(
 
         def inner_fn(index):
             input = input_loader(index)
-            input1 = input_loader1(index)
-            if inp:
-                input = input + inp_loader(index)
-            if inp1:
-                input1 = input1 + inp_loader1(index)
-            input = ops.mul(ops.sigmoid(input), input)
-            return ops.mul(input, input1)
+            # input1 = input_loader1(index)
+            # if inp:
+            #     input = input + inp_loader(index)
+            # if inp1:
+            #     input1 = input1 + inp_loader1(index)
+            # input = ops.mul(ops.sigmoid(input), input)
+            # return ops.mul(input, input1)
+            
+            # return ops.to_dtype(input, torch.bfloat16), ops.to_dtype(input1, torch.bfloat16)
+            return ops.to_dtype(input, torch.bfloat16)
+
+        return ir.Pointwise(
+            device=buf.get_device(),
+            dtype=dtype,
+            inner_fn=inner_fn,
+            ranges=buf.get_size(),
+        )
+
+    def epilogue_creator2(output_bufs, inps):
+        assert len(output_bufs) == 2
+        buf, buf1 = output_bufs
+        inp, inp1 = inps
+        input_loader = buf.make_loader()
+        input_loader1 = buf1.make_loader()
+        if inp:
+            inp_loader = inp.make_loader()
+        if inp1:
+            inp_loader1 = inp1.make_loader()
+        dtype = buf.get_dtype()
+
+        def inner_fn(index):
+            input = input_loader1(index)
+            # input1 = input_loader1(index)
+            # if inp:
+            #     input = input + inp_loader(index)
+            # if inp1:
+            #     input1 = input1 + inp_loader1(index)
+            # input = ops.mul(ops.sigmoid(input), input)
+            # return ops.mul(input, input1)
+            
+            # return ops.to_dtype(input, torch.bfloat16), ops.to_dtype(input1, torch.bfloat16)
+            return ops.to_dtype(input, torch.bfloat16)
 
         return ir.Pointwise(
             device=buf.get_device(),
@@ -86,6 +121,7 @@ def linear_silu_linear_mul(
         has_bias=[bias is not None for bias in b],
         trans_w=True,
         epilogue_creator=epilogue_creator,
+        epilogue_creator2=epilogue_creator2,
         act_mapping={0: x, 1: x},
     )
 
@@ -106,9 +142,28 @@ def linear_silu_linear_mul(
         input_nodes,
         layout,
     )
-    if len(x_size) > 2:
-        result = view(result, (*x_size[:-1], result.get_size()[-1]))
-    return result
+
+    assert len(x_size) == 2
+    # if len(x_size) > 2:
+    #     result = view(result, (*x_size[:-1], result.get_size()[-1]))
+
+    template_buf = result.data.data
+    return_buf0 = ir.MultiOutput(
+        layout,
+        template_buf,
+        [(list, 0)],
+    )
+    return_buf1 = ir.MultiOutput(
+        layout,
+        template_buf,
+        [(list, 1)],
+    )
+    template_buf.layout = ir.MultiOutputLayout(device=input_nodes[0].get_device())
+    template_buf.outputs = [return_buf0, return_buf1]
+
+    return ir.TensorBox.create(return_buf0), ir.TensorBox.create(return_buf1)    
+    
+    # return result, result
 
 
 def register_onednn_fusion_ops():

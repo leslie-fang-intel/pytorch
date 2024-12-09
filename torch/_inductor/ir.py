@@ -3731,6 +3731,15 @@ class Buffer(IRNode):
     def get_layout(self) -> Layout:
         if isinstance(self.layout, Layout):
             return self.layout
+        if (
+            isinstance(self.layout, MultiOutputLayout)
+            and (
+                isinstance(self, TemplateBuffer)
+                or "GEMMOUT" in self.get_name().upper()
+            )
+        ):
+            # For Group GEMM Template
+            return self.outputs[0].layout
         raise NotImplementedError(type(self.layout).__name__)
 
     def get_output_spec(self) -> OutputSpec:
@@ -4258,13 +4267,24 @@ class TemplateBuffer(OperationBuffer):
         extra_indexing_constraints: Optional[Tuple[Dict[Any, Any], List[Any]]] = None,
         recompute_sizes_body_func: Optional[Callable[..., Any]] = None,
     ):
-        return (
-            (
-                self.get_size(),
-                (),
-            ),
-            None,
-        )
+        if isinstance(self.layout, MultiOutputLayout):
+            # For MultiOutputLayout of templat buffer (Group GEMM)
+            # return the size of one GEMM output
+            return (
+                (
+                    self.outputs[0].get_size(),
+                    (),
+                ),
+                None,
+            )
+        else:
+            return (
+                (
+                    self.get_size(),
+                    (),
+                ),
+                None,
+            )
 
 
 class TritonTemplateBuffer(TemplateBuffer):

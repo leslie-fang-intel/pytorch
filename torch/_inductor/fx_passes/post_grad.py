@@ -96,6 +96,14 @@ def post_grad_passes(gm: torch.fx.GraphModule, is_inference: bool):
             post_grad_custom_pre_pass
         )
 
+    print("---- before post grad is: {}".format(gm.graph), flush=True)
+    for node in gm.graph.nodes:
+        print("node is: {}; op is: {}; target is: {}".format(node, node.op, node.target), flush=True)
+    
+    if config.cpp.enable_linear_silu_linear_mul and torch._C._has_mkldnn:
+        from .mkldnn_fusion import group_gemm_pass
+        group_gemm_pass(gm.graph)
+
     if config.pattern_matcher:
         lazy_init()
         optimus_scuba_log["before_recompile_post_grad"] = upload_graph(gm.graph)
@@ -127,6 +135,14 @@ def post_grad_passes(gm: torch.fx.GraphModule, is_inference: bool):
 
     if config._micro_pipeline_tp:
         micro_pipeline_tp_pass(gm.graph)
+
+    # print("---- after post grad is: {}".format(gm.graph), flush=True)
+    # for node in gm.graph.nodes:
+    #     print("node is: {}; op is: {}; target is: {}".format(node, node.op, node.target), flush=True)
+    
+    # if config.cpp.enable_linear_silu_linear_mul and torch._C._has_mkldnn:
+    #     from .mkldnn_fusion import group_gemm_pass
+    #     group_gemm_pass(gm.graph)
 
     if config._fuse_ddp_communication:
         GraphTransformObserver(gm, "fuse_ddp_communication").apply_graph_pass(
