@@ -399,8 +399,8 @@ class CppGroupGemmTemplate(CppPackedGemmTemplate):
                 ir.Buffer(name=gemm_output_name, layout=template_buffer.layout)
             )
 
-        buffer_name = template_buffer.get_name()
         if self.epilogue_creator:
+            buffer_name = template_buffer.get_name()
             epilogues.append(
                 ir.ComputedBuffer(
                     name=buffer_name,
@@ -410,6 +410,7 @@ class CppGroupGemmTemplate(CppPackedGemmTemplate):
             )
             reindexers.append(None)
         if self.epilogue_creator2:
+            buffer_name = Y2.get_name()
             epilogues2.append(
                 ir.ComputedBuffer(
                     name=buffer_name,
@@ -420,16 +421,45 @@ class CppGroupGemmTemplate(CppPackedGemmTemplate):
             reindexers.append(None)
 
         if epilogue_nodes:
-            # epilogues.extend(epilogue_nodes)
-            # assert Y.get_numel() == epilogues[-1].get_numel()
-            # Y = cast(ir.Buffer, epilogues[-1])
-            # Y_2d, reindexers = gen_2d_view_of_epilogue_buf(
-            #     Y,
-            #     template_buffer,
-            #     epilogue_nodes,
-            #     reindexers,
-            # )
-            assert False
+            # Here we need a design to record which out-template epilogue belong to which gemm
+
+            epilogue_nodes0 = []
+            epilogue_nodes1 = []
+            for epilogue_node in epilogue_nodes:
+                assert hasattr(epilogue_node, "gemm_idx")
+                if epilogue_node.gemm_idx == 0:
+                    epilogue_nodes0.append(epilogue_node)
+                else:
+                    epilogue_nodes1.append(epilogue_node)
+            
+            print("epilogue_nodes0 is: {}".format(epilogue_nodes0), flush=True)
+            print("epilogue_nodes1 is: {}".format(epilogue_nodes1), flush=True)
+
+            if epilogue_nodes0:
+                epilogues.extend(epilogue_nodes0)
+                assert Y.get_numel() == epilogues[-1].get_numel()
+                Y = cast(ir.Buffer, epilogues[-1])
+                Y_2d, reindexers = gen_2d_view_of_epilogue_buf(
+                    Y,
+                    template_buffer,
+                    epilogue_nodes0,
+                    reindexers,
+                )
+            
+            if epilogue_nodes1:
+                epilogues2.extend(epilogue_nodes1)
+                assert Y2.get_numel() == epilogues2[-1].get_numel()
+                Y2 = cast(ir.Buffer, epilogues2[-1])
+                Y2_2d, reindexers = gen_2d_view_of_epilogue_buf(
+                    Y2,
+                    template_buffer,
+                    epilogue_nodes1,
+                    reindexers,
+                )
+    
+            # assert False
+    
+
 
         kernel_args = {}
         for x_idx in range(wgt_start_idx):

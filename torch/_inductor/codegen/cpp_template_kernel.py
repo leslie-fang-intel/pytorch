@@ -210,7 +210,7 @@ class CppTemplateKernel(CppKernel):
         offsets: Optional[List[sympy.Expr]] = None,
         reindexers: Optional[List[Optional[Callable[[List[Any]], List[Any]]]]] = None,
     ) -> str:
-        if isinstance(nodes[0], Iterable):
+        if isinstance(nodes[0], Iterable) or isinstance(nodes[1], Iterable):
             # Multi Indepentent epilogue nodes
             check_nodes = nodes[0]
         else:
@@ -236,11 +236,32 @@ class CppTemplateKernel(CppKernel):
         cpp_kernel_proxy = CppKernelProxy(kernel_group)
         bodies = []
         var_sizes_list = []
-        if isinstance(nodes[0], Iterable):
-            for i, node in enumerate(nodes[0]):
-                output_name = node.get_name() if i < len(nodes[0]) - 1 else check_dst.get_name()
-                node = node.data if isinstance(node, ir.ComputedBuffer) else node
-                assert isinstance(node, ir.Pointwise), node
+        if isinstance(nodes[0], Iterable) or isinstance(nodes[1], Iterable):
+            check_nodes = None
+            if nodes[0] and nodes[1]:
+                if len(nodes[0]) > len(nodes[1]):
+                    check_nodes = nodes[0]
+                else:
+                    check_nodes = nodes[1]
+            elif nodes[0]:
+                check_nodes = nodes[0]
+            else:
+                check_nodes = nodes[1]
+
+            for i, node in enumerate(check_nodes):
+                output_name = nodes[0][i].get_name() if i < len(nodes[0]) - 1 else dst[0].get_name()
+                if i < len(nodes[0]):
+                    node = nodes[0][i].data if isinstance(nodes[0][i], ir.ComputedBuffer) else nodes[0][i]
+                    assert isinstance(node, ir.Pointwise), node
+                else:
+                    node = None
+
+                output_name1 = nodes[1][i].get_name() if i < len(nodes[1]) - 1 else dst[1].get_name()
+                if i < len(nodes[1]):
+                    node1 = nodes[1][i].data if isinstance(nodes[1][i], ir.ComputedBuffer) else nodes[1][i]
+                    assert isinstance(node1, ir.Pointwise), node1
+                else:
+                    node1 = None
 
                 def fn(*args):
                     assert len(args) == 2
@@ -249,16 +270,18 @@ class CppTemplateKernel(CppKernel):
                     new_args = [arg + offset for arg, offset in zip(args[0], offsets)]  # type: ignore[arg-type]
                     if reindexers[i] is not None:
                         new_args = reindexers[i](new_args)  # type: ignore[misc]
-                    V.ops.store(
-                        output_name,
-                        output_index,
-                        node.make_loader()(new_args).value,
-                    )
-                    V.ops.store(
-                        dst[1].get_name(),
-                        output_index,
-                        nodes[1][i].data.make_loader()(new_args).value,
-                    )
+                    if len(nodes[0]) > i:
+                        V.ops.store(
+                            output_name,
+                            output_index,
+                            node.make_loader()(new_args).value,
+                        )
+                    if len(nodes[1]) > i:
+                        V.ops.store(
+                            output_name1,
+                            output_index,
+                            node1.make_loader()(new_args).value,
+                        )
 
                 body = LoopBody(
                     fn,
@@ -360,10 +383,10 @@ class CppTemplateKernel(CppKernel):
                                 _orig_src,
                             ],
                         )
-                    if isinstance(epilogue_nodes[0], Iterable):
+                    if isinstance(epilogue_nodes[0], Iterable) or isinstance(epilogue_nodes[1], Iterable):
                         # Group GEMM, each has its owner epilogue
                         epilogue_nodes = [
-                            scope.localize_nodes(epilogue_node)
+                            scope.localize_nodes(epilogue_node) if epilogue_node else None
                             for epilogue_node in epilogue_nodes
                         ]
                     else:
