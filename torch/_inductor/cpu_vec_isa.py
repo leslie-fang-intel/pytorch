@@ -133,7 +133,8 @@ cdll.LoadLibrary("__lib_path__")
                     stderr=subprocess.DEVNULL,
                     env={**os.environ, "PYTHONPATH": ":".join(sys.path)},
                 )
-            except Exception:
+            except Exception as e:
+                print("e is: {}".format(e), flush=True)
                 return False
 
             return True
@@ -203,6 +204,7 @@ class VecAVX512(VecISA):
 @dataclasses.dataclass
 class VecAMX(VecAVX512):
     _arch_flags = VecAVX512._arch_flags + " -mamx-tile -mamx-bf16 -mamx-int8"
+    _arch_flags = _arch_flags + " -mamx-fp16 -march=graniterapids"
 
     def __str__(self) -> str:
         return super().__str__() + " amx_tile"
@@ -227,6 +229,8 @@ extern "C" void __amx_chk_kernel() {
   _tile_zero(0);
   _tile_dpbf16ps(0, 1, 2);
   _tile_dpbusd(0, 1, 2);
+
+  // _tile_dpfp16ps(0, 1, 2);
 }
 """
 
@@ -235,6 +239,7 @@ extern "C" void __amx_chk_kernel() {
         if super().__bool__():
             if config.is_fbcode():
                 return False
+            assert self.check_build(VecAMX._amx_code)
             if self.check_build(VecAMX._amx_code) and torch.cpu._init_amx():
                 return True
         return False

@@ -655,6 +655,7 @@ class CppOptions(BuildOptionsBase):
         _append_list(self._libraries, libraries)
         _append_list(self._passthough_args, passthough_args)
         self._finalize_options()
+        # breakpoint()
 
 
 def _get_glibcxx_abi_build_flags() -> List[str]:

@@ -2001,6 +2001,7 @@ class CppCodeCache:
         # guarantee the source code hash contains ISA difference.
         vec_isa_cmd = repr(command_gen.get_command_line())
         key, input_path = write(source_code, "cpp", extra=vec_isa_cmd)
+        print("vec_isa_cmd is: {}".format(vec_isa_cmd), flush=True)
 
         if key not in cls.cache:
             from torch.utils._filelock import FileLock
