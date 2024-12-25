@@ -440,6 +440,7 @@ class CppTemplateKernel(CppKernel):
         reindexers: Optional[
             List[List[Optional[Callable[[List[Any]], List[Any]]]]]
         ] = None,
+        multi_output_gemm_buf = None,
     ):
         assert isinstance(dst, Iterable)
         assert all(_dst.get_size() == _src.get_size() for _src, _dst in zip(src, dst))
@@ -451,6 +452,11 @@ class CppTemplateKernel(CppKernel):
         ]
         if epilogue_nodes and any(epilogue_node for epilogue_node in epilogue_nodes):
             with LocalBufferContext(self.args) as scope:
+                if multi_output_gemm_buf:
+                    scope.multi_output_gemm_buf = {}
+                    for _orig_src, _multi_output_gemm_buf in zip(orig_src, multi_output_gemm_buf):
+                        # Map from MultiOut Buffer to the In Template GEMM output Buffer
+                        scope.multi_output_gemm_buf[_multi_output_gemm_buf] = _orig_src.get_name()
                 assert orig_src is not None
                 localize_epilogue_nodes = []
                 for gemm_idx in range(gemm_num):

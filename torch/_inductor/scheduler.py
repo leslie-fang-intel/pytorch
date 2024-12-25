@@ -1220,6 +1220,23 @@ class FusedSchedulerNode(BaseSchedulerNode):
         assert node1.scheduler is node2.scheduler
         assert isinstance(node1, (SchedulerNode, FusedSchedulerNode))
         assert isinstance(node2, (SchedulerNode, FusedSchedulerNode))
+        if node1.is_template():
+            # Remove the dependency
+            item_to_remove = []
+            for item in node2.unmet_dependencies:
+                if (
+                    isinstance(V.graph.scheduler.name_to_buf[item.name].node, ir.MultiOutput)
+                    and any (
+                        V.graph.scheduler.name_to_buf[item.name].node.inputs[0].get_name() == node.node.get_name()
+                        for node in node1.get_nodes()
+                    )
+                ):
+                    # Record the gemm idx this epilogue belongs to throuth the unmet_dependencies
+                    item_to_remove.append(item)
+                    # (<class 'list'>, 0)
+                    node2.node.gemm_idx = V.graph.scheduler.name_to_buf[item.name].node.indices[0][1]
+            for item in item_to_remove:
+                node2.unmet_dependencies.discard(item)
         nodes = list(itertools.chain(node1.get_nodes(), node2.get_nodes()))
         return cls(node1.scheduler, nodes)
 
@@ -2858,7 +2875,19 @@ class Scheduler:
         for node in nodes:
             if self.unfusable_node(node):
                 continue
-            for buf in node.used_buffer_names():
+            check_bufs = node.used_buffer_names()
+            new_buffers = []
+            for buf in check_bufs:
+                if (
+                    buf in V.graph.scheduler.name_to_buf
+                    and isinstance(V.graph.scheduler.name_to_buf[buf].node, ir.MultiOutput)
+                    and isinstance(
+                        V.graph.scheduler.name_to_buf[buf].node.inputs[0], ir.CppTemplateBuffer
+                    )
+                ):
+                    new_buffers.append(V.graph.scheduler.name_to_buf[buf].node.inputs[0].get_name())
+            check_bufs.update(new_buffers)
+            for buf in check_bufs:
                 buffer_names_grouping[buf].append(node)
         for node_grouping in buffer_names_grouping.values():
             check_all_pairs(node_grouping)
@@ -3302,7 +3331,16 @@ class Scheduler:
                 shared_data_score,
             )
 
-        if not V.choices.can_fuse(self, node1, node2, shared_data_score):
+        if (
+            not V.choices.can_fuse(self, node1, node2, shared_data_score)
+        ) and not (
+            # Modify this conditions, this case saves memory actually
+            node1.is_template()
+            and any(
+                isinstance(node.node.layout, ir.MultiOutputLayout)
+                for node in node1.get_nodes()
+            )
+        ):
             return False
 
         if node1.get_operation_names() & node2.ancestors:
@@ -3364,7 +3402,17 @@ class Scheduler:
         node1_op_names = node1.get_operation_names()
         for name in remaining_deps:
             op_name = self.name_to_buf[name].defining_op.get_name()
-            if node1_op_names & self.name_to_fused_node[op_name].ancestors:
+            if (
+                node1_op_names & self.name_to_fused_node[op_name].ancestors
+            ) and not (
+                node1.is_template()
+                and any(
+                    isinstance(node.node.layout, ir.MultiOutputLayout)
+                    for node in node1.get_nodes()
+                )
+                and name in V.graph.scheduler.name_to_buf
+                and isinstance(V.graph.scheduler.name_to_buf[name].node, ir.MultiOutput)
+            ):
                 why("intermediate nodes between node1 & node2")
                 return False
 

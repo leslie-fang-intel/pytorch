@@ -311,10 +311,12 @@ class LocalizeBufferHandler(V.WrapperHandler):  # type: ignore[name-defined]
         inner,
         global_to_local: Dict[str, ir.Buffer],
         rewrite_index: Callable[["LocalizeBufferHandler", sympy.Expr, str], sympy.Expr],
+        multi_output_gemm_buf,
     ) -> None:
         super().__init__(inner)
         self.global_to_local = global_to_local
         self.rewrite_index = rewrite_index
+        self.multi_output_gemm_buf = multi_output_gemm_buf
 
     def localize(self, name: str, index: sympy.Expr):
         if self.global_to_local and name in self.global_to_local:
@@ -324,6 +326,9 @@ class LocalizeBufferHandler(V.WrapperHandler):  # type: ignore[name-defined]
         return name, index
 
     def load(self, name: str, index: sympy.Expr):
+        if name in self.multi_output_gemm_buf:
+            # Substitue the MultiOutput with Template output
+            name = self.multi_output_gemm_buf[name]
         return self._inner.load(*self.localize(name, index))
 
     def store(self, name, index, value, mode=None):
@@ -362,6 +367,7 @@ class LocalBufferContext:
         self.global_buffers: Dict[str, ir.Buffer] = {}
         # map global buffer name to local buffer
         self.global_to_local: Dict[str, ir.Buffer] = {}
+        self.multi_output_gemm_buf = None
 
     def __enter__(self):
         self.exit_stack.__enter__()
@@ -430,6 +436,7 @@ class LocalBufferContext:
                     V.get_ops_handler(),
                     global_to_local=self.global_to_local,
                     rewrite_index=rewrite_index,
+                    multi_output_gemm_buf=self.multi_output_gemm_buf,
                 )
             ):
                 return fn(*args, **kwargs)

@@ -1,7 +1,7 @@
 # mypy: allow-untyped-defs
 import contextlib
 import logging
-from typing import Any, Callable, List, Optional
+from typing import Any, Callable, cast, List, Optional
 from unittest.mock import patch
 
 import torch
@@ -15,7 +15,13 @@ from ..select_algorithm import DataProcessorTemplateWrapper
 from ..utils import parallel_num_threads
 from ..virtualized import V
 from .cpp import get_export_declaration
-from .cpp_gemm_template import CppGemmTemplate, expand_bias, prune_tensors, transpose_w
+from .cpp_gemm_template import (
+    CppGemmTemplate,
+    expand_bias,
+    gen_2d_view_of_epilogue_buf,
+    prune_tensors,
+    transpose_w,
+)
 from .cpp_micro_gemm import CppMicroGemmAMX, create_micro_gemm
 from .cpp_template_kernel import CppTemplateKernel
 from .cpp_utils import (
@@ -115,7 +121,7 @@ extern "C" {{export_declaration}}
     ) %}
 {%- endfor %}
                     {{ kernel.store_outputs(
-                        tile_Y_list, tile_acc_list, GemmOuts, epilogue_nodes, offsets=("m_start", "n_start"), reindexers=reindexers
+                        tile_Y_list, tile_acc_list, GemmOuts, epilogue_nodes, offsets=("m_start", "n_start"), reindexers=reindexers, multi_output_gemm_buf=multi_output_gemm_buf
                     )|indent(20, false)
                     }}
                 }
@@ -353,6 +359,7 @@ class CppGroupGemmTemplate(CppGemmTemplate):
             inp_list.append(inp)
 
         Y_list = self.output_node
+        multi_output_gemm_buf = None
         if template_buffer_node is not None:
             W_list = template_buffer_node.inputs[
                 wgt_start_idx : wgt_start_idx + self.gemm_group_num
@@ -360,6 +367,11 @@ class CppGroupGemmTemplate(CppGemmTemplate):
             assert isinstance(template_buffer_node.outputs, List)
             Y_list = template_buffer_node.outputs
             counters["inductor"]["cpp_group_gemm_template"] += 1
+            # print("Y_list is: {}".format(Y_list), flush=True)
+            # multi_output_gemm_buf = template_buffer_node.outputs
+            # print("original multi_output_gemm_buf is: {}".format(multi_output_gemm_buf), flush=True)
+            # print(multi_output_gemm_buf[0].get_name(), flush=True)
+            multi_output_gemm_buf = [output.get_name() for output in template_buffer_node.outputs]
 
         template_buffer = Y_list[0]
         fake_buffers: List[ir.Buffer] = []
@@ -406,8 +418,8 @@ class CppGroupGemmTemplate(CppGemmTemplate):
             )
 
         assert (
-            not self.epilogue_creator and not epilogue_nodes
-        ), "Epilogue fusion is not implemented yet in Group GEMM Template"
+            not self.epilogue_creator
+        ), "epilogue_creator is not implemented yet in Group GEMM Template"
 
         kernel_args = {}
         for x_idx in range(wgt_start_idx):
@@ -433,6 +445,26 @@ class CppGroupGemmTemplate(CppGemmTemplate):
                     )
                 )
                 reindexers[gemm_idx].append(None)
+        
+        if epilogue_nodes:
+            _epilogue_nodes = [[] for _ in range(self.gemm_group_num)]
+            for epilogue_node in epilogue_nodes:
+                # Split epilogue_node by gemm_idx
+                assert hasattr(epilogue_node, "gemm_idx")
+                _epilogue_nodes[epilogue_node.gemm_idx].append(epilogue_node)
+            
+            for gemm_idx, _epilogue_node in enumerate(_epilogue_nodes):
+                if _epilogue_node:
+                    epilogues[gemm_idx].extend(_epilogue_node)
+                    assert Y_list[gemm_idx].get_numel() == epilogues[gemm_idx][-1].get_numel()
+                    Y_list[gemm_idx] = cast(ir.Buffer, epilogues[gemm_idx][-1])
+                    Y_2d_list[gemm_idx], reindexers[gemm_idx] = gen_2d_view_of_epilogue_buf(
+                        Y_list[gemm_idx],
+                        template_buffer,
+                        _epilogue_node,
+                        reindexers[gemm_idx],
+                        default_reindexers=self.get_default_reindexers(_epilogue_node),
+                    )
 
         options = dict(
             N=self.n,
@@ -461,6 +493,7 @@ class CppGroupGemmTemplate(CppGemmTemplate):
             gemm_group_num=self.gemm_group_num,
             Y_list={"Y" + str(idx): Y for idx, Y in enumerate(Y_list)},
             Y_2d_list=Y_2d_list,
+            multi_output_gemm_buf=multi_output_gemm_buf,
         )
         with contextlib.ExitStack() as stack:
             for buf in fake_buffers:
