@@ -123,20 +123,24 @@ extern "C" {{export_declaration}}
                 }
 
                 {
-{%- set tile_Y = kernel.slice_nd(Y_2d, [("m_start", "m_end"), ("n_start", "n_end")]) %}
 {%- set tile_acc_list = [] %}
+{%- set tile_Y_list = [] %}
 {%- for gemm_idx in range(0, gemm_group_num, 1) %}
     {%- set tile_acc_list = tile_acc_list.append(
         kernel.slice_nd(acc_list[gemm_idx], [("0", "m_end - m_start"), ("0", "n_end - n_start")])
     ) %}
+    {%- set tile_Y_list = tile_Y_list.append(
+        kernel.slice_nd(Y_2d_list[gemm_idx], [("m_start", "m_end"), ("n_start", "n_end")])
+    ) %}
 {%- endfor %}
-                    {{ kernel.store_output(
-                        tile_Y,
+                    {{ kernel.store_outputs(
+                        tile_Y_list,
                         tile_acc_list,
                         GemmOuts,
                         epilogue_nodes,
                         offsets=("m_start", "n_start"),
-                        reindexers=reindexers
+                        reindexers=reindexers,
+                        multi_output_buffers=multi_output_buffers
                     )|indent(20, false)
                     }}
                 }

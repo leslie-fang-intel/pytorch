@@ -131,7 +131,7 @@ def addmm_patterns_init():
         elif (
             is_cpu
             and config.cpp.enable_concat_linear
-            and config.cpp.enable_linear_silu_linear_mul
+            and config.cpp.enable_group_gemm_template
             and config.max_autotune
             and "CPP" in config.max_autotune_gemm_backends
             and len(match.nodes) == 2
