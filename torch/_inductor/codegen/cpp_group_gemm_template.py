@@ -549,7 +549,21 @@ class CppGroupGemmTemplate(CppGemmTemplate):
         # and epilogues, considering that output buf number might be different from GEMM number.
         if epilogue_nodes:
             epilogues.extend(epilogue_nodes)
-            reindexers.extend([None] * len(epilogue_nodes))
+            # reindexers.extend([None] * len(epilogue_nodes))
+
+            from .cpp_gemm_template import gen_2d_view_of_epilogue_buf
+            from typing import cast
+
+            for epilogue_node in epilogue_nodes:
+                Y = cast(ir.Buffer, epilogue_node)
+                _, reindexers = gen_2d_view_of_epilogue_buf(
+                    Y,
+                    template_buffer,
+                    [epilogue_node,],
+                    reindexers,
+                    default_reindexers=[None,],
+                )
+
 
         options = dict(
             N=self.n,
