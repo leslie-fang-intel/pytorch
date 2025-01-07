@@ -56,7 +56,6 @@ if torch._C._has_mkldnn:
                 or node.args[0] != act
                 or (node.args[1].meta.get("val").size() != wgt_size)
                 or (node.args[1] == wgt and gemm_idx != 0)
-                or node.args[2]  # <TODO> support bias through epilogue fusion
             )
             for gemm_idx, node in enumerate(computation_nodes)
         ):
@@ -94,7 +93,7 @@ if torch._C._has_mkldnn:
                             (
                                 act,
                                 [user.args[1] for user in users],
-                                [None for _ in users],
+                                [user.args[2] for user in users],
                             ),
                         )
                         grouped_gemm_node.meta["val"] = [
