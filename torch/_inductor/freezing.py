@@ -24,6 +24,9 @@ prims = torch.ops.prims
 
 log = logging.getLogger(__name__)
 
+can_per_layer_discard = True
+frozen_mapping = {}
+
 
 def replace_params_with_constants(
     gm: torch.fx.GraphModule,
@@ -56,7 +59,9 @@ def replace_params_with_constants(
         if i in mutated_inps or i in aliased_input_args:
             preserved_arg_indices.append(i)
             continue
-        replace_node_with_constant(gm, node, real_input)
+        global can_per_layer_discard
+        global frozen_mapping
+        replace_node_with_constant(gm, node, real_input, can_per_layer_discard=can_per_layer_discard, frozen_mapping=frozen_mapping)
     # add on non param inputs
     preserved_arg_indices.extend(range(len(flat_params), len(params)))
     # is this necessary ?
@@ -98,11 +103,22 @@ def _freeze(
     # See the details in fx_codegen_and_compile of compile_fx.py.
     view_to_reshape(aot_autograd_gm)
 
+    global can_per_layer_discard
+    can_per_layer_discard = config.freezing_discard_parameters
+
     if tracing_context := torch._guards.TracingContext.try_get():
         fw_metadata = tracing_context.fw_metadata
         assert tracing_context.params_flat_unwrap_subclasses is not None
         params_flat = tracing_context.params_flat_unwrap_subclasses
         assert fw_metadata is not None and params_flat is not None
+        
+        # Ensure each param in params_flat has no overlap
+        if config.freezing_discard_parameters:
+            for i, param in enumerate(params_flat):
+                for j in range(i + 1, len(params_flat)):
+                    if param.data_ptr() == params_flat[j].data_ptr():
+                        can_per_layer_discard = False
+                        break
 
         preserved_arg_indices = replace_params_with_constants(
             aot_autograd_gm, params_flat, fw_metadata
@@ -119,7 +135,15 @@ def _freeze(
     aot_example_inputs = [example_inputs[ind] for ind in preserved_arg_indices]
     freezing_passes(aot_autograd_gm, aot_example_inputs)
 
-    constant_fold(aot_autograd_gm)
+    constant_fold(aot_autograd_gm, dynamo_gm=dynamo_gm)
+
+    # import time
+    # import psutil
+    # import gc
+    # gc.collect()
+    # time.sleep(30)
+    # print("Before final discard psutil.virtual_memory() is: {}".format(psutil.virtual_memory()), flush=True)
+
     # invalidate nn Modules
     if config.freezing_discard_parameters:
         invalidate_eager_modules()
@@ -159,7 +183,7 @@ class ErasedTensor(torch.Tensor):
         )
 
 
-def invalidate_eager_modules():
+def invalidate_eager_modules(target_tensor=None):
     with torch.utils._python_dispatch._disable_current_modes():
         for (
             mod
@@ -173,27 +197,48 @@ def invalidate_eager_modules():
                     mod.named_buffers(recurse=False),
                 )
             ):
-                with torch._dispatch.python.no_python_dispatcher():
-                    e_t = ErasedTensor(tensor, attr_name, mod)
-                if isinstance(tensor, torch.nn.Parameter):
-                    e_t.requires_grad_(True)
-                    e_t._is_param = True
-                setattr(mod, attr_name, e_t)
+                if not isinstance(tensor, ErasedTensor):
+                    if target_tensor is not None:
+                        if tensor.data_ptr() == target_tensor.data_ptr():
+                            with torch._dispatch.python.no_python_dispatcher():
+                                e_t = ErasedTensor(tensor, attr_name, mod)
+                            if isinstance(tensor, torch.nn.Parameter):
+                                e_t.requires_grad_(True)
+                                e_t._is_param = True
+                            setattr(mod, attr_name, e_t)
+                    else:
+                        with torch._dispatch.python.no_python_dispatcher():
+                            e_t = ErasedTensor(tensor, attr_name, mod)
+                        if isinstance(tensor, torch.nn.Parameter):
+                            e_t.requires_grad_(True)
+                            e_t._is_param = True
+                        setattr(mod, attr_name, e_t)
 
 
-def discard_traced_gm_params(mod: torch.fx.GraphModule):
+def discard_traced_gm_params(mod: torch.fx.GraphModule, target_tensor=None):
     with torch.utils._python_dispatch._disable_current_modes():
         for attr_name, tensor in list(
             itertools.chain(
                 mod.named_parameters(recurse=False), mod.named_buffers(recurse=False)
             )
         ):
-            with torch._dispatch.python.no_python_dispatcher():
-                e_t = ErasedTensor(tensor, attr_name, mod)
-            if isinstance(tensor, torch.nn.Parameter):
-                e_t.requires_grad_(True)
-                e_t._is_param = True
-            setattr(mod, attr_name, e_t)
+            if not isinstance(tensor, ErasedTensor):
+                if target_tensor is not None:
+                    if tensor.data_ptr() == target_tensor.data_ptr():
+                        with torch._dispatch.python.no_python_dispatcher():
+                            e_t = ErasedTensor(tensor, attr_name, mod)
+                        if isinstance(tensor, torch.nn.Parameter):
+                            e_t.requires_grad_(True)
+                            e_t._is_param = True
+                        setattr(mod, attr_name, e_t)
+                else:
+
+                    with torch._dispatch.python.no_python_dispatcher():
+                        e_t = ErasedTensor(tensor, attr_name, mod)
+                    if isinstance(tensor, torch.nn.Parameter):
+                        e_t.requires_grad_(True)
+                        e_t._is_param = True
+                    setattr(mod, attr_name, e_t)
 
 
 def enforce_output_layout(gm: torch.fx.GraphModule):

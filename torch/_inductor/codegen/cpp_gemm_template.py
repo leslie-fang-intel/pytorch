@@ -382,6 +382,9 @@ def prune_tensors(input_nodes: list[ir.IRNode], new_input_nodes: list[ir.IRNode]
         for node in reversed(V.graph.graph.nodes):
             # Case may happen when the candidate tensor is used by more than 1 get_attr node
             # https://github.com/pytorch/pytorch/issues/134998
+            if node.op == "get_attr":
+                print("node name is: {}".format(node.name), flush=True)
+                print("node target is: {}".format(node.target), flush=True)
             if node.op == "get_attr" and hasattr(
                 V.graph.module, node.target
             ):  # candidate tensor might already be deleted
