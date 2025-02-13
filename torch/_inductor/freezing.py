@@ -137,17 +137,21 @@ def _freeze(
 
     constant_fold(aot_autograd_gm, dynamo_gm=dynamo_gm)
 
-    # import time
-    # import psutil
-    # import gc
-    # gc.collect()
-    # time.sleep(30)
-    # print("Before final discard psutil.virtual_memory() is: {}".format(psutil.virtual_memory()), flush=True)
+    import time
+    import psutil
+    import gc
+    gc.collect()
+    time.sleep(30)
+    print("Before final discard psutil.virtual_memory() is: {}".format(psutil.virtual_memory()), flush=True)
 
     # invalidate nn Modules
     if config.freezing_discard_parameters:
         invalidate_eager_modules()
         discard_traced_gm_params(dynamo_gm)
+
+    gc.collect()
+    time.sleep(30)
+    print("After final discard psutil.virtual_memory() is: {}".format(psutil.virtual_memory()), flush=True)
 
     log.debug(
         "%s", lazy_format_graph_code("FROZEN GRAPH", aot_autograd_gm, colored=True)

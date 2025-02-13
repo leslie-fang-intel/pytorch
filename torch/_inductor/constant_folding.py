@@ -108,6 +108,10 @@ class ConstantFolder(torch.fx.Interpreter):
         return self.deferred_value
 
     def is_impure(self, node: torch.fx.node.Node) -> bool:
+        if self.node_replacements:
+            # Only sustitune 1 tensor at 1 time
+            return True
+
         def is_woq_int8_pattern(node: torch.fx.node.Node) -> bool:
             return (
                 node.target == torch.ops.prims.convert_element_type.default  # type: ignore[return-value]
@@ -256,87 +260,87 @@ class ConstantFolder(torch.fx.Interpreter):
             else:
                 print("after deduce node out is: {}".format(out.data_ptr()), flush=True)
             
-            if node.target == torch.ops.mkldnn._reorder_linear_weight:
-                # To get the original frozen, we need to the node target
-                print(node.args, flush=True)
-                original_tensor = None
-                if node.args[0].op == "get_attr":
-                    original_tensor = getattr(self.module, n.args[0].target)
-                elif node.args[0] in self.node_replacements:
-                    original_tensor = self.node_replacements[node.args[0]]
-                assert original_tensor is not None
-                if (
-                    original_tensor.is_mkldnn != out.is_mkldnn
-                    or (
-                        not original_tensor.is_mkldnn
-                        and not out.is_mkldnn
-                        and original_tensor.data_ptr() != out.data_ptr()
-                    )
-                ) and len(node.args[0].users) == 1:
-                    # Delete the original tensor
-                    from .freezing import discard_traced_gm_params
-                    from .freezing import invalidate_eager_modules
-                    from .freezing import can_per_layer_discard
-                    from . import config
+            # if node.target == torch.ops.mkldnn._reorder_linear_weight:
+            #     # To get the original frozen, we need to the node target
+            #     print(node.args, flush=True)
+            #     original_tensor = None
+            #     if node.args[0].op == "get_attr":
+            #         original_tensor = getattr(self.module, n.args[0].target)
+            #     elif node.args[0] in self.node_replacements:
+            #         original_tensor = self.node_replacements[node.args[0]]
+            #     assert original_tensor is not None
+            #     if (
+            #         original_tensor.is_mkldnn != out.is_mkldnn
+            #         or (
+            #             not original_tensor.is_mkldnn
+            #             and not out.is_mkldnn
+            #             and original_tensor.data_ptr() != out.data_ptr()
+            #         )
+            #     ) and len(node.args[0].users) == 1:
+            #         # Delete the original tensor
+            #         from .freezing import discard_traced_gm_params
+            #         from .freezing import invalidate_eager_modules
+            #         from .freezing import can_per_layer_discard
+            #         from . import config
 
-                    import time
-                    import psutil
-                    import gc
-                    import sys
-                    # gc.set_debug(gc.DEBUG_LEAK)
-                    # gc.collect()
-                    # time.sleep(30)
-                    # print("Before layer discard psutil.virtual_memory() is: {}".format(psutil.virtual_memory()), flush=True)
+            #         import time
+            #         import psutil
+            #         import gc
+            #         import sys
+            #         # gc.set_debug(gc.DEBUG_LEAK)
+            #         # gc.collect()
+            #         # time.sleep(30)
+            #         # print("Before layer discard psutil.virtual_memory() is: {}".format(psutil.virtual_memory()), flush=True)
 
-                    if can_per_layer_discard and config.freezing_discard_parameters:
-                        invalidate_eager_modules(original_tensor)
-                        discard_traced_gm_params(self.dynamo_gm, original_tensor)
-                        key_to_delete = None
-                        for key in self.node_replacements.keys():
-                            value = self.node_replacements[key]
-                            if (
-                                not value.is_mkldnn
-                                and not original_tensor.is_mkldnn
-                                and value.data_ptr() == original_tensor.data_ptr()
-                            ):
-                                key_to_delete = key
-                        self.node_replacements.pop(key_to_delete, None)
-                        referrers = gc.get_referrers(original_tensor)  # self.node_replacements, node.args
-                        for idx, ref in enumerate(referrers):
-                            if isinstance(ref, list):
-                                for idx2, obj in enumerate(ref):
-                                    if isinstance(obj, torch.Tensor):
-                                        if (
-                                            not obj.is_mkldnn
-                                            and not original_tensor.is_mkldnn
-                                            and obj.data_ptr() == original_tensor.data_ptr()
-                                        ):
-                                            print("---- hit list -----", flush=True)
-                                            ref[idx2] = torch.randn(1)
-                            elif isinstance(ref, dict):
-                                for key in ref.keys():
-                                    obj = ref[key]
-                                    if isinstance(obj, torch.Tensor):
-                                        if (
-                                            not obj.is_mkldnn
-                                            and not original_tensor.is_mkldnn
-                                            and obj.data_ptr() == original_tensor.data_ptr()
-                                        ):
-                                            print("---- hit dict -----", flush=True)
-                                            ref[key] = torch.randn(1)
-                            elif isinstance(ref, tuple):
-                                # **Important** Diffcult to remove reference in tuple
-                                pass
-                                # referrers[idx] = ref_list if isinstance(ref, list) else tuple(ref_list)
-                            # del ref
-                        referrers = gc.get_referrers(original_tensor)
-                        for ref in referrers:
-                            print("ref is: {}, {}".format(type(ref), ref), flush=True)
-                        # del original_tensor
-                    # gc.collect()
-                    # time.sleep(30)
-                    # print("After layer discard psutil.virtual_memory() is: {}".format(psutil.virtual_memory()), flush=True)
-                    # time.sleep(30)
+            #         if can_per_layer_discard and config.freezing_discard_parameters:
+            #             invalidate_eager_modules(original_tensor)
+            #             discard_traced_gm_params(self.dynamo_gm, original_tensor)
+            #             key_to_delete = None
+            #             for key in self.node_replacements.keys():
+            #                 value = self.node_replacements[key]
+            #                 if (
+            #                     not value.is_mkldnn
+            #                     and not original_tensor.is_mkldnn
+            #                     and value.data_ptr() == original_tensor.data_ptr()
+            #                 ):
+            #                     key_to_delete = key
+            #             self.node_replacements.pop(key_to_delete, None)
+            #             referrers = gc.get_referrers(original_tensor)  # self.node_replacements, node.args
+            #             for idx, ref in enumerate(referrers):
+            #                 if isinstance(ref, list):
+            #                     for idx2, obj in enumerate(ref):
+            #                         if isinstance(obj, torch.Tensor):
+            #                             if (
+            #                                 not obj.is_mkldnn
+            #                                 and not original_tensor.is_mkldnn
+            #                                 and obj.data_ptr() == original_tensor.data_ptr()
+            #                             ):
+            #                                 print("---- hit list -----", flush=True)
+            #                                 ref[idx2] = torch.randn(1)
+            #                 elif isinstance(ref, dict):
+            #                     for key in ref.keys():
+            #                         obj = ref[key]
+            #                         if isinstance(obj, torch.Tensor):
+            #                             if (
+            #                                 not obj.is_mkldnn
+            #                                 and not original_tensor.is_mkldnn
+            #                                 and obj.data_ptr() == original_tensor.data_ptr()
+            #                             ):
+            #                                 print("---- hit dict -----", flush=True)
+            #                                 ref[key] = torch.randn(1)
+            #                 elif isinstance(ref, tuple):
+            #                     # **Important** Diffcult to remove reference in tuple
+            #                     pass
+            #                     # referrers[idx] = ref_list if isinstance(ref, list) else tuple(ref_list)
+            #                 # del ref
+            #             referrers = gc.get_referrers(original_tensor)
+            #             for ref in referrers:
+            #                 print("ref is: {}, {}".format(type(ref), ref), flush=True)
+            #             # del original_tensor
+            #         # gc.collect()
+            #         # time.sleep(30)
+            #         # print("After layer discard psutil.virtual_memory() is: {}".format(psutil.virtual_memory()), flush=True)
+            #         # time.sleep(30)
                 
 
             self.add_node_replacement(node, out)
@@ -382,27 +386,93 @@ def constant_fold(
     dynamo_gm = None,
 ) -> None:
     with torch.utils._python_dispatch._disable_current_modes():
-        cf = ConstantFolder(gm, skip_constructors=True, dynamo_gm=dynamo_gm)
-        cf.run()
+        while True:
+            # print("gm.graph is: {}".format(gm.graph), flush=True)
+            cf = ConstantFolder(gm, skip_constructors=True, dynamo_gm=dynamo_gm)
+            cf.run()
+            if not cf.node_replacements:
+                # No more element to replacement
+                break
+        
+            assert len(cf.node_replacements.keys()) == 1
 
-        for node, constant in cf.node_replacements.items():
-            if constraint_fn is not None and not constraint_fn(node):
-                continue
-            replace_node_with_constant(gm, node, constant)
+            for node, constant in cf.node_replacements.items():
+                if constraint_fn is not None and not constraint_fn(node):
+                    continue
+                if node.target == torch.ops.mkldnn._reorder_linear_weight:
+                    # To get the original frozen, we need to the node target
+                    print(node.args, flush=True)
+                    original_tensor = None
+                    only_one_user = len(node.args[0].users) == 1
+                    if node.args[0] and node.args[0].op == "get_attr":
+                        original_tensor = getattr(gm, node.args[0].target)
+                    elif node.args[0] in cf.node_replacements:
+                        original_tensor = cf.node_replacements[node.args[0]]
 
-        erased_params = []
-        for node in gm.graph.find_nodes(op="get_attr"):
-            if len(node.users) == 0:
-                if hasattr(gm, node.target):
-                    delattr(gm, node.target)
-                erased_params.append(node)
+                replace_node_with_constant(gm, node, constant)
 
-        for node in erased_params:
-            gm.graph.erase_node(node)
+                erased_params = []
+                for _node in gm.graph.find_nodes(op="get_attr"):
+                    if len(_node.users) == 0:
+                        if hasattr(gm, _node.target):
+                            delattr(gm, _node.target)
+                        erased_params.append(_node)
 
-        gm.graph.eliminate_dead_code()
-        gm.graph.lint()
-        gm.recompile()
+                for _node in erased_params:
+                    gm.graph.erase_node(_node)
+
+                gm.graph.eliminate_dead_code()
+                gm.graph.lint()
+                gm.recompile()
+
+                if node.target == torch.ops.mkldnn._reorder_linear_weight:
+                    assert original_tensor is not None
+                    if (
+                        original_tensor.is_mkldnn != constant.is_mkldnn
+                        or (
+                            not original_tensor.is_mkldnn
+                            and not constant.is_mkldnn
+                            and original_tensor.data_ptr() != constant.data_ptr()
+                        )
+                    ) and only_one_user:
+                        # Delete the original tensor
+                        from .freezing import discard_traced_gm_params
+                        from .freezing import invalidate_eager_modules
+                        from .freezing import can_per_layer_discard
+                        from . import config
+
+                        import time
+                        import psutil
+                        import gc
+                        import sys
+                        # gc.set_debug(gc.DEBUG_LEAK)
+                        gc.collect()
+                        time.sleep(30)
+                        print("Before layer discard psutil.virtual_memory() is: {}".format(psutil.virtual_memory()), flush=True)
+
+                        if can_per_layer_discard and config.freezing_discard_parameters:
+                            invalidate_eager_modules(original_tensor)
+                            discard_traced_gm_params(cf.dynamo_gm, original_tensor)
+
+                            key_to_delete = None
+                            for key in cf.node_replacements.keys():
+                                value = cf.node_replacements[key]
+                                if (
+                                    not value.is_mkldnn
+                                    and not original_tensor.is_mkldnn
+                                    and value.data_ptr() == original_tensor.data_ptr()
+                                ):
+                                    key_to_delete = key
+                            cf.node_replacements.pop(key_to_delete, None)
+
+                            referrers = gc.get_referrers(original_tensor)
+                            print("----", flush=True)
+                            for ref in referrers:
+                                print("ref is: {}, {}".format(type(ref), ref), flush=True)
+                        # gc.set_debug(gc.DEBUG_LEAK)
+                        gc.collect()
+                        time.sleep(30)
+                        print("After layer discard psutil.virtual_memory() is: {}".format(psutil.virtual_memory()), flush=True)
 
 
 def constant_graph_tag(
