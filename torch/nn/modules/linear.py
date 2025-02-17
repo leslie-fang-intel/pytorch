@@ -18,6 +18,8 @@ __all__ = [
     "Linear",
 ]
 
+linear_wgt = None
+
 
 class Identity(Module):
     r"""A placeholder identity operator that is argument-insensitive.

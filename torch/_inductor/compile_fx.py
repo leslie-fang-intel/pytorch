@@ -2164,6 +2164,11 @@ def compile_fx(
         ), compiled_autograd._disable(), functorch_config.patch(
             unlift_effect_tokens=True
         ):
+            # print("---- before aot auto grad model_ is: {}".format(model_), flush=True)
+            # import gc
+            # print(len(gc.get_referrers(model_.L__self___linear.weight)), flush=True)
+            # for item in gc.get_referrers(model_.L__self___linear.weight):
+            #     print(id(item), flush=True)
             try:
                 return aot_autograd(
                     fw_compiler=fw_compiler,

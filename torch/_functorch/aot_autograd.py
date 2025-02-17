@@ -1085,6 +1085,13 @@ def aot_module_simplified(
     params_flat = list(params_flat)
     params_len = len(params_flat)
 
+
+    # import gc
+    # print("---- start aot-inductor: {}".format(len(gc.get_referrers(mod.L__self___linear.weight))), flush=True)
+    # for item in gc.get_referrers(mod.L__self___linear.weight):
+    #     print(id(item), flush=True)
+
+
     if cudagraphs is None:
         cudagraphs = BoxedBool(torch._inductor.config.triton.cudagraphs)
 
@@ -1093,7 +1100,7 @@ def aot_module_simplified(
     if inference_compiler is None:
         inference_compiler = fw_compiler
 
-    full_args = []
+    full_args = []  ## Another copy
     # First, the params
     full_args.extend(params_flat)
 
@@ -1111,6 +1118,11 @@ def aot_module_simplified(
         aot_autograd_arg_pos_to_source,
         static_input_indices,
     ) = _try_get_metadata_from_dynamo(mod, params.keys(), len(full_args))
+
+    # Delete 1 reference
+    keys = list(params.keys())
+    for key in keys:
+        params[key] = None
 
     dynamic_shapes = False
     for x in full_args:
@@ -1136,6 +1148,9 @@ def aot_module_simplified(
     )
     fake_mode, shape_env = construct_fake_mode(full_args, aot_config)
     fake_flat_args = process_inputs(full_args, aot_config, fake_mode, shape_env)
+
+    for item in range(len(full_args)):
+        full_args[item] = None
 
     def dispatch_and_compile():
         functional_call = create_functional_call(mod, params_spec, params_len)

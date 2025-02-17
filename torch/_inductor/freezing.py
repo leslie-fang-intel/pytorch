@@ -97,7 +97,6 @@ def _freeze(
     # when doing fake_tensor_prop. So we need to convert view to reshape first.
     # See the details in fx_codegen_and_compile of compile_fx.py.
     view_to_reshape(aot_autograd_gm)
-
     if tracing_context := torch._guards.TracingContext.try_get():
         fw_metadata = tracing_context.fw_metadata
         assert tracing_context.params_flat_unwrap_subclasses is not None
@@ -107,9 +106,23 @@ def _freeze(
         preserved_arg_indices = replace_params_with_constants(
             aot_autograd_gm, params_flat, fw_metadata
         )
+        # print("params_flat is: {}".format(id(params_flat)), flush=True)
+        del params_flat[0]  # 1st: Delete 1 reference
     else:
         inputs = aot_autograd_gm.graph.find_nodes(op="placeholder")
         preserved_arg_indices = list(range(len(inputs)))
+    
+    # print(id(tracing_context.params_flat[0]), flush=True)
+    # print(id(tracing_context.guards_context.dynamo_guards.inner), flush=True)
+    # print(id(tracing_context.guards_context.aotautograd_guards), flush=True)
+    # print(id(tracing_context.module_context.nn_modules), flush=True)
+    # print("tracing_context.module_context is: {}".format(
+    #     id(tracing_context.module_context.nn_modules["L__self___linear"])
+    #     ), flush=True)
+
+    with torch.utils._python_dispatch._disable_current_modes():
+        tracing_context.params_flat[0] = None  # 2nd: Delete 1 reference
+
 
     # TODO - further restrict cse ? right now needed to dedup aliasing ops
     cse_graph = fx_graph_cse(aot_autograd_gm.graph)
@@ -166,13 +179,48 @@ def invalidate_eager_modules():
         ) in torch._guards.TracingContext.get().module_context.nn_modules.values():
             if not isinstance(mod, torch.nn.Module):
                 continue
+        
+            import gc
+            gc.collect()
+            obj = None
+            if hasattr(mod, "weight"):
+                print("Before for loop mod is: {}; attr_name is: {}; refer num is: {}".format(
+                    mod,
+                    "weight",
+                    len(gc.get_referrers(getattr(mod, "weight"))),
+                ), flush=True)
+                for item in gc.get_referrers(getattr(mod, "weight")):
+                    print(id(item), flush=True)
+                    obj = getattr(mod, "weight")
+                    # print(item, flush=True)
 
-            for attr_name, tensor in list(
-                itertools.chain(
+            chain = itertools.chain(
                     mod.named_parameters(recurse=False),
                     mod.named_buffers(recurse=False),
                 )
-            ):
+            print("chain id is: {}".format(id(chain)), flush=True)
+            mylist = list(chain)
+
+            print("mylist id is: {}".format(id(mylist)), flush=True)
+
+            for item_mylist_idx in range(len(mylist)):
+                item_mylist = mylist[item_mylist_idx]
+                print("id item_mylist is: {}".format(id(item_mylist)), flush=True)
+                attr_name, tensor = item_mylist
+
+                print("---- id(obj) is: {}".format(id(obj)), flush=True)
+
+                import gc
+                gc.collect()
+                print("Before invalid mod is: {}; attr_name is: {}; refer num is: {}".format(
+                    mod,
+                    attr_name,
+                    len(gc.get_referrers(obj)),
+                ), flush=True)
+                if hasattr(mod, "weight") and attr_name == "weight":
+                    for item in gc.get_referrers(obj):
+                        print(id(item), flush=True)
+                
                 with torch._dispatch.python.no_python_dispatcher():
                     e_t = ErasedTensor(tensor, attr_name, mod)
                 if isinstance(tensor, torch.nn.Parameter):
@@ -180,6 +228,30 @@ def invalidate_eager_modules():
                     e_t._is_param = True
                 setattr(mod, attr_name, e_t)
 
+                gc.collect()
+                print("After invalid mod is: {}; attr_name is: {}; refer num is: {}".format(
+                    mod,
+                    attr_name,
+                    len(gc.get_referrers(obj)),
+                ), flush=True)
+                if hasattr(mod, "weight") and attr_name == "weight":
+                    for item in gc.get_referrers(obj):
+                        print(id(item), flush=True)
+                        # print(item, flush=True)
+
+                del obj
+                del tensor
+                del chain
+                del mylist
+                # del attr_name
+                # item_mylist[1] = None
+
+        print("---- finish ----", flush=True)
+        import gc
+        gc.collect()
+        # import time
+        # time.sleep(30)
+        print("---- finish2 ----", flush=True)
 
 def discard_traced_gm_params(mod: torch.fx.GraphModule):
     with torch.utils._python_dispatch._disable_current_modes():
@@ -194,7 +266,6 @@ def discard_traced_gm_params(mod: torch.fx.GraphModule):
                 e_t.requires_grad_(True)
                 e_t._is_param = True
             setattr(mod, attr_name, e_t)
-
 
 def enforce_output_layout(gm: torch.fx.GraphModule):
     """
