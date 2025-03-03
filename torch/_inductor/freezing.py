@@ -15,6 +15,10 @@ from torch._inductor.constant_folding import constant_fold, replace_node_with_co
 from torch._inductor.freezing_utils import enter_freezing, record_has_frozen_params
 from torch._inductor.fx_passes.freezing_patterns import freezing_passes
 from torch._inductor.fx_passes.post_grad import view_to_reshape
+import gc
+import time
+import psutil
+
 
 from . import config
 
@@ -137,6 +141,9 @@ def _freeze(
     if config.freezing_discard_parameters:
         invalidate_eager_modules()
         discard_traced_gm_params(dynamo_gm)
+        gc.collect()
+        time.sleep(30)
+        print("After freezing_discard_parameters psutil.virtual_memory() is: {}".format(psutil.virtual_memory()), flush=True)
 
     log.debug(
         "%s", lazy_format_graph_code("FROZEN GRAPH", aot_autograd_gm, colored=True)
@@ -239,12 +246,12 @@ def invalidate_eager_modules():
                         print(id(item), flush=True)
                         # print(item, flush=True)
 
-                del obj
-                del tensor
-                del chain
-                del mylist
-                # del attr_name
-                # item_mylist[1] = None
+            del obj
+            # del tensor
+            del chain
+            del mylist
+            # del attr_name
+            # item_mylist[1] = None
 
         print("---- finish ----", flush=True)
         import gc
