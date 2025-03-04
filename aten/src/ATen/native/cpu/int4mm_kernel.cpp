@@ -92,11 +92,17 @@ inline void tinygemm_kernel(
   //
   // dequant = (bf16(int4_value) * bf16_scale) + bf16_zero
   //
+  // static const __m512 lut = _mm512_set_ps(
+  //     7.0f, 6.0f, 5.0f, 4.0f,
+  //     3.0f, 2.0f, 1.0f, 0.0f,
+  //     -1.0f, -2.0f, -3.0f, -4.0f,
+  //     -5.0f, -6.0f, -7.0f, -8.0f);
+
   static const __m512 lut = _mm512_set_ps(
+      15.0f, 14.0f, 13.0f, 12.0f,
+      11.0f, 10.0f, 9.0f, 8.0f,
       7.0f, 6.0f, 5.0f, 4.0f,
-      3.0f, 2.0f, 1.0f, 0.0f,
-      -1.0f, -2.0f, -3.0f, -4.0f,
-      -5.0f, -6.0f, -7.0f, -8.0f);
+      3.0f, 2.0f, 1.0f, 0.0f);
 
   // index for transpose
   static const __m512i idx1 = _mm512_set_epi32(
@@ -158,21 +164,28 @@ inline void tinygemm_kernel(
 
           __m512i b32 = _mm512_cvtepu8_epi32(_mm256_castsi256_si128(b4));
           vb[0] = _mm512_permutexvar_ps(b32, lut);
-          vb[0] = _mm512_fmadd_ps(vb[0], scale[0], zero[0]);
+          // vb[0] = _mm512_fmadd_ps(vb[0], scale[0], zero[0]);
+          vb[0] = _mm512_mul_ps(_mm512_sub_ps(vb[0], zero[0]), scale[0]);
+          
           vb[2] = _mm512_permutexvar_ps(_mm512_srli_epi32(b32, 4), lut);
-          vb[2] = _mm512_fmadd_ps(vb[2], scale[2], zero[2]);
+          // vb[2] = _mm512_fmadd_ps(vb[2], scale[2], zero[2]);
+
+          vb[2] = _mm512_mul_ps(_mm512_sub_ps(vb[2], zero[2]), scale[2]);
 
           b32 = _mm512_cvtepu8_epi32(_mm256_extracti128_si256(b4, 1));
           vb[1] = _mm512_permutexvar_ps(b32, lut);
-          vb[1] = _mm512_fmadd_ps(vb[1], scale[1], zero[1]);
+          // vb[1] = _mm512_fmadd_ps(vb[1], scale[1], zero[1]);
+          vb[1] = _mm512_mul_ps(_mm512_sub_ps(vb[1], zero[1]), scale[1]);
           vb[3] = _mm512_permutexvar_ps(_mm512_srli_epi32(b32, 4), lut);
-          vb[3] = _mm512_fmadd_ps(vb[3], scale[3], zero[3]);
+          // vb[3] = _mm512_fmadd_ps(vb[3], scale[3], zero[3]);
+          vb[3] = _mm512_mul_ps(_mm512_sub_ps(vb[3], zero[3]), scale[3]);
         }
       } else {
         __m128i b8 = conver_int4_to_int8(B + k * ldb + col * 8);
         __m512i b32 = _mm512_cvtepu8_epi32(b8);
         vb[col] = _mm512_permutexvar_ps(b32, lut);
-        vb[col] = _mm512_fmadd_ps(vb[col], scale[col], zero[col]);
+        // vb[col] = _mm512_fmadd_ps(vb[col], scale[col], zero[col]);
+        vb[col] = _mm512_mul_ps(_mm512_sub_ps(vb[col], zero[col]), scale[col]);
       }
     }
 
@@ -203,147 +216,6 @@ inline void tinygemm_kernel(
     } else {
       __m256i ci = vec::cvtfp32_bf16(vc[i]);
       _mm256_storeu_si256((__m256i*)(C + row * ldc + col * 16), ci);
-    }
-  };
-  c10::ForcedUnroll<ROWS * COLS>{}(storec);
-}
-
-#elif defined(CPU_CAPABILITY_AVX2) && !defined(_MSC_VER)
-
-template <int BLOCK_M, int BLOCK_N>
-inline void tinygemm_kernel(
-    const BFloat16* RESTRICT A,
-    const uint8_t* RESTRICT B,
-    const BFloat16* RESTRICT ScaleAndZeros,
-    BFloat16* RESTRICT C,
-    int lda,
-    int ldb,
-    int ldc,
-    int K,
-    int BLOCK_K) {
-
-  constexpr int ROWS = BLOCK_M;
-  constexpr int COLS = BLOCK_N / 8;
-
-  const int PREFETCH_SIZE_K = 16 * 4;
-  const int PREFETCH_SIZE_KB = (PREFETCH_SIZE_K + BLOCK_K - 1) / BLOCK_K;
-
-  // number of blocks on K
-  const int KB = K / BLOCK_K;
-
-  __m256 va;
-  __m256 vb[COLS];
-  __m256 vc[ROWS * COLS];
-  __m256 scale[COLS];
-  __m256 zero[COLS];
-
-  static const __m256i idx1 = _mm256_setr_epi32(0, 2, 4, 6, 1, 3, 5, 7);
-
-  // offset to shift from range [0, 15] to [-8, 7]
-  const __m256 offset = _mm256_set1_ps(-8.0f);
-
-  // load scale and zero point
-  auto load_scale_and_zeros = [&](int i, int _kb) {
-    // load 2x bfloat16 vector
-    __m256i t = _mm256_loadu_si256((__m256i*)(ScaleAndZeros + _kb * ldc * 2 + 16 * i));
-    if (_kb + PREFETCH_SIZE_KB < KB) {
-      _mm_prefetch(ScaleAndZeros + (_kb + PREFETCH_SIZE_KB) * ldc * 2 + 16 * i, _MM_HINT_T0);
-    }
-
-    // convert to 2x f32 vector
-    __m256 a, b;
-    vec::cvtbf16_fp32(t, a, b);
-
-    // transpose scale_and_zero from {8, 2} to {2, 8}
-    // inputs:
-    //   a: {s0, z0, s1, z1, s2, z2, s3, z3}
-    //   b: {s4, z4, s5, z5, s6, z6, s7, z7}
-    // output:
-    //   scale: {s0, s1, s2, s3, s4, s5, s6, s7}
-    //   zero:  {z0, z1, z2, z3, z4, z5, z6, z7}
-    a = _mm256_permutevar8x32_ps(a, idx1);
-    b = _mm256_permutevar8x32_ps(b, idx1);
-    scale[i] = _mm256_permute2f128_ps(a, b, 0b0100000);
-    zero[i] = _mm256_permute2f128_ps(a, b, 0b0110001);
-
-    // zero = -8 * scale + zero
-    zero[i] = _mm256_fmadd_ps(scale[i], offset, zero[i]);
-  };
-
-  auto loadc = [&](auto i) {
-    vc[i] = _mm256_setzero_ps();
-  };
-  c10::ForcedUnroll<ROWS * COLS>{}(loadc);
-
-  auto compute = [&, COLS](auto i, int k) {
-    constexpr int row = i / COLS;
-    constexpr int col = i % COLS;
-
-    if constexpr (col == 0) {
-      float aa = static_cast<float>(A[row * lda + k]);
-      if (k + PREFETCH_SIZE_K < K) {
-        _mm_prefetch(A + row * lda + k + PREFETCH_SIZE_K, _MM_HINT_T0);
-      }
-      va = _mm256_set1_ps(aa);
-    }
-
-    if constexpr (row == 0) {
-      if constexpr (COLS == 4) {
-        // when BLOCK_N = 32, handle each row at a time
-        if constexpr (col == 0) {
-          __m256i mask = _mm256_set1_epi32(0xF);
-          __m128i b4 = _mm_loadu_si128((__m128i*)(B + k * ldb));
-          if (k + PREFETCH_SIZE_K < K) {
-            _mm_prefetch(B + (k + PREFETCH_SIZE_K) * ldb, _MM_HINT_T0);
-          }
-
-          __m256i b32 = _mm256_cvtepu8_epi32(b4);
-          vb[0] = _mm256_cvtepi32_ps(_mm256_and_si256(b32, mask));
-          vb[0] = _mm256_fmadd_ps(vb[0], scale[0], zero[0]);
-          vb[2] = _mm256_cvtepi32_ps(_mm256_srli_epi32(b32, 4));
-          vb[2] = _mm256_fmadd_ps(vb[2], scale[2], zero[2]);
-
-          b32 = _mm256_cvtepu8_epi32(_mm_shuffle_epi32(b4, _MM_SHUFFLE(3, 2, 3, 2)));
-          vb[1] = _mm256_cvtepi32_ps(_mm256_and_si256(b32, mask));
-          vb[1] = _mm256_fmadd_ps(vb[1], scale[1], zero[1]);
-          vb[3] = _mm256_cvtepi32_ps(_mm256_srli_epi32(b32, 4));
-          vb[3] = _mm256_fmadd_ps(vb[3], scale[3], zero[3]);
-        }
-      } else {
-        if constexpr (col % 2 == 0) {
-          // de-quantize per 64 bits (16x int4)
-          __m128i b8 = conver_int4_to_int8(B + k * ldb + col * 4);
-          __m128i b8_val0 = _mm_set1_epi64x(_mm_extract_epi64(b8, 0));
-          __m128i b8_val1 = _mm_set1_epi64x(_mm_extract_epi64(b8, 1));
-          if (k + PREFETCH_SIZE_K < K) {
-            _mm_prefetch(B + (k + PREFETCH_SIZE_K) * ldb + col * 4, _MM_HINT_T0);
-          }
-
-          vb[col] = _mm256_cvtepi32_ps(_mm256_cvtepu8_epi32(b8_val0));
-          vb[col] = _mm256_fmadd_ps(vb[col], scale[col], zero[col]);
-          vb[col + 1] = _mm256_cvtepi32_ps(_mm256_cvtepu8_epi32(b8_val1));
-          vb[col + 1] = _mm256_fmadd_ps(vb[col + 1], scale[col + 1], zero[col + 1]);
-        }
-      }
-    }
-
-    constexpr int idx = row * COLS + col;
-    vc[idx] = _mm256_fmadd_ps(va, vb[col], vc[idx]);
-  };
-  for (int k = 0, kb = 0; k < K; ++k) {
-    if (is_block_start(k, BLOCK_K)) {
-        c10::ForcedUnroll<COLS>{}(load_scale_and_zeros, kb++);
-    }
-    c10::ForcedUnroll<ROWS * COLS>{}(compute, k);
-  }
-
-  // store to C
-  auto storec = [&](auto i) {
-    constexpr int row = i / COLS;
-    constexpr int col = i % COLS;
-    if constexpr (col % 2 == 0) {
-      __m256i ci = vec::cvtfp32_bf16(vc[row * COLS + col], vc[row * COLS + col + 1]);
-      _mm256_storeu_si256((__m256i*)(C + row * ldc + col * 8), ci);
     }
   };
   c10::ForcedUnroll<ROWS * COLS>{}(storec);
@@ -480,11 +352,17 @@ inline void tinygemm_kernel(
 
 template<int BLOCK_N>
 inline float convert_int4_to_float(const uint8_t* b, int n) {
+  // static constexpr float lut[16] = {
+  //   -8.0f, -7.0f, -6.0f, -5.0f,
+  //   -4.0f, -3.0f, -2.0f, -1.0f,
+  //   0.0f, 1.0f, 2.0f, 3.0f,
+  //   4.0f, 5.0f, 6.0f, 7.0f
+  // };
   static constexpr float lut[16] = {
-    -8.0f, -7.0f, -6.0f, -5.0f,
-    -4.0f, -3.0f, -2.0f, -1.0f,
     0.0f, 1.0f, 2.0f, 3.0f,
-    4.0f, 5.0f, 6.0f, 7.0f
+    4.0f, 5.0f, 6.0f, 7.0f,
+    8.0f, 9.0f, 10.0f, 11.0f,
+    12.0f, 13.0f, 14.0f, 15.0f,
   };
   int index;
 #if defined(CPU_CAPABILITY_AVX512) && !defined(_MSC_VER)
@@ -542,7 +420,8 @@ inline void tinygemm_kernel(
         const auto zero = static_cast<float>(ScaleAndZeros[kb * ldc * 2 + n * 2 + 1]);
         const auto a_val = static_cast<float>(A[m * lda + k]);
         float b_val = convert_int4_to_float<BLOCK_N>(B + k *ldb, n);
-        b_val = b_val * scale + zero;
+        // b_val = b_val * scale + zero;
+        b_val = (b_val - zero) * scale;
 
         c_val += a_val * b_val;
       }
