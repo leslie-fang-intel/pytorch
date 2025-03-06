@@ -112,9 +112,17 @@ def _freeze(
         preserved_arg_indices = replace_params_with_constants(
             aot_autograd_gm, params_flat, fw_metadata
         )
+        # 3rd delete
+        # Reduce from 8 to 7
+        del params_flat[0]
     else:
         inputs = aot_autograd_gm.graph.find_nodes(op="placeholder")
         preserved_arg_indices = list(range(len(inputs)))
+
+    # 4th delete
+    # Reduce from 7 to 6  
+    with torch.utils._python_dispatch._disable_current_modes():
+        tracing_context.params_flat[0] = None
 
     # TODO - further restrict cse ? right now needed to dedup aliasing ops
     cse_graph = fx_graph_cse(aot_autograd_gm.graph)
@@ -139,6 +147,16 @@ def _freeze(
             computations = [obj for obj in snapshot if (isinstance(obj, torch.Tensor) and not isinstance(obj, torch._subclasses.FakeTensor))]
             computations = [obj for obj in computations if obj.device != torch.device("meta")]
             computations = [obj for obj in computations if (len(obj.size()) == 2 and (obj.size(0) == 4194304 or obj.size(1) == 4194304) and (obj.size(0) == 1024 or obj.size(1) == 1024))]
+            
+            # computations = [
+            #     obj for obj in snapshot if (
+            #         isinstance(obj, torch.Tensor)
+            #         and not isinstance(obj, torch._subclasses.FakeTensor)
+            #         and obj.device != torch.device("meta")
+            #         and (len(obj.size()) == 2 and (obj.size(0) == 4194304 or obj.size(1) == 4194304) and (obj.size(0) == 1024 or obj.size(1) == 1024))
+            #     )
+            # ]
+            
             for computation in computations:
                 print(computation.size(), flush=True)
                 ancestors = snapshot.ancestors(computation, 1)

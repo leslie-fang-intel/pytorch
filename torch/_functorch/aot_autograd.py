@@ -1114,6 +1114,12 @@ def aot_module_simplified(
         static_input_indices,
     ) = _try_get_metadata_from_dynamo(mod, params.keys(), len(full_args))
 
+    # Delete 1 reference
+    # First of all, reduce from 10 to 9
+    keys = list(params.keys())
+    for key in keys:
+        params[key] = None
+
     dynamic_shapes = False
     for x in full_args:
         if isinstance(x, FakeTensor):
@@ -1138,6 +1144,11 @@ def aot_module_simplified(
     )
     fake_mode, shape_env = construct_fake_mode(full_args, aot_config)
     fake_flat_args = process_inputs(full_args, aot_config, fake_mode, shape_env)
+
+    # 2rd delete
+    # Reduce from 9 to 8
+    for item in range(len(full_args)):
+        full_args[item] = None
 
     def dispatch_and_compile():
         functional_call = create_functional_call(mod, params_spec, params_len)
