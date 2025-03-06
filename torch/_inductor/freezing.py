@@ -147,7 +147,6 @@ def _freeze(
             computations = [obj for obj in snapshot if (isinstance(obj, torch.Tensor) and not isinstance(obj, torch._subclasses.FakeTensor))]
             computations = [obj for obj in computations if obj.device != torch.device("meta")]
             computations = [obj for obj in computations if (len(obj.size()) == 2 and (obj.size(0) == 4194304 or obj.size(1) == 4194304) and (obj.size(0) == 1024 or obj.size(1) == 1024))]
-            
             # computations = [
             #     obj for obj in snapshot if (
             #         isinstance(obj, torch.Tensor)
@@ -156,15 +155,42 @@ def _freeze(
             #         and (len(obj.size()) == 2 and (obj.size(0) == 4194304 or obj.size(1) == 4194304) and (obj.size(0) == 1024 or obj.size(1) == 1024))
             #     )
             # ]
-            
             for computation in computations:
                 print(computation.size(), flush=True)
                 ancestors = snapshot.ancestors(computation, 1)
-                print("---- len() is: {} ancestors is: {} ----".format(
-                    len(list(ancestors)),
-                    ancestors.annotated().to_json()),
-                    flush=True,
-                )
+                # print("---- len() is: {} ancestors is: {} ----".format(
+                #     len(list(ancestors)),
+                #     ancestors.annotated().to_json()),
+                #     flush=True,
+                # )
+                # print(ancestors.annotated().vertices, flush=True)
+                for ancestor in list(ancestors):
+                    print("ancestor is: {}".format(ancestor), flush=True)
+                    if isinstance(ancestor, list) and len(ancestor) == 14:
+                        new_snapshot = snapshot.ancestors(ancestor, 1)
+                        print("new_snapshot is: {}".format(new_snapshot.annotated().to_json()), flush=True)
+                        for new_snapshot_item in list(new_snapshot):
+                            if isinstance(new_snapshot_item, dict):
+                                new_new_snapshot = snapshot.ancestors(new_snapshot_item, 1)
+                                print("new_new_snapshot is: {}".format(new_new_snapshot.annotated().to_json()), flush=True)
+                                for new_new_snapshot_item in list(new_new_snapshot):
+                                    if isinstance(new_new_snapshot_item, torch._dynamo.side_effects.SideEffects):
+                                        new_new_new_snapshot = snapshot.ancestors(new_new_snapshot_item, 1)
+                                        print("new_new_new_snapshot is: {}".format(new_new_new_snapshot.annotated().to_json()), flush=True)
+
+                                        for new_new_new_snapshot_item in list(new_new_new_snapshot):
+                                            if isinstance(new_new_new_snapshot_item, dict):
+                                                new_new_new_new_snapshot = snapshot.ancestors(new_new_new_snapshot_item, 1)
+                                                print("new_new_new_new_snapshot is: {}".format(new_new_new_new_snapshot.annotated().to_json()), flush=True)
+
+
+                                                for new_new_new_new_snapshot_item in list(new_new_new_new_snapshot):
+                                                    if isinstance(new_new_new_new_snapshot_item, torch._dynamo.output_graph.OutputGraph):
+                                                        new_new_new_new_new_snapshot = snapshot.ancestors(new_new_new_new_snapshot_item, 1)
+                                                        print("new_new_new_new_new_snapshot is: {}".format(new_new_new_new_new_snapshot.annotated().to_json()), flush=True)
+
+                for vertex in ancestors.annotated().vertices:
+                    print("vertex id: {}; annotation is: {} ----".format(vertex.id, vertex.annotation), flush=True)
 
     log.debug(
         "%s", lazy_format_graph_code("FROZEN GRAPH", aot_autograd_gm, colored=True)
