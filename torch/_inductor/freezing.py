@@ -15,8 +15,13 @@ from torch._inductor.constant_folding import constant_fold, replace_node_with_co
 from torch._inductor.freezing_utils import enter_freezing, record_has_frozen_params
 from torch._inductor.fx_passes.freezing_patterns import freezing_passes
 from torch._inductor.fx_passes.post_grad import view_to_reshape
+import gc
+import time
+import psutil
 
 from . import config
+
+profile_memory = True
 
 
 aten = torch.ops.aten
@@ -124,6 +129,24 @@ def _freeze(
     if config.freezing_discard_parameters:
         invalidate_eager_modules()
         discard_traced_gm_params(dynamo_gm)
+
+        if profile_memory:
+            # gc.collect()
+            # time.sleep(10)
+            # print("After discard_traced_gm_params psutil.virtual_memory() is: {}".format(psutil.virtual_memory()), flush=True)
+            import refcycle
+            snapshot = refcycle.snapshot()
+            computations = [obj for obj in snapshot if (isinstance(obj, torch.Tensor) and not isinstance(obj, torch._subclasses.FakeTensor))]
+            computations = [obj for obj in computations if obj.device != torch.device("meta")]
+            computations = [obj for obj in computations if (len(obj.size()) == 2 and (obj.size(0) == 4194304 or obj.size(1) == 4194304) and (obj.size(0) == 1024 or obj.size(1) == 1024))]
+            for computation in computations:
+                print(computation.size(), flush=True)
+                ancestors = snapshot.ancestors(computation, 1)
+                print("---- len() is: {} ancestors is: {} ----".format(
+                    len(list(ancestors)),
+                    ancestors.annotated().to_json()),
+                    flush=True,
+                )
 
     log.debug(
         "%s", lazy_format_graph_code("FROZEN GRAPH", aot_autograd_gm, colored=True)
