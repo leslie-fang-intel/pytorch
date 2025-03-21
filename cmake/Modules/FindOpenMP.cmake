@@ -278,8 +278,13 @@ function(_OPENMP_GET_FLAGS LANG FLAG_MODE OPENMP_FLAG_VAR OPENMP_LIB_NAMES_VAR)
     endif()
 
     if (NOT OpenMP_libomp_LIBRARY)
+      if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND USE_MKLDNN)
+        set(OPENMP_LIBRARIES_LIST gomp omp iomp5)
+      else()
+        set(OPENMP_LIBRARIES_LIST omp gomp iomp5)
+      endif()
       find_library(OpenMP_libomp_LIBRARY
-        NAMES omp gomp iomp5
+        NAMES ${OPENMP_LIBRARIES_LIST}
         HINTS ${CMAKE_${LANG}_IMPLICIT_LINK_DIRECTORIES}
         DOC "libomp location for OpenMP"
       )
@@ -288,8 +293,13 @@ function(_OPENMP_GET_FLAGS LANG FLAG_MODE OPENMP_FLAG_VAR OPENMP_LIB_NAMES_VAR)
 
     # Use OpenMP_PREFIX if defined
     if (NOT OpenMP_libomp_LIBRARY AND NOT "${OpenMP_PREFIX}" STREQUAL "")
+      if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND USE_MKLDNN)
+        set(OPENMP_LIBRARIES_LIST gomp omp iomp5)
+      else()
+        set(OPENMP_LIBRARIES_LIST omp gomp iomp5)
+      endif()
       find_library(OpenMP_libomp_LIBRARY
-        NAMES omp gomp iomp5
+        NAMES ${OPENMP_LIBRARIES_LIST}
         HINTS "${OpenMP_PREFIX}/lib"
         DOC "libomp location for OpenMP"
       )
