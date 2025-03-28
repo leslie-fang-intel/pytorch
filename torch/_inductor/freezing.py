@@ -122,6 +122,14 @@ def _freeze(
     constant_fold(aot_autograd_gm)
     # invalidate nn Modules
     if config.freezing_discard_parameters:
+
+        import gc
+        import time
+        import psutil
+        gc.collect()
+        time.sleep(10)
+        print("Before freezing_discard_parameters psutil.virtual_memory() is: {}".format(psutil.virtual_memory()), flush=True)  
+
         invalidate_eager_modules()
         discard_traced_gm_params(dynamo_gm)
 
@@ -196,6 +204,14 @@ def invalidate_eager_modules():
                     e_t.requires_grad_(True)
                     e_t._is_param = True
                 setattr(mod, attr_name, e_t)
+
+
+                import gc
+                import time
+                import psutil
+                gc.collect()
+                time.sleep(10)
+                print("After one step of release psutil.virtual_memory() is: {}".format(psutil.virtual_memory()), flush=True)
 
 
 def discard_traced_gm_params(mod: torch.fx.GraphModule):
