@@ -31,6 +31,7 @@
 #include <c10/util/Logging.h>
 #include <c10/util/irange.h>
 #include <c10/util/thread_name.h>
+#include <c10/core/CPUAllocator.h>
 #include <libshm.h>
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
@@ -2434,6 +2435,29 @@ Call this whenever a new thread is created in order to propagate values from
   });
   py_module.def(
       "_has_storage", [](const at::Tensor& x) { return x.has_storage(); });
+
+  py_module.def(
+      "_set_storage_access_error_msg", [](const at::Tensor& t, std::string s) {
+        t.unsafeGetTensorImpl()
+            ->release_storage_and_set_meta_custom_data_ptr_error_msg_(s);
+  });
+
+  py_module.def(
+      "_free_And_Remove_DeleterFn_cpu", [](size_t storage_impl_ptr) {
+      c10::StorageImpl* storage_impl = (c10::StorageImpl*)storage_impl_ptr;
+      auto alloc = c10::GetCPUAllocator();
+      auto data_ptr = storage_impl->data_ptr().get();
+      bool succeeded = storage_impl->mutable_data_ptr().compare_exchange_deleter(
+        alloc->raw_deleter(), c10::detail::deleteNothing);  
+      TORCH_CHECK(succeeded, "Expected standard deleter");
+      alloc->raw_deleter()(data_ptr);
+  });
+
+  py_module.def(
+      "_set_storage_data_ptr_access_error_msg", [](size_t storage_impl_ptr, std::string s) {
+        c10::StorageImpl* storage_impl = (c10::StorageImpl*)storage_impl_ptr;
+        storage_impl->release_data_and_set_meta_custom_data_ptr_error_msg_(s);
+  });
 
   py_module.def("_set_meta_in_tls_dispatch_include", [](bool meta_in_tls) {
     auto local_keyset = c10::impl::tls_local_dispatch_key_set();

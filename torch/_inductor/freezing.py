@@ -125,6 +125,13 @@ def _freeze(
         invalidate_eager_modules()
         discard_traced_gm_params(dynamo_gm)
 
+        import gc
+        import time
+        import psutil
+        gc.collect()
+        time.sleep(10)
+        print("After freezing_discard_parameters psutil.virtual_memory() is: {}".format(psutil.virtual_memory()), flush=True)        
+
     log.debug(
         "%s", lazy_format_graph_code("FROZEN GRAPH", aot_autograd_gm, colored=True)
     )
@@ -173,6 +180,16 @@ def invalidate_eager_modules():
                     mod.named_buffers(recurse=False),
                 )
             ):
+                print("invalidate_eager_modules discarding", attr_name, flush=True)
+
+                from torch.multiprocessing.reductions import StorageWeakRef
+                _storage_deref = StorageWeakRef(tensor.untyped_storage()).cdata
+                # _storage_deref = storage_ref()
+                torch._C._free_And_Remove_DeleterFn_cpu(_storage_deref)
+                torch._C._set_storage_data_ptr_access_error_msg(_storage_deref, "storage_deleted")
+
+                torch._C._set_storage_access_error_msg(tensor, "tensor deleted")
+
                 with torch._dispatch.python.no_python_dispatcher():
                     e_t = ErasedTensor(tensor, attr_name, mod)
                 if isinstance(tensor, torch.nn.Parameter):
@@ -188,6 +205,16 @@ def discard_traced_gm_params(mod: torch.fx.GraphModule):
                 mod.named_parameters(recurse=False), mod.named_buffers(recurse=False)
             )
         ):
+            # print("discarding", attr_name, flush=True)
+
+            # from torch.multiprocessing.reductions import StorageWeakRef
+            # storage_ref = StorageWeakRef(tensor.untyped_storage()).cdata
+            # _storage_deref = storage_ref()
+            # torch._C._free_And_Remove_DeleterFn_cpu(_storage_deref)
+            # torch._C._set_storage_data_ptr_access_error_msg(_storage_deref, "storage_deleted")
+
+            # torch._C._set_storage_access_error_msg(tensor, "tensor deleted")
+
             with torch._dispatch.python.no_python_dispatcher():
                 e_t = ErasedTensor(tensor, attr_name, mod)
             if isinstance(tensor, torch.nn.Parameter):
