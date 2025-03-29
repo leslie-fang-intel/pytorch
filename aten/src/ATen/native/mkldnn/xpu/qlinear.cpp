@@ -3,6 +3,8 @@
 #include <ATen/native/mkldnn/xpu/detail/oneDNN.h>
 #include <c10/core/ScalarType.h>
 
+#include <ATen/native/xpu/sycl/Loops.h>
+
 using namespace at::native::onednn;
 
 namespace at::native::xpu {
@@ -18,6 +20,41 @@ static inline c10::ScalarType qlinear_decide_out_dtype(
       : (bfloat16_output ? c10::kBFloat16 : act.scalar_type());
   return dst_dtype;
 }
+
+// struct TestLL : public __SYCL_KER_CONFIG_CONVENTION__ {
+
+//     void operator()(sycl::nd_item<3> item) const {
+//         auto global_col = item.get_global_id(2);
+//         auto local_row_id = item.get_local_id(1);
+//         auto local_col_id = item.get_local_id(2);
+//     }
+
+//     void sycl_ker_config_convention(sycl::handler& cgh) {
+//         // local_data_ = sycl_local_acc_t<accscalar_t, 3>(
+//         //     sycl::range<3>{
+//         //         (size_t)block_row_, (size_t)local_size_, (size_t)vec_size},
+//         //     cgh);
+//     }
+
+//     TestLL() {}
+
+// };
+
+// static Tensor test_ll(
+//     Tensor act,
+//     Tensor weight) {
+//     sycl::range<3> global_range{(size_t)1, (size_t)1, (size_t)1024};
+//     sycl::range<3> local_range{(size_t)1, (size_t)1, (size_t)32};
+
+//     std::cout<<"---- inside test_ll ----"<<std::endl;
+
+//     auto& queue = at::xpu::getCurrentSYCLQueue();
+//     auto kfn = TestLL();
+//     std::cout<<"---- start to submit ----"<<std::endl;
+//     sycl_kernel_submit(global_range, local_range, queue, kfn);
+
+//     return act;
+// }
 
 static Tensor q_linear_pointwise(
     Tensor act,
@@ -271,6 +308,9 @@ TORCH_LIBRARY_IMPL(onednn, XPU, m) {
   m.impl(
       TORCH_SELECTIVE_NAME("onednn::qlinear_pointwise.binary_tensor"),
       TORCH_FN(q_linear_pointwise_binary_tensor));
+//   m.impl(
+//       TORCH_SELECTIVE_NAME("onednn::test_ll"),
+//       TORCH_FN(test_ll));
 }
 
 } // namespace at::native::xpu
