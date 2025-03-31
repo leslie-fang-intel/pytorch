@@ -1452,7 +1452,7 @@ def SyclExtension(name, sources, *args, **kwargs):
     kwargs["libraries"] = libraries
 
     include_dirs = kwargs.get("include_dirs", [])
-    include_dirs += include_paths()
+    include_dirs += include_paths("xpu")
     kwargs["include_dirs"] = include_dirs
 
     kwargs["language"] = "c++"
