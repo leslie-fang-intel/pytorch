@@ -1398,6 +1398,33 @@ if torch._C._has_mkldnn:
                         user_node.replace_all_uses_with(node)
                         gm.graph.erase_node(user_node)
 
+    from ..mkldnn_lowerings import add_mul_lowerings
+
+    def _register_add_mul_lowerings_(pattern):
+        @register_lowering_pattern(
+            pattern,
+        )
+        def woq(match, *args, **kwargs):
+            x0 = kwargs["x0"]
+            x1 = kwargs["x1"]
+            x2 = kwargs["x2"]
+            return add_mul_lowerings(x0, x1, x2)
+
+        return woq
+
+    def _register_add_mul_lowerings():
+        print("---- start to register pattern ----", flush=True)
+        _add_mul_pattern = CallFunction(
+            aten.mul.Tensor,
+            CallFunction(
+                aten.add.Tensor,
+                KeywordArg("x0"),
+                KeywordArg("x1"),
+            ),
+            KeywordArg("x2"),
+        )
+        _register_add_mul_lowerings_(_add_mul_pattern)
+
     @functools.lru_cache(None)
     def _mkldnn_fusion_init():
         # TODO: aarch64: enable op fusion for acl once it supports fused operators. Disabling it for now.
@@ -1413,6 +1440,7 @@ if torch._C._has_mkldnn:
             _register_binary_fusion()
             _register_quantization_lowerings()
             _register_woq_lowerings()
+            _register_add_mul_lowerings()
 
     @functools.lru_cache(None)
     def _mkldnn_weight_pack_init():

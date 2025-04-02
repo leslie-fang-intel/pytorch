@@ -1117,7 +1117,6 @@ def _register_woq_lowering(pattern, computation_woq, computation_reshape):
 
     return woq
 
-
 def _register_woq_mm_int8_pattern1():
     # F.linear(x, weight.to(dtype=x.dtype)) * scales
     # case of dispatching to mm, with x reshape

@@ -1,6 +1,6 @@
 # mypy: allow-untyped-defs
 import functools
-from typing import Optional
+from typing import Any, Optional, Callable
 
 import torch
 import torch.utils._pytree as pytree
@@ -10,7 +10,7 @@ from . import ir
 from .codegen.cpp_gemm_template import CppGemmTemplate
 from .codegen.cpp_grouped_gemm_template import CppGroupedGemmTemplate
 from .codegen.cpp_utils import create_epilogue_with_attr
-from .ir import TensorBox
+from .ir import TensorBox, Pointwise
 from .lowering import (
     add,
     add_needs_realized_inputs,
@@ -28,6 +28,31 @@ from .select_algorithm import (
 from .utils import use_aten_gemm_kernels, use_cpp_gemm_template, use_max_autotune
 from .virtualized import ops, V
 
+def add_mul_lowerings(
+    x0: TensorBox,
+    x1: TensorBox,
+    x2: TensorBox,
+):
+    x0_loader: Callable[[Any], Any]
+    x1_loader: Callable[[Any], Any]
+    x2_loader: Callable[[Any], Any]
+    print("---- hit the lowering of add_mul_lowerings", flush=True)
+    def inner_fn(index):
+        _x0 = x0_loader(index)
+        _x1 = x1_loader(index)
+        _x2 = x2_loader(index)
+        return ops.mul(ops.add(_x0, _x1), _x2)
+
+    x0_loader = x0.make_loader()
+    x1_loader = x1.make_loader()
+    x2_loader = x2.make_loader()
+    new_size = list(x0.get_size())
+    return Pointwise.create(
+        device=x0.get_device(),
+        dtype=x0.get_dtype(),
+        inner_fn=inner_fn,
+        ranges=list(new_size),
+    )
 
 def grouped_gemm_lowering(
     x: TensorBox,

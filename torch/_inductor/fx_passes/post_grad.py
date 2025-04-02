@@ -103,6 +103,8 @@ def post_grad_passes(gm: torch.fx.GraphModule, is_inference: bool):
             post_grad_custom_pre_pass
         )
 
+    print("gm.graph is: {}".format(gm.graph), flush=True)
+
     if (
         config.cpp.enable_grouped_gemm_template
         and config.max_autotune
