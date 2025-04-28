@@ -116,10 +116,17 @@ def _freeze(
     aot_autograd_gm.graph = cse_graph
     aot_autograd_gm.recompile()
 
+    print("aot_autograd_gm before freezing is: {}".format(aot_autograd_gm.graph), flush=True)
+
     aot_example_inputs = [example_inputs[ind] for ind in preserved_arg_indices]
     freezing_passes(aot_autograd_gm, aot_example_inputs)
 
+    print("aot_autograd_gm after freezing is: {}".format(aot_autograd_gm.graph), flush=True)
+
     constant_fold(aot_autograd_gm)
+
+    print("aot_autograd_gm after constant_fold is: {}".format(aot_autograd_gm.graph), flush=True)
+    
     # invalidate nn Modules
     if config.freezing_discard_parameters:
         invalidate_eager_modules()
