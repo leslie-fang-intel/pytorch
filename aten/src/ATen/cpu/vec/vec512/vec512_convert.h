@@ -294,49 +294,22 @@ struct VecConvert<
 template <>
 struct VecConvert<Float8_e4m3fn, 1, float, 1> {
   static inline VectorizedN<Float8_e4m3fn, 1> apply(const VectorizedN<float, 1>& src_n) {
+    std::cout<<"---- hit specilize cvt fp32 to float8 ----"<<std::endl;
+    at::vec::Vectorized<float> src = src_n[0];
+    __m128i res128 = cvtfp32_fp8e4m3(src);
+    return at::vec::Vectorized<Float8_e4m3fn>(_mm512_castsi128_si512(res128));
+  }
+};
 
-    std::cout<<"---- hit specilize cvt float8 ----"<<std::endl;
-
-    // Reference Implementation
-    constexpr int count = std::min(
-        VectorizedN<float, 1>::size(), VectorizedN<Float8_e4m3fn, 1>::size());
-    __at_align__ float src_buf[VectorizedN<float, 1>::size()];
-    src_n.store(src_buf);
-    __at_align__ Float8_e4m3fn dst_buf[VectorizedN<Float8_e4m3fn, 1>::size()];
-    for (int i = 0; i < count; i++) {
-      dst_buf[i] = static_cast<Float8_e4m3fn>(src_buf[i]);
-    }
-    return VectorizedN<Float8_e4m3fn, 1>::loadu(dst_buf, count);
-
-    // Optimized below path
-    // VectorizedN<Float8_e4m3fn, 1> result;
-    // at::vec::Vectorized<float> src = src_n[0];
-    // // Cast from float32 to int32
-    // __m512i v_fp32_bits = _mm512_castps_si512(src);
-
-    // // Extract sign (1 bit), exponent (8 bits), mantissa (23 bits)
-    // __m512i v_sign = _mm512_and_si512(v_fp32_bits, _mm512_set1_epi32(0x80000000));
-    // __m512i v_exp  = _mm512_and_si512(v_fp32_bits, _mm512_set1_epi32(0x7F800000));
-    // __m512i v_mant = _mm512_and_si512(v_fp32_bits, _mm512_set1_epi32(0x007FFFFF));
-
-    // // Shift mantissa to fit into 3 bits
-    // v_mant = _mm512_srli_epi32(v_mant, 23 - 3);
-
-    // // Now combine sign, exponent, mantissa
-    // __m512i v_float8 = _mm512_or_si512(
-    //     _mm512_or_si512(
-    //         _mm512_srli_epi32(v_sign, 24),  // Sign at bit 7
-    //         _mm512_slli_epi32(v_exp, 3)     // Exponent at bits 6:3
-    //     ),
-    //     v_mant                                // Mantissa at bits 2:0
-    // );
-
-    // // Compress 16x32bit into 16x8bit
-    // __m128i v_float8_packed = _mm512_cvtepi32_epi8(v_float8);
-    // __m512i res = _mm512_castsi128_si512(v_float8_packed);
-
-    // return at::vec::Vectorized<Float8_e4m3fn>(res);
-
+template <>
+struct VecConvert<float, 1, Float8_e4m3fn, 1> {
+  static inline VectorizedN<float, 1> apply(const VectorizedN<Float8_e4m3fn, 1>& src_n) {
+    // cvt first 16x8 bits from Float8_e4m3fn to float
+    std::cout<<"---- hit specilize cvt float8 to fp32 ----"<<std::endl;
+    at::vec::Vectorized<Float8_e4m3fn> src = src_n[0];
+    __m512 result;
+    cvtfp8e4m3_fp32(_mm512_castsi512_si128(src), result);
+    return at::vec::Vectorized<float>(result);
   }
 };
 
