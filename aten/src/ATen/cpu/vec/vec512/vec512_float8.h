@@ -16,31 +16,40 @@ inline namespace CPU_CAPABILITY {
 
 #if defined(CPU_CAPABILITY_AVX512) && !defined(_MSC_VER)
 
-alignas(64) static uint32_t e4m3_to_32bit[256];
-
-template <typename T>
-static void initialize_e4m3_to_32bit_tables() {
-  static bool initialized_16bit = false;
-  if (!initialized_16bit) {
-    for (uint32_t index = 0; index < 256; ++index) {
-      uint8_t u8 = static_cast<uint8_t>(index);
-      auto value = static_cast<T>(c10::bit_cast<c10::Float8_e4m3fn>(u8));
-      uint32_t value_bits = c10::bit_cast<uint32_t>(value);
-      e4m3_to_32bit[u8] = value_bits;
-      // if (u8 == 255)
-      //   break;
-    }
-    initialized_16bit = true;
-  }
-}
-
 static inline void cvtfp8e4m3_fp32(const __m128i& a, __m512& o) {
-  // cvt 16x8 from fp8 e4m3 to fp32
-  initialize_e4m3_to_32bit_tables<float>();
-  __m512i indices0 = _mm512_cvtepu8_epi32(a);  // Extend to 32 bit
-  o = _mm512_castsi512_ps(
-     _mm512_i32gather_epi32(indices0, e4m3_to_32bit, 4)
-  );
+  // Zero Extend
+  __m512i x = _mm512_cvtepu8_epi32(a);
+
+  __m512i mant = _mm512_and_si512(x, _mm512_set1_epi32(0x07));        // mantissa = x & 0x07
+  __m512i exp  = _mm512_and_si512(_mm512_srli_epi32(x, 3), _mm512_set1_epi32(0x0F)); // exp = (x >> 3) & 0x0F
+  __m512i sign = _mm512_and_si512(x, _mm512_set1_epi32(0x80));        // sign = x & 0x80
+
+  // --- Step 1: Normal case (exp != 0) ---
+  __mmask16 normal_mask = _mm512_cmpneq_epi32_mask(exp, _mm512_setzero_si512());
+
+  __m512i exp_norm = _mm512_add_epi32(exp, _mm512_set1_epi32(120));  // exponent_bias = 127 - 7 = 120
+  __m512i mant_norm = _mm512_slli_epi32(mant, 20);                   // << 20 to align in FP32 mantissa
+  __m512i val_norm = _mm512_maskz_mov_epi32(normal_mask,
+      _mm512_or_si512(mant_norm, _mm512_slli_epi32(exp_norm, 23)));
+
+  __m512i val = val_norm;
+  if (normal_mask != 0xFFFF) {
+    // --- Step 2: Denorm case (exp == 0 & mant ≠ 0) ---
+    __mmask16 mant_nonzero_mask = _mm512_cmpneq_epi32_mask(mant, _mm512_setzero_si512());
+    __mmask16 denorm_mask = _kand_mask16(_knot_mask16(normal_mask), mant_nonzero_mask); // exp == 0 && mant ≠ 0
+
+    // For FP32: value = (mant / 8.0f) * 2^{-6} = mant * 2^{-9}
+    // Create float from int: mant * 2^{-9} = mant << 20 with exponent = 121
+    __m512i val_denorm = _mm512_maskz_mov_epi32(denorm_mask,
+        _mm512_or_si512(_mm512_slli_epi32(mant, 20), _mm512_set1_epi32(121 << 23)));
+
+    val = _mm512_or_si512(val_norm, val_denorm);
+  }
+  // --- Final OR with sign (sign bit << 24 to get to bit 31) ---
+  val = _mm512_or_si512(val, _mm512_slli_epi32(sign, 24));
+
+  o = _mm512_castsi512_ps(val);
+
 }
 
 static inline __m128i cvtfp32_fp8e4m3(const __m512& src) {
