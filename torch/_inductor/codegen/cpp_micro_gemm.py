@@ -201,7 +201,7 @@ inline void {{kernel_name}}(
     // require us to allocate an array that's smaller than the size of L1D cache,
     // and the default per thread max stack size on Linux is quite higher,
     // so we need not worry about stack overflow.
-    alignas(4096) {{buffer_dtype}} {{buffer_name}}[{{buffer_size}}];
+    alignas(64) {{buffer_dtype}} {{buffer_name}}[{{buffer_size}}];
     {%- endif %}
 """
 
@@ -1664,18 +1664,18 @@ inline bool {{kernel_name}}_is_block_start(int index, int k_start, int group_siz
     // Create a stack-allocated buffer for tiles of B.
     // Except maybe for the tail-case, an AMX tile of B has 16x32 BF16 elements.
     // we cache K * {{block_n}} elements of dequantized B
-    {{template.codegen_allocate_weight_buffer("dequantized_B_buf", input_t, "K", block_n)}}
+    {{template.codegen_allocate_weight_buffer("dequantized_B_buf", input_t, "K", block_n//2)}}
 
     constexpr int BLOCK_K = {{block_k}};
     constexpr int64_t BLOCK_N = {{block_n}};
     constexpr int COLS = BLOCK_N / 16;
-    const int PREFETCH_SIZE_K = 16 * 4;
+    const int PREFETCH_SIZE_K = 16 * 2;
     const int PREFETCH_SIZE_KB = (PREFETCH_SIZE_K + BLOCK_K - 1) / BLOCK_K;
     const int KB = K / BLOCK_K;
 
-    __m512 vb[COLS * 2];
-    __m512 scale[COLS];
-    __m512 zero[COLS];
+    // __m512 vb[COLS * 2];
+    // __m512 scale[COLS];
+    // __m512 zero[COLS];
 
     // Lookup table to de-quantize int4 values to bf16.
     // Values are dequantized as truly int4 [-8, 7] range;
@@ -1697,7 +1697,7 @@ inline bool {{kernel_name}}_is_block_start(int index, int k_start, int group_siz
         15, 13, 11, 9, 7, 5, 3, 1);
 
     // Indices for VNNI layout conversion
-    __m512i idx_low = _mm512_set_epi32(
+    static const __m512i idx_low = _mm512_set_epi32(
         0x17,
         0x07,
         0x16,
@@ -1714,7 +1714,7 @@ inline bool {{kernel_name}}_is_block_start(int index, int k_start, int group_siz
         0x01,
         0x10,
         0x00);
-    __m512i idx_high = _mm512_set_epi32(
+    static const __m512i idx_high = _mm512_set_epi32(
         0x1f,
         0x0f,
         0x1e,
@@ -1733,6 +1733,7 @@ inline bool {{kernel_name}}_is_block_start(int index, int k_start, int group_siz
         0x08);
 
     // load scale and zero point
+    /*
     auto load_scale_and_zeros = [&](int i, int _kb) {
         // load 2x bfloat16 vector
         __m512i t = _mm512_loadu_si512((__m512i*)(ScaleAndZeros + _kb * lds + 32 * i));
@@ -1754,75 +1755,78 @@ inline bool {{kernel_name}}_is_block_start(int index, int k_start, int group_siz
         scale[i] = _mm512_mask_permutex2var_ps(a, 0xffff, idx1, b);
         zero[i] = _mm512_mask_permutex2var_ps(a, 0xffff, idx2, b);
     };
+    */
 
     // Dequantize a B block of 2 * block_n into bf16
     // So, it handles k and k+1 at the same time
-    auto dequantize_B = [&](int n) {
-        constexpr int64_t ldb_int4 = BLOCK_N / 2; // 32
+    // static __m512 scale = _mm512_set1_ps(1.0);
+    // static __m512 zero = _mm512_set1_ps(0.0);
+    __m512 scale;
+    __m512 zero;
+    auto dequantize_B = [&](int ni) {
+        constexpr int64_t ldb_int4 = BLOCK_N / 4; // 16
+        #pragma GCC unroll 4
         for (int k = 0, kb = 0; k < K; k += 2) {
-            // Since block_k must be 32 for AMX microkernels, k_start may not be
-            // a multiple of q_group_size. In that case, we need to load scales
-            // and zero points immediately when k == 0 here
-            if ({{kernel_name}}_is_block_start(k, k_start, q_group_size) || k == 0) {
-                c10::ForcedUnroll<COLS>{}(load_scale_and_zeros, kb++);
-            }
-
-            // load 256 bits = 64 elements in int4
-            __m256i b4 = _mm256_loadu_si256((__m256i*)(B + n * K + k * ldb_int4));
             if (k + PREFETCH_SIZE_K < K) {
                 _mm_prefetch(B + (k + PREFETCH_SIZE_K) * ldb_int4, _MM_HINT_T0);
             }
-
-            __m512i b32 = _mm512_cvtepu8_epi32(_mm256_castsi256_si128(b4));
-            vb[0] = _mm512_permutexvar_ps(b32, lut);
-            vb[0] = _mm512_fmadd_ps(vb[0], scale[0], zero[0]);
-            vb[2] = _mm512_permutexvar_ps(_mm512_srli_epi32(b32, 4), lut);
-            vb[2] = _mm512_fmadd_ps(vb[2], scale[2], zero[2]);
-
-            b32 = _mm512_cvtepu8_epi32(_mm256_extracti128_si256(b4, 1));
-            vb[1] = _mm512_permutexvar_ps(b32, lut);
-            vb[1] = _mm512_fmadd_ps(vb[1], scale[1], zero[1]);
-            vb[3] = _mm512_permutexvar_ps(_mm512_srli_epi32(b32, 4), lut);
-            vb[3] = _mm512_fmadd_ps(vb[3], scale[3], zero[3]);
-
-            b4 = _mm256_loadu_si256((__m256i*)(B + n * K + (k + 1) * ldb_int4));
-            b32 = _mm512_cvtepu8_epi32(_mm256_castsi256_si128(b4));
-            vb[0 + COLS] = _mm512_permutexvar_ps(b32, lut);
-            vb[0 + COLS] = _mm512_fmadd_ps(vb[0 + COLS], scale[0], zero[0]);
-            vb[2 + COLS] = _mm512_permutexvar_ps(_mm512_srli_epi32(b32, 4), lut);
-            vb[2 + COLS] = _mm512_fmadd_ps(vb[2 + COLS], scale[2], zero[2]);
-
-            b32 = _mm512_cvtepu8_epi32(_mm256_extracti128_si256(b4, 1));
-            vb[1 + COLS] = _mm512_permutexvar_ps(b32, lut);
-            vb[1 + COLS] = _mm512_fmadd_ps(vb[1 + COLS], scale[1], zero[1]);
-            vb[3 + COLS] = _mm512_permutexvar_ps(_mm512_srli_epi32(b32, 4), lut);
-            vb[3 + COLS] = _mm512_fmadd_ps(vb[3 + COLS], scale[3], zero[3]);
-
-            for (int i = 0; i < COLS; i++) {
-                // convert to VNNI
-                auto low = _mm512_permutex2var_ps(vb[i], idx_low, vb[i + COLS]);
-                auto high = _mm512_permutex2var_ps(vb[i], idx_high, vb[i + COLS]);
-                // convert lower 16 float32 values to bfloat16
-                auto v0_bf16 = reinterpret_cast<__m256i>(_mm512_cvtneps_pbh(low));
-                // convert higher 16 float32 values to bfloat16
-                auto v1_bf16 = reinterpret_cast<__m256i>(_mm512_cvtneps_pbh(high));
-                // combine the lower 16 and higher 16 bfloat16 values
-                auto v = _mm512_castsi256_si512(v0_bf16);
-                v = _mm512_inserti64x4(v, v1_bf16, 1);
-                // store the VNNI format bfloat16 values
-                // split block_n into 2x32
-                {{input_t}}* addr = dequantized_B_buf + K * 32 * (i / 2) + k * 32 + (i % 2) * 32;
-                _mm512_storeu_si512(addr, v);
+            if (C10_UNLIKELY(k == 0 || {{kernel_name}}_is_block_start(k, k_start, q_group_size))) {
+                __m512i t = _mm512_loadu_si512((__m512i*)(ScaleAndZeros + kb * lds));
+                // convert to 2x f32 vector
+                // __m512 a, b;
+                // at::vec::cvtbf16_fp32(t, a, b);    
+                __m256i lo = _mm512_extracti32x8_epi32(t, 0);
+                __m256i hi = _mm512_extracti32x8_epi32(t, 1);
+                __m512 a = _mm512_cvtpbh_ps(reinterpret_cast<__m256bh>(lo));
+                __m512 b = _mm512_cvtpbh_ps(reinterpret_cast<__m256bh>(hi));
+                                                                      
+                scale = _mm512_mask_permutex2var_ps(a, 0xffff, idx1, b);
+                zero = _mm512_mask_permutex2var_ps(a, 0xffff, idx2, b);                                                 
+                kb++;
             }
+            __m128i b4_0 = _mm_loadu_si128((__m128i*)(B + (ni / 2) * K + k * ldb_int4));
+            __m128i b4_1 = _mm_loadu_si128((__m128i*)(B + (ni / 2) * K + (k + 1) * ldb_int4));
+            __m512i b32 = _mm512_cvtepu8_epi32(b4_0);
+            __m512i b32_1 = _mm512_cvtepu8_epi32(b4_1);
+            
+            __m512 v32_0 = _mm512_permutexvar_ps(b32, lut); // k0 : N0-N15
+            __m512 v32_1 = _mm512_permutexvar_ps(_mm512_srli_epi32(b32, 4), lut); // k0: N16-N31
+            __m512 v32_2 = _mm512_permutexvar_ps(b32_1, lut); // k1 : N0-N15
+            __m512 v32_3 = _mm512_permutexvar_ps(_mm512_srli_epi32(b32_1, 4), lut); // k1: N16-N31
+
+            v32_0 = _mm512_fmadd_ps(v32_0, scale, zero);
+            v32_1 = _mm512_fmadd_ps(v32_1, scale, zero);
+            v32_2 = _mm512_fmadd_ps(v32_2, scale, zero);
+            v32_3 = _mm512_fmadd_ps(v32_3, scale, zero);
+
+            __m512 low_0 = _mm512_permutex2var_ps(v32_0, idx_low, v32_2);
+            __m512 high_0 = _mm512_permutex2var_ps(v32_0, idx_high, v32_2);
+            __m512 low_1 = _mm512_permutex2var_ps(v32_1, idx_low, v32_3);
+            __m512 high_1 = _mm512_permutex2var_ps(v32_1, idx_high, v32_3);
+            
+            __m256i v0_bf16_0 = reinterpret_cast<__m256i>(_mm512_cvtneps_pbh(low_0));
+            __m256i v1_bf16_0 = reinterpret_cast<__m256i>(_mm512_cvtneps_pbh(high_0));
+            __m256i v0_bf16_1 = reinterpret_cast<__m256i>(_mm512_cvtneps_pbh(low_1));
+            __m256i v1_bf16_1 = reinterpret_cast<__m256i>(_mm512_cvtneps_pbh(high_1));
+            __m512i v_0 = _mm512_castsi256_si512(v0_bf16_0);
+            v_0 = _mm512_inserti64x4(v_0, v1_bf16_0, 1);
+
+            __m512i v_1 = _mm512_castsi256_si512(v0_bf16_1);
+            v_1 = _mm512_inserti64x4(v_1, v1_bf16_1, 1);
+
+            at::BFloat16* addr_0 = dequantized_B_buf + k * 32;
+            at::BFloat16* addr_1 = dequantized_B_buf + (k + 1) * 32;
+            _mm512_storeu_si512(addr_0, v_0);
+            _mm512_storeu_si512(addr_1, v_1);
         }
     };
 
     const int64_t updated_ldb = {{block_n}} / 2;
     for (int64_t n = 0; n < N; n += {{block_n}}) {
         // Dequantize K * block_n int8 B elements into BF16
-        dequantize_B(n);
         // for woq int4, block_n is 64, which is too large for micro kernel
         for (int64_t ni = 0; ni < {{block_n}}; ni += 32) {
+            dequantize_B(ni);
             for (int64_t m = 0; m < M; m += {{block_m}}) {
                 int64_t block_m = std::min<int64_t>(M - m, {{block_m}});
                 int64_t m_tail = m;
@@ -1834,7 +1838,8 @@ inline bool {{kernel_name}}_is_block_start(int index, int k_start, int group_siz
                     {{kernel_name}}_amx_kernel_{{num_rows}}_{{num_columns}}<accum>(
                         amx_state,
                         A + m * lda,
-                        dequantized_B_buf + ni * K,
+                        // dequantized_B_buf + ni * K,
+                        dequantized_B_buf,
                         C + m * ldc + n + ni,
                         K,
                         lda,
@@ -1850,7 +1855,8 @@ inline bool {{kernel_name}}_is_block_start(int index, int k_start, int group_siz
                     {{kernel_name}}_amx_kernel_16_{{num_columns}}<accum>(
                         amx_state,
                         A + m_tail * lda,
-                        dequantized_B_buf + ni * K,
+                        // dequantized_B_buf + ni * K,
+                        dequantized_B_buf,
                         C + m_tail * ldc + n + ni,
                         K,
                         lda,

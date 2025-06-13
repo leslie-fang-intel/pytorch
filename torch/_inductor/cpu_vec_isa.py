@@ -197,9 +197,9 @@ class VecSVE256(VecISA):
 @dataclasses.dataclass
 class VecAVX512(VecISA):
     _bit_width = 512
-    _macro = ["CPU_CAPABILITY_AVX512"]
+    _macro = ["CPU_CAPABILITY_AVX512", "CPU_CAPABILITY_AVX512_BF16", "CPU_CAPABILITY_AVX512_VNNI"]
     _arch_flags = (
-        "-mavx512f -mavx512dq -mavx512vl -mavx512bw -mfma"
+        "-mavx512f -mavx512dq -mavx512vl -mavx512bw -mfma -mavx512vnni -mavx512bf16 -mfma "
         if not _IS_WINDOWS
         else "/arch:AVX512"
     )  # TODO: use cflags
@@ -213,7 +213,7 @@ class VecAVX512(VecISA):
 
 @dataclasses.dataclass
 class VecAMX(VecAVX512):
-    _arch_flags = VecAVX512._arch_flags + " -mamx-tile -mamx-bf16 -mamx-int8"
+    _arch_flags = VecAVX512._arch_flags + " -mamx-tile -mamx-bf16 -mamx-int8 -mavx512bf16"
 
     def __str__(self) -> str:
         return super().__str__() + " amx_tile"
