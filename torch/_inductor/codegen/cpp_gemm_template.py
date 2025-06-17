@@ -1156,17 +1156,20 @@ class CppGemmTemplate(CppTemplate):
                 # TODO don't hardcode group_size
                 print("W size is: {}".format(W.size()), flush=True)
                 original_wgt_size = W.size()
-                out_features = 512
-                in_features = 1024
+                # out_features = 512
+                # in_features = 1024
     
                 # out_features = 14336
                 # in_features = 4096
+                print("k is: {}".format(k), flush=True)
+                print("n is: {}".format(n), flush=True)
 
                 group_size = 128
-                block_n = 32
+                # block_n = 32
+                int4_k = k * 2
                 
-                dummpy_scale =  torch.ones((out_features, in_features // group_size)).to(torch.bfloat16) # N, K // group_size
-                dummpy_zp = torch.zeros((out_features, in_features // group_size)).to(torch.bfloat16) # N, K // group_size
+                dummpy_scale =  torch.ones((n, int4_k // group_size)).to(torch.bfloat16) # N, K // group_size
+                dummpy_zp = torch.zeros((n, int4_k // group_size)).to(torch.bfloat16) # N, K // group_size
                 dummpy_zp += 8
                 dim = dummpy_scale.dim()
                 dummpy_scale_zp = (
@@ -1180,7 +1183,7 @@ class CppGemmTemplate(CppTemplate):
                     .transpose(-3, -2)
                     .contiguous()
                 )
-                eye_input = torch.eye(in_features, device="cpu", dtype=torch.bfloat16)
+                eye_input = torch.eye(int4_k, device="cpu", dtype=torch.bfloat16)
                 unpack_int_as_bf16 = torch.ops.aten._weight_int4pack_mm_for_cpu(
                     eye_input,
                     W,
@@ -1190,7 +1193,7 @@ class CppGemmTemplate(CppTemplate):
                 ).t().contiguous()
                 print("unpack_int_as_bf16 isze is: {}".format(unpack_int_as_bf16.size()), flush=True)
                 unpack_uint8 = unpack_int_as_bf16.to(torch.uint8) # N, K
-                unpack_uint8 = unpack_uint8.reshape(out_features//block_n, block_n, in_features).transpose(-2, -1).contiguous() #  N//Block_N, K, Block_N
+                unpack_uint8 = unpack_uint8.reshape(n//block_n, block_n, int4_k).transpose(-2, -1).contiguous() #  N//Block_N, K, Block_N
                 print("unpack_uint8 isze is: {}".format(unpack_uint8.size()), flush=True)
                 # new_pack_wgt = torch.empty(out_features//block_n, in_features, block_n//2, dtype=torch.uint8) # N//Block_N, K, Block_N//2
                 # for i in range(out_features//block_n):
@@ -1201,7 +1204,7 @@ class CppGemmTemplate(CppTemplate):
                 #             tmp = (b << 4 | a).to(torch.uint8)
                 #             new_pack_wgt[i][j][k] = tmp
                 
-                unpack_uint8 = unpack_uint8.view(out_features//block_n, in_features, 2, block_n // 2)
+                unpack_uint8 = unpack_uint8.view(n//block_n, int4_k, 2, block_n // 2)
                 new_pack_wgt = (unpack_uint8[:, :, 0, :] & 0xF) | (
                     unpack_uint8[:, :, 1, :] << 4
                 )
