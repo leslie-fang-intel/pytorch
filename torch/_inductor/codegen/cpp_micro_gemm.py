@@ -1832,12 +1832,25 @@ inline bool {{kernel_name}}_is_block_start(int index, int k_start, int group_siz
         }
     };
 
-    const int64_t updated_ldb = {{block_n}} / 2;
+    const int64_t updated_ldb = {{block_n}};
     for (int64_t n = 0; n < N; n += {{block_n}}) {
         // Dequantize K * block_n int8 B elements into BF16
         // for woq int4, block_n is 64, which is too large for micro kernel
         // for (int64_t ni = 0; ni < {{block_n}}; ni += 16) {
             dequantize_B(n);
+
+            /*
+            std::cout<<"\n start to print dequant B"<<std::endl;
+
+            for (int _i=0; _i<K; _i++) {
+                std::cout<<"line "<<_i<<std::endl;
+                for (int _j=0; _j<{{block_n}}; _j ++) {
+                    std::cout<<static_cast<float>(*(dequantized_B_buf + _i * {{block_n}} + _j))<<" \t";
+                }
+                std::cout<<std::endl;
+            }
+            */
+
             for (int64_t m = 0; m < M; m += {{block_m}}) {
                 int64_t block_m = std::min<int64_t>(M - m, {{block_m}});
                 int64_t m_tail = m;
