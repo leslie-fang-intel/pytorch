@@ -144,7 +144,11 @@ inline void {{kernel_name}}(
         `C += alpha * A @ B` if `accum` is True, or `C = alpha * A @ B` otherwise.
         """
         A_ptr = f"&({kernel.index(A, [0, 0])})"
+        # print("start index B_ptr", flush=True)
+        # breakpoint()
         B_ptr = f"&({kernel.index(B, [0, 0])})"
+        # print(B_ptr, flush=True)
+        # print("finish index B_ptr", flush=True)
         C_ptr = f"&({kernel.index(C, [0, 0])})"
         M = kernel.size(C, 0)
         N = kernel.size(C, 1)
@@ -1192,6 +1196,10 @@ inline void {{kernel_name}}_amx_kernel_{{num_rows}}_{{num_columns}}(
 {%- endfor %}
     };
 
+    // std::cout<<"last_k_offset is: "<<last_k_offset<<std::endl;
+    // std::cout<<"tail_k_size is: "<<tail_k_size<<std::endl;
+    // std::cout<<"block_k is: "<<{{block_k}}<<std::endl;
+
     {{kernel.unroll_pragma(4)}}
     for (int k = 0; k < last_k_offset; k += {{block_k}}) {
         compute(k);
@@ -1230,10 +1238,10 @@ inline void {{kernel_name}}_amx_kernel_{{num_rows}}_{{num_columns}}(
         else:
             assert block_k == 32, "Only support block_k = 32 for AMX Bfloat16/Float16"
         num_columns = block_n // 16
-        if self.is_woq_int4():
-            # block_n for woq int4 is 64, which is too large for micro kernel
-            # so we split it into 2x32. Here num_columns = 2.
-            num_columns //= 2
+        # if self.is_woq_int4():
+        #     # block_n for woq int4 is 64, which is too large for micro kernel
+        #     # so we split it into 2x32. Here num_columns = 2.
+        #     num_columns //= 2
         options = {
             "declare_kernel": self.get_kernel_declaration(),
             "use_cached_dequantized_B": (
@@ -1787,8 +1795,8 @@ inline bool {{kernel_name}}_is_block_start(int index, int k_start, int group_siz
                 zero = _mm512_mask_permutex2var_ps(a, 0xffff, idx2, b);                                                 
                 kb++;
             }
-            __m128i b4_0 = _mm_loadu_si128((__m128i*)(B + (ni / 2) * K + k * ldb_int4));
-            __m128i b4_1 = _mm_loadu_si128((__m128i*)(B + (ni / 2) * K + (k + 1) * ldb_int4));
+            __m128i b4_0 = _mm_loadu_si128((__m128i*)(B + ni * K + k * ldb_int4));
+            __m128i b4_1 = _mm_loadu_si128((__m128i*)(B + ni * K + (k + 1) * ldb_int4));
             __m512i b32 = _mm512_cvtepu8_epi32(b4_0);
             __m512i b32_1 = _mm512_cvtepu8_epi32(b4_1);
             
@@ -1828,7 +1836,7 @@ inline bool {{kernel_name}}_is_block_start(int index, int k_start, int group_siz
     for (int64_t n = 0; n < N; n += {{block_n}}) {
         // Dequantize K * block_n int8 B elements into BF16
         // for woq int4, block_n is 64, which is too large for micro kernel
-        // for (int64_t ni = 0; ni < {{block_n}}; ni += 32) {
+        // for (int64_t ni = 0; ni < {{block_n}}; ni += 16) {
             dequantize_B(n);
             for (int64_t m = 0; m < M; m += {{block_m}}) {
                 int64_t block_m = std::min<int64_t>(M - m, {{block_m}});

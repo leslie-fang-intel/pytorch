@@ -1009,6 +1009,9 @@ class CppGemmTemplate(CppTemplate):
         pre_block_weights = cls.check_if_block_weight(new_inputs[1], micro_gemm)
         micro_gemm.use_local_vnni_blocking(not pre_block_weights)
 
+        from .cpp_micro_gemm import CppMicroGemmWoQInt4Amx
+        repack_int4_wgt = cls.is_woq_int4() and isinstance(micro_gemm, CppMicroGemmWoQInt4Amx)
+
         def preprocessor(inputs, layout):
             new_inputs, new_layout = normalize_shapes(
                 *maybe_to_dense(*reorder_and_filter(inputs, layout))
@@ -1021,6 +1024,7 @@ class CppGemmTemplate(CppTemplate):
                 micro_gemm,
                 pre_block_weights,
                 use_int8_fast_compensation_path,
+                repack_int4_wgt,
             )
 
         def postprocessor(output):
@@ -1045,6 +1049,7 @@ class CppGemmTemplate(CppTemplate):
                     pre_block_weights,
                     use_int8_fast_compensation_path,
                     skip_int8_compensation=True,
+                    repack_int4_wgt=repack_int4_wgt,
                 )
                 W_packed = new_input_nodes[1]
                 W_packed_constant = V.graph.add_tensor_constant(W_packed)
@@ -1092,6 +1097,7 @@ class CppGemmTemplate(CppTemplate):
         should_block_weight: bool,
         use_int8_fast_compensation_path: bool = False,
         skip_int8_compensation: bool = False,
+        repack_int4_wgt: bool = False,
     ):
         """
         NOTE Weight prep consists of 2 separate steps:
@@ -1132,6 +1138,71 @@ class CppGemmTemplate(CppTemplate):
         if should_block_weight:
             blocked_w = cls.block_weight(W, new_size, padding)
             new_inputs[1] = cls.pack_vnni_weight(blocked_w, micro_gemm, new_size)
+        elif repack_int4_wgt:
+            if isinstance(W, ir.IRNode):
+                ir.ExternKernel.require_contiguous(W)
+            else:
+                # new_size N//block_n, k, block_n
+                print("new_size is: {}".format(new_size), flush=True)
+                # blocked_size = list(new_size)
+                # blocked_size[-2], blocked_size[-3] = blocked_size[-3], blocked_size[-2]
+                # blocked_w = (
+                #     torch.nn.functional.pad(W, (0, padding))  # type: ignore[assignment]
+                #     .reshape(*blocked_size)
+                #     .transpose(-3, -2)
+                #     .contiguous()
+                # )
+
+                # TODO don't hardcode group_size
+                print("W size is: {}".format(W.size()), flush=True)
+                original_wgt_size = W.size()
+                out_features = 512
+                in_features = 1024
+    
+                # out_features = 14336
+                # in_features = 4096
+
+                group_size = 128
+                block_n = 32
+                
+                dummpy_scale =  torch.ones((out_features, in_features // group_size)).to(torch.bfloat16) # N, K // group_size
+                dummpy_zp = torch.zeros((out_features, in_features // group_size)).to(torch.bfloat16) # N, K // group_size
+                dummpy_zp += 8
+                dim = dummpy_scale.dim()
+                dummpy_scale_zp = (
+                    torch.cat(
+                        [
+                            dummpy_scale.unsqueeze(-1),
+                            dummpy_zp.unsqueeze(-1),
+                        ],
+                        dim,
+                    )
+                    .transpose(-3, -2)
+                    .contiguous()
+                )
+                eye_input = torch.eye(in_features, device="cpu", dtype=torch.bfloat16)
+                unpack_int_as_bf16 = torch.ops.aten._weight_int4pack_mm_for_cpu(
+                    eye_input,
+                    W,
+                    group_size,
+                    dummpy_scale_zp,
+                    # scale_zp,
+                ).t().contiguous()
+                unpack_uint8 = unpack_int_as_bf16.to(torch.uint8) # N, K
+                unpack_uint8 = unpack_uint8.reshape(out_features//block_n, block_n, in_features).transpose(-2, -1).contiguous() #  N//Block_N, K, Block_N
+                print("unpack_uint8 isze is: {}".format(unpack_uint8.size()), flush=True)
+                new_pack_wgt = torch.empty(out_features//block_n, in_features, block_n//2, dtype=torch.uint8) # N//Block_N, K, Block_N//2
+                for i in range(out_features//block_n):
+                    for j in range(in_features):
+                        for k in range(16):
+                            a = unpack_uint8[i][j][k]
+                            b = unpack_uint8[i][j][k + 16]
+                            tmp = (b << 4 | a).to(torch.uint8)
+                            new_pack_wgt[i][j][k] = tmp
+                print("new_pack_wgt isze is: {}".format(new_pack_wgt.size()), flush=True)
+                print("original_wgt_size is: {}".format(original_wgt_size), flush=True)
+                new_inputs[1] = new_pack_wgt.view(original_wgt_size)
+
         elif isinstance(W, ir.IRNode):
             # Require W layout to be fixed & contiguous, happens inplace.
             ir.ExternKernel.require_contiguous(W)
@@ -1692,8 +1763,12 @@ class CppWoqInt4GemmTemplateMeta(type):
 
             @staticmethod
             def check_if_block_weight(W, micro_gemm):
-                # For WOQ INT4, weight is already packed
                 return False
+                # For WOQ INT4, weight is already packed
+                print("micro_gemm is: {}".format(micro_gemm), flush=True)
+                # return False
+                from .cpp_micro_gemm import CppMicroGemmWoQInt4Amx
+                return isinstance(micro_gemm, CppMicroGemmWoQInt4Amx)
 
         return CppWoqInt4GemmTemplateInstance
 
