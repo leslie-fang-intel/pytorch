@@ -1632,8 +1632,8 @@ inline void {{kernel_name}}_kernel(
     *generate_gemm_config(
         VecAMX,
         [  # (block_m, block_n, block_k)
-            (16, 64, 32),
-            (32, 64, 32),
+            (16, 32, 32),
+            (32, 32, 32),
         ],
         input_dtype=torch.bfloat16,
         input2_dtype=torch.uint8,
@@ -1659,12 +1659,12 @@ inline bool {{kernel_name}}_is_block_start(int index, int k_start, int group_siz
 {{declare_kernel}} {
     {{kernel.assert_function}}(N % {{block_n}} == 0, "N dimension must be multiple of {{block_n}}");
     {{kernel.assert_function}}(K % 2 == 0, "K dimension must be multiple of 2");
-    {{kernel.assert_function}}({{block_n}} == 64, "block_n must be 64 for WOQ int4");
+    {{kernel.assert_function}}({{block_n}} == 32, "block_n must be 64 for WOQ int4");
 
     // Create a stack-allocated buffer for tiles of B.
     // Except maybe for the tail-case, an AMX tile of B has 16x32 BF16 elements.
     // we cache K * {{block_n}} elements of dequantized B
-    {{template.codegen_allocate_weight_buffer("dequantized_B_buf", input_t, "K", block_n//2)}}
+    {{template.codegen_allocate_weight_buffer("dequantized_B_buf", input_t, "K", block_n)}}
 
     constexpr int BLOCK_K = {{block_k}};
     constexpr int64_t BLOCK_N = {{block_n}};
@@ -1764,7 +1764,7 @@ inline bool {{kernel_name}}_is_block_start(int index, int k_start, int group_siz
     __m512 scale;
     __m512 zero;
     auto dequantize_B = [&](int ni) {
-        constexpr int64_t ldb_int4 = BLOCK_N / 4; // 16
+        constexpr int64_t ldb_int4 = BLOCK_N / 2; // 16
         #pragma GCC unroll 4
         for (int k = 0, kb = 0; k < K; k += 2) {
             if (k + PREFETCH_SIZE_K < K) {
@@ -1773,13 +1773,16 @@ inline bool {{kernel_name}}_is_block_start(int index, int k_start, int group_siz
             if (C10_UNLIKELY(k == 0 || {{kernel_name}}_is_block_start(k, k_start, q_group_size))) {
                 __m512i t = _mm512_loadu_si512((__m512i*)(ScaleAndZeros + kb * lds));
                 // convert to 2x f32 vector
-                // __m512 a, b;
-                // at::vec::cvtbf16_fp32(t, a, b);    
+                __m512 a, b;
+                at::vec::cvtbf16_fp32(t, a, b);    
+
+                /*
                 __m256i lo = _mm512_extracti32x8_epi32(t, 0);
                 __m256i hi = _mm512_extracti32x8_epi32(t, 1);
                 __m512 a = _mm512_cvtpbh_ps(reinterpret_cast<__m256bh>(lo));
                 __m512 b = _mm512_cvtpbh_ps(reinterpret_cast<__m256bh>(hi));
-                                                                      
+                */
+                                                    
                 scale = _mm512_mask_permutex2var_ps(a, 0xffff, idx1, b);
                 zero = _mm512_mask_permutex2var_ps(a, 0xffff, idx2, b);                                                 
                 kb++;
@@ -1825,8 +1828,8 @@ inline bool {{kernel_name}}_is_block_start(int index, int k_start, int group_siz
     for (int64_t n = 0; n < N; n += {{block_n}}) {
         // Dequantize K * block_n int8 B elements into BF16
         // for woq int4, block_n is 64, which is too large for micro kernel
-        for (int64_t ni = 0; ni < {{block_n}}; ni += 32) {
-            dequantize_B(ni);
+        // for (int64_t ni = 0; ni < {{block_n}}; ni += 32) {
+            dequantize_B(n);
             for (int64_t m = 0; m < M; m += {{block_m}}) {
                 int64_t block_m = std::min<int64_t>(M - m, {{block_m}});
                 int64_t m_tail = m;
@@ -1840,7 +1843,7 @@ inline bool {{kernel_name}}_is_block_start(int index, int k_start, int group_siz
                         A + m * lda,
                         // dequantized_B_buf + ni * K,
                         dequantized_B_buf,
-                        C + m * ldc + n + ni,
+                        C + m * ldc + n,
                         K,
                         lda,
                         updated_ldb,
@@ -1857,7 +1860,7 @@ inline bool {{kernel_name}}_is_block_start(int index, int k_start, int group_siz
                         A + m_tail * lda,
                         // dequantized_B_buf + ni * K,
                         dequantized_B_buf,
-                        C + m_tail * ldc + n + ni,
+                        C + m_tail * ldc + n,
                         K,
                         lda,
                         updated_ldb,
@@ -1866,7 +1869,7 @@ inline bool {{kernel_name}}_is_block_start(int index, int k_start, int group_siz
                     );
                 }
             } // for m
-        } // for ni
+        // } // for ni
     } // for n
 }
 """
