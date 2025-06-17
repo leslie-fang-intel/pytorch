@@ -1188,17 +1188,24 @@ class CppGemmTemplate(CppTemplate):
                     dummpy_scale_zp,
                     # scale_zp,
                 ).t().contiguous()
+                print("unpack_int_as_bf16 isze is: {}".format(unpack_int_as_bf16.size()), flush=True)
                 unpack_uint8 = unpack_int_as_bf16.to(torch.uint8) # N, K
                 unpack_uint8 = unpack_uint8.reshape(out_features//block_n, block_n, in_features).transpose(-2, -1).contiguous() #  N//Block_N, K, Block_N
                 print("unpack_uint8 isze is: {}".format(unpack_uint8.size()), flush=True)
-                new_pack_wgt = torch.empty(out_features//block_n, in_features, block_n//2, dtype=torch.uint8) # N//Block_N, K, Block_N//2
-                for i in range(out_features//block_n):
-                    for j in range(in_features):
-                        for k in range(16):
-                            a = unpack_uint8[i][j][k]
-                            b = unpack_uint8[i][j][k + 16]
-                            tmp = (b << 4 | a).to(torch.uint8)
-                            new_pack_wgt[i][j][k] = tmp
+                # new_pack_wgt = torch.empty(out_features//block_n, in_features, block_n//2, dtype=torch.uint8) # N//Block_N, K, Block_N//2
+                # for i in range(out_features//block_n):
+                #     for j in range(in_features):
+                #         for k in range(16):
+                #             a = unpack_uint8[i][j][k] & 0xF
+                #             b = unpack_uint8[i][j][k + 16] & 0xF
+                #             tmp = (b << 4 | a).to(torch.uint8)
+                #             new_pack_wgt[i][j][k] = tmp
+                
+                unpack_uint8 = unpack_uint8.view(out_features//block_n, in_features, 2, block_n // 2)
+                new_pack_wgt = (unpack_uint8[:, :, 0, :] & 0xF) | (
+                    unpack_uint8[:, :, 1, :] << 4
+                )
+
                 print("new_pack_wgt isze is: {}".format(new_pack_wgt.size()), flush=True)
                 print("original_wgt_size is: {}".format(original_wgt_size), flush=True)
                 new_inputs[1] = new_pack_wgt.view(original_wgt_size)

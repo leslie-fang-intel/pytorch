@@ -1769,8 +1769,10 @@ inline bool {{kernel_name}}_is_block_start(int index, int k_start, int group_siz
     // So, it handles k and k+1 at the same time
     // static __m512 scale = _mm512_set1_ps(1.0);
     // static __m512 zero = _mm512_set1_ps(0.0);
-    __m512 scale;
-    __m512 zero;
+    __m512 scale_0;
+    __m512 zero_0;
+    __m512 scale_1;
+    __m512 zero_1;
     auto dequantize_B = [&](int ni) {
         constexpr int64_t ldb_int4 = BLOCK_N / 2; // 16
         #pragma GCC unroll 4
@@ -1791,8 +1793,14 @@ inline bool {{kernel_name}}_is_block_start(int index, int k_start, int group_siz
                 __m512 b = _mm512_cvtpbh_ps(reinterpret_cast<__m256bh>(hi));
                 */
                                                     
-                scale = _mm512_mask_permutex2var_ps(a, 0xffff, idx1, b);
-                zero = _mm512_mask_permutex2var_ps(a, 0xffff, idx2, b);                                                 
+                scale_0 = _mm512_mask_permutex2var_ps(a, 0xffff, idx1, b);
+                zero_0 = _mm512_mask_permutex2var_ps(a, 0xffff, idx2, b);   
+
+
+                t = _mm512_loadu_si512((__m512i*)(ScaleAndZeros + kb * lds + 32));
+                at::vec::cvtbf16_fp32(t, a, b); 
+                scale_1 = _mm512_mask_permutex2var_ps(a, 0xffff, idx1, b);
+                zero_1 = _mm512_mask_permutex2var_ps(a, 0xffff, idx2, b);   
                 kb++;
             }
             __m128i b4_0 = _mm_loadu_si128((__m128i*)(B + ni * K + k * ldb_int4));
@@ -1805,10 +1813,10 @@ inline bool {{kernel_name}}_is_block_start(int index, int k_start, int group_siz
             __m512 v32_2 = _mm512_permutexvar_ps(b32_1, lut); // k1 : N0-N15
             __m512 v32_3 = _mm512_permutexvar_ps(_mm512_srli_epi32(b32_1, 4), lut); // k1: N16-N31
 
-            v32_0 = _mm512_fmadd_ps(v32_0, scale, zero);
-            v32_1 = _mm512_fmadd_ps(v32_1, scale, zero);
-            v32_2 = _mm512_fmadd_ps(v32_2, scale, zero);
-            v32_3 = _mm512_fmadd_ps(v32_3, scale, zero);
+            v32_0 = _mm512_fmadd_ps(v32_0, scale_0, zero_0);
+            v32_1 = _mm512_fmadd_ps(v32_1, scale_1, zero_1);
+            v32_2 = _mm512_fmadd_ps(v32_2, scale_0, zero_0);
+            v32_3 = _mm512_fmadd_ps(v32_3, scale_1, zero_1);
 
             __m512 low_0 = _mm512_permutex2var_ps(v32_0, idx_low, v32_2);
             __m512 high_0 = _mm512_permutex2var_ps(v32_0, idx_high, v32_2);
