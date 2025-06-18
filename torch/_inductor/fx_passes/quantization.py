@@ -3501,6 +3501,116 @@ def _register_quantization_weight_pack_pass():
         _register_qlinear_unary_fusion()
         _register_qlinear_binary_fusion()
 
+def _is_valid_concat_linear_woq_int4_fusion(computation_nodes):
+    computation_op = torch.ops.aten._weight_int4pack_mm_for_cpu.default
+    act = computation_nodes[0].args[0]
+    wgt = computation_nodes[0].args[1]
+    in_feature_size = wgt.meta.get("val").size(1)  # type: ignore[union-attr]
+    group_size = computation_nodes[0].args[2]
+    return len(computation_nodes) >= 2 and all(
+        (
+            node.target == computation_op
+            and node.args[0] == act
+            and (node.args[1].meta.get("val").size(1) == in_feature_size)  # same in feature size
+            and (node.args[1] != wgt or gemm_idx == 0)
+            and node.args[1].op == "get_attr"  # wgt are all constants
+            and node.args[2] == group_size  # same group size
+        )
+        for gemm_idx, node in enumerate(computation_nodes)
+    )
+
+def concat_linear_woq_int4(gm: torch.fx.GraphModule):
+    def repack_wgt(packed_wgts, scale_zps, group_size):
+        unpacked_wgts = []
+        for packed_wgt in packed_wgts:
+            K = packed_wgt.size(1) * 2
+            N = packed_wgt.size(0)
+            x = torch.eye(K).bfloat16()
+            qscales_and_zeros = (
+                torch.tensor([1.0, 8.0])
+                .bfloat16()
+                .expand(K // group_size, N, 2)
+                .contiguous()
+            )
+            unpacked_wgts.append(
+                torch.ops.aten._weight_int4pack_mm_for_cpu(
+                    x,
+                    packed_wgt,
+                    group_size,
+                    qscales_and_zeros,
+                ).t().contiguous().to(torch.int32)  # N, K
+            )
+            print(unpacked_wgts[-1].size(), flush=True)
+        concat_unpacked_wgt = torch.cat(unpacked_wgts, dim=0)
+        repack_w = torch.ops.aten._convert_weight_to_int4pack_for_cpu(concat_unpacked_wgt, 1)
+        concat_scale_zp = torch.cat(scale_zps, dim=1).contiguous()
+        print(concat_scale_zp.size(), flush=True)
+        return repack_w, concat_scale_zp
+
+    graph = gm.graph
+    computation_op = torch.ops.aten._weight_int4pack_mm_for_cpu.default
+    for node in graph.find_nodes(op="call_function", target=computation_op):
+        if (
+            not node._erased
+            and isinstance(node.meta.get("val"), torch.Tensor)
+            and node.meta["val"].device.type == "cpu"
+        ):
+            act = node.args[0]
+            users = list(act.users)
+            if _is_valid_concat_linear_woq_int4_fusion(users):
+                with graph.inserting_before(node):
+                    out_feature_sizes = [user.args[1].meta.get("val").size(0) for user in users]
+                    print(out_feature_sizes, flush=True)
+                    assert all(user.args[1].op == "get_attr" for user in users)
+                    packed_wgts = [getattr(gm, user.args[1].target) for user in users]
+                    group_size = users[0].args[2]                    
+                    scale_zps = [getattr(gm, user.args[3].target) for user in users]
+                    repack_w, concat_scale_zp = repack_wgt(packed_wgts, scale_zps, group_size)
+
+                    gm.register_buffer(users[0].args[1].target + "_re", repack_w)
+                    setattr(gm, users[0].args[1].target + "_re", repack_w)
+                    repack_w_node = graph.create_node("get_attr", users[0].args[1].target + "_re", (), {})
+
+                    gm.register_buffer(users[0].args[3].target + "_re", concat_scale_zp)
+                    setattr(gm, users[0].args[3].target + "_re", concat_scale_zp)
+                    concat_scale_zp_node = graph.create_node("get_attr", users[0].args[3].target + "_re", (), {})
+
+                    out_features_list = [packed_wgt.size(0) for packed_wgt in packed_wgts]
+
+                    concat_int4_gemm_node = graph.create_node(
+                        "call_function",
+                        computation_op,
+                        (
+                            act,
+                            repack_w_node,
+                            group_size,
+                            concat_scale_zp_node,
+                        ),
+                    )
+                    with graph.inserting_after(concat_int4_gemm_node):
+                        split_node = graph.create_node(
+                        "call_function",
+                            torch.ops.aten.split_with_sizes.default,
+                            (
+                                concat_int4_gemm_node,
+                                out_features_list,
+                                1,
+                            ),
+                        )
+                    with graph.inserting_after(concat_int4_gemm_node):
+                        for gemm_idx, user in enumerate(users):
+                            assert user.target == computation_op
+                            get_item = graph.create_node(
+                                "call_function",
+                                operator.getitem,
+                                (
+                                    split_node,
+                                    gemm_idx,
+                                ),
+                            )
+                            user.replace_all_uses_with(get_item)
+                            graph.erase_node(user)
+
 
 def quant_lift_up(graph_module: torch.fx.GraphModule):
     """
